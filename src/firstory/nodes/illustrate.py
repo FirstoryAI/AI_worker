@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -142,6 +143,6 @@ def illustrate(state: PipelineState) -> dict:
 def illustrate_only(state: PipelineState) -> dict:
     """재생성 scope=images: 그림만 다시 (feedback에 페이지 번호가 있으면 그 페이지만)."""
     fb = state.get("review_feedback") or ""
-    pages = {int(t) for t in fb.replace(",", " ").split() if t.isdigit()} or None
+    pages = {int(t) for t in re.findall(r"\d+", fb)} or None  # "3페이지", "3, 5쪽", "p3"
     ill, costs = _run(state["story"], Path(state["run_dir"]) / "images", only_pages=pages, prev=state.get("illustrations"))
     return {"illustrations": ill, "cost": costs}
