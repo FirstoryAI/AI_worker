@@ -42,6 +42,8 @@ def _design_extra(state, s: Strategy) -> str:
 def design_story(state: PipelineState) -> dict:
     ctx = state["context"]
     s = _strategy(state)
+    fb = state.get("review_feedback")  # 재생성 scope=character/story 때 부모 요청
+    feedback_block = "## 부모 요청 (이번 설계에 반드시 반영)\n" + fb if fb else ""
     d, cost = structured(
         node="design_story",
         model=config.model_main,
@@ -55,6 +57,7 @@ def design_story(state: PipelineState) -> dict:
             traits=", ".join(ctx.child.traits + ([ctx.child.custom_trait] if ctx.child.custom_trait else [])) or "(없음)",
             page_count=config.page_count,
             extra=_design_extra(state, s),
+            feedback=feedback_block,
         ),
         user="이야기를 설계하세요.",
         reasoning="medium",
