@@ -43,7 +43,11 @@ git config commit.template .gitmessage.txt
 ## 브랜치
 
 - `main` — 돌아가는 상태 유지. 커밋 전에 `evals/mock_run.py`가 통과해야 함
-- 브랜치는 `feat/조연-시트`, `prompt/가이드-질문수` 식으로, 최신 `main`에서 딴다
+- 브랜치는 최신 `main`에서 딴다. 이름은 `<타입>/<짧은-설명>`
+  - 타입은 커밋 타입과 같게: `feat`, `fix`, `prompt`, `data`, `docs`, `refactor`, `test`, `chore`
+  - 설명은 영어 소문자·숫자·하이픈만: `feat/supporting-character-sheet`, `prompt/guide-question-count`
+  - 한글은 쓰지 않는다. 주소에서 `%EC%AA%BD…`처럼 인코딩되고, 일부 도구에서 깨지고, 터미널에서 치기 불편하다
+- 열린 PR의 브랜치 이름은 바꾸지 않는다. GitHub는 head 브랜치 이름을 바꾸면 그 PR을 닫는다
 
 언제 PR로 올리나:
 
