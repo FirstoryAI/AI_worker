@@ -4,7 +4,7 @@ FastAPI 서버 — Spring 백엔드가 내부 HTTP로 부르는 AI API (API 스�
   (--http h11: Java HttpClient의 Upgrade: h2c 요청에서 기본 파서가 본문을 버린다. README 참고)
 
 지금 있는 것: 인증(X-Internal-Token), 오류 형식, /health, /v1/safety/check(mock 모드만),
-인터뷰(interview/start, interview/answer). 생성·결과·검토 API는 다음 단계에서 붙인다.
+인터뷰(interview/start, interview/answer), 생성(generate, status, result). 검토·재시도는 다음 단계에서 붙인다.
 """
 from __future__ import annotations
 
@@ -24,8 +24,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import mock
 from .config import config
+from . import storage
 from .graph import compile_graph
-from .schemas import SafetyResult, StoryInputContext
+from .runs import Runs
+from .schemas import Illustrations, SafetyResult, StoryInputContext
 
 log = logging.getLogger("firstory.server")
 
@@ -83,8 +85,11 @@ async def lifespan(_: FastAPI):
     if config.mock:
         mock.enable()
         log.warning("mock 모드: OpenAI를 부르지 않습니다")
-    global _graph
+    global _graph, _runs
     _graph = compile_graph(config.checkpoint_db)
+    _runs = Runs(config.checkpoint_db)
+    if n := _runs.interrupt_running():
+        log.warning("서버가 꺼질 때 돌던 실행 %d개를 FAILED로 바꿨습니다", n)
     yield
 
 
@@ -113,16 +118,23 @@ def safety_check(body: SafetyCheckRequest) -> dict[str, SafetyResult]:
 # ── 그래프 실행: thread 하나에 동시에 하나만 (스펙 6장) ──────────────────────
 
 _graph = None
+_runs: Optional[Runs] = None
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
 
-@contextmanager
-def _thread_lock(thread_id: str):
+def _acquire(thread_id: str) -> threading.Lock:
+    """thread 잠금을 잡는다. 생성은 백그라운드 실행이 끝날 때 풀므로 잠금을 그대로 넘겨받는다."""
     with _locks_guard:
         lock = _locks.setdefault(thread_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise ApiError(409, "THREAD_BUSY", "이 thread는 다른 요청을 처리하고 있습니다")
+    return lock
+
+
+@contextmanager
+def _thread_lock(thread_id: str):
+    lock = _acquire(thread_id)
     try:
         yield
     finally:
@@ -211,3 +223,116 @@ def interview_answer(thread_id: str, body: InterviewAnswerRequest) -> dict:
         if snap.next != ("interview_answer",):
             raise ApiError(409, "INVALID_STATE", "인터뷰 질문에서 멈춰 있지 않습니다")
         return _interview_reply(before, _graph.invoke(Command(resume="skip" if body.skip else body.answer), cfg))
+
+
+# ── 생성 (스펙 7-4 ~ 7-6) ────────────────────────────────────────────────
+
+_STAGE = {"design_story": 1, "write_story": 2, "polish_story": 2,      # Spring GenerationStage와 같은 묶음
+          "reading_guide": 3, "illustrate": 3, "illustrate_only": 3, "render": 4}
+_PAUSED = {("interview_answer",): "INTERVIEWING", ("interview_step",): "INTERVIEWING", ("interview_finish",): "INTERVIEWING",
+           ("confirm_generate",): "CONFIRMING", ("parent_review",): "REVIEWING"}
+
+
+def _start_run(thread_id: str, lock: threading.Lock, run_id: UUID, run_no: int, inp, first_node: str,
+               cost_start: int) -> None:
+    """그래프를 백그라운드에서 돌린다. 끝나거나 실패하면 ai_runs에 적고 thread 잠금을 푼다."""
+    _runs.start(thread_id, run_no, first_node, cost_start)
+    cfg = _cfg(thread_id, run_id, f"firstory-run-{run_no}")
+    cfg["metadata"]["run_no"] = run_no
+
+    def work():
+        node: Optional[str] = first_node
+        try:
+            for ev in _graph.stream(inp, cfg, stream_mode="tasks"):
+                if "result" not in ev and ev["name"] in _STAGE:   # 노드가 시작될 때 (끝날 때는 result가 붙는다)
+                    node = ev["name"]
+                    _runs.node(thread_id, node)
+            _runs.done(thread_id)
+        except Exception as e:  # noqa: BLE001 — 실패는 status로 알린다
+            log.exception("생성 실패: thread_id=%s run_no=%s node=%s", thread_id, run_no, node)
+            _runs.fail(thread_id, "GENERATION_FAILED", node, str(e)[:300])
+        finally:
+            lock.release()
+
+    threading.Thread(target=work, name=f"run-{thread_id}", daemon=True).start()
+
+
+class RunRequest(BaseModel):
+    run_id: UUID
+    run_no: int = Field(ge=1)
+    output_prefix: str = Field(min_length=1)   # stories/{storyId}/runs/{runNo}/
+    tone: Optional[Literal["plain", "warm", "undecided"]] = None
+
+
+@app.post("/v1/threads/{thread_id}/generate", status_code=202)
+def generate(thread_id: str, body: RunRequest) -> dict:
+    lock = _acquire(thread_id)
+    try:
+        snap = _graph.get_state(_cfg(thread_id))
+        if not snap.values:
+            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        if tuple(snap.next) != ("confirm_generate",):
+            raise ApiError(409, "INVALID_STATE", "생성 전 확인에서 멈춰 있지 않습니다")
+        try:
+            storage.run_fields(body.output_prefix)
+        except ValueError as e:
+            raise ApiError(422, "VALIDATION_ERROR", f"output_prefix: {e}") from e
+        resume = {"action": "generate", "output_prefix": body.output_prefix, **({"tone": body.tone} if body.tone else {})}
+        _start_run(thread_id, lock, body.run_id, body.run_no, Command(resume=resume), "design_story",
+                   len(snap.values.get("cost", [])))
+    except BaseException:
+        lock.release()
+        raise
+    return {"accepted": True}
+
+
+@app.get("/v1/threads/{thread_id}/status")
+def status(thread_id: str) -> dict:
+    snap = _graph.get_state(_cfg(thread_id))
+    run = _runs.get(thread_id)
+    if not snap.values and run is None:
+        raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+    out = {"state": None, "run_no": run["run_no"] if run else None, "current_node": None, "stage": None,
+           "error": None, "updated_at": run["updated_at"] if run else None}
+    if run and run["state"] in ("RUNNING", "FAILED"):
+        node = run["current_node"]
+        out.update(state=run["state"], current_node=node, stage=_STAGE.get(node), error=run["error"])
+    elif tuple(snap.next) in _PAUSED:
+        out["state"] = _PAUSED[tuple(snap.next)]
+    elif not snap.next:
+        out["state"] = "COMPLETED"
+    else:   # 생성 노드 앞에 멈춰 있는데 실행 기록이 없다 = 어디선가 끊겼다
+        out.update(state="FAILED", current_node=snap.next[0], stage=_STAGE.get(snap.next[0]),
+                   error={"code": "INTERRUPTED", "node": snap.next[0], "message": "실행 기록 없이 중간에 멈춰 있습니다"})
+    return out
+
+
+@app.get("/v1/threads/{thread_id}/result")
+def result(thread_id: str) -> dict:
+    snap = _graph.get_state(_cfg(thread_id))
+    if not snap.values:
+        raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+    run = _runs.get(thread_id)
+    if (run and run["state"] == "RUNNING") or tuple(snap.next) != ("parent_review",):
+        raise ApiError(409, "INVALID_STATE", "부모 검토에서 멈춰 있지 않습니다")
+    v = snap.values
+    story, ill = v["story"], v.get("illustrations") or Illustrations()
+    roles = {c.name: c.role for c in story.characters}
+    images = {pi.order: pi for pi in ill.pages if pi.status == "completed" and pi.path}
+    costs = v.get("cost", [])[run["cost_start"] if run else 0:]   # 이번 실행 것만
+    return {
+        "run_no": run["run_no"] if run else None,
+        "checkpoint_id": snap.config["configurable"]["checkpoint_id"],   # 이 버전에서 다시 만들 때 쓴다 (스펙 8장)
+        "title": story.title,
+        "design": v["story_design"].model_dump(mode="json") if v.get("story_design") else None,
+        "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
+                             for name, key in ill.character_sheets.items()],
+        "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
+                   "image_path": images[p.order].path if p.order in images else None,
+                   "image_status": "done" if p.order in images else "failed"} for p in story.pages],
+        "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,
+        "cost": {"input_tokens": sum(c.input_tokens for c in costs), "output_tokens": sum(c.output_tokens for c in costs),
+                 "image_count": sum(c.images for c in costs)},
+        # TODO(G2): 완성 본문 위기 신호 판단. 만들기 전까지는 OK
+        "safety": {"level": "OK", "category": None, "reason": None},
+    }
