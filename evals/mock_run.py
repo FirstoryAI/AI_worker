@@ -12,7 +12,7 @@ from langgraph.types import Command
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from firstory import llm, mock  # noqa: E402
+from firstory import llm, mock, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.graph import compile_graph, new_thread_id  # noqa: E402
 from firstory.schemas import Strategy  # noqa: E402
@@ -90,6 +90,49 @@ for i, cmd in enumerate(resumes):
 assert r["status"] == "completed"
 assert redrawn == [[3], [3, 5], [3], ALL_PAGES, [3]], redrawn   # 숫자 없으면 기존대로 전부
 print("regen feedback ok:", redrawn)
+
+# ── 1-3) 실행별 결과물 경로 (G3·G4): Spring이 실행마다 새 output_prefix를 준다 ──
+base = f"mock-stories/{new_thread_id()}/runs"
+cfg1c = {"configurable": {"thread_id": new_thread_id()}}
+r = graph.invoke({"context": data, "auto_answers": ["a1", "a2"], "auto_approve": False, "skip_images": False}, cfg1c)
+assert r["__interrupt__"][0].value["type"] == "confirm"
+r = graph.invoke(Command(resume={"action": "generate", "output_prefix": f"{base}/1/"}), cfg1c)
+ill1 = graph.get_state(cfg1c).values["illustrations"]
+assert all(pg.path == f"{base}/1/images/page-{pg.order:02d}.png" for pg in ill1.pages), ill1.pages
+assert all(k.startswith(f"{base}/1/images/sheet-") for k in ill1.character_sheets.values())
+assert storage.exists(f"{base}/1/03-story.json") and storage.exists(f"{base}/1/book.html")
+assert r["run_dir"] == str(storage.local_path(f"{base}/1/"))
+
+# 그림만 다시(3쪽) → 3쪽만 runs/2에 새로. 나머지 쪽과 시트는 runs/1의 key 그대로, 파일 복사 없음
+r = graph.invoke(Command(resume={"action": "regenerate", "scope": "images", "feedback": "3",
+                                 "output_prefix": f"{base}/2/"}), cfg1c)
+ill2 = graph.get_state(cfg1c).values["illustrations"]
+assert {pg.order: pg.path for pg in ill2.pages}[3] == f"{base}/2/images/page-03.png"
+assert all(pg.path == f"{base}/1/images/page-{pg.order:02d}.png" for pg in ill2.pages if pg.order != 3)
+assert ill2.character_sheets == ill1.character_sheets
+assert not storage.exists(f"{base}/2/images/page-01.png") and not any(
+    storage.exists(f"{base}/2/images/{Path(k).name}") for k in ill1.character_sheets.values())
+assert storage.exists(f"{base}/1/images/page-03.png")   # 이전 실행 파일은 남는다
+book = storage.local_path(f"{base}/2/book.html").read_text(encoding="utf-8")
+assert 'src="../1/images/page-01.png"' in book and 'src="images/page-03.png"' in book
+
+# 글 다시 → 그림도 전부 runs/3에 새로. runs/2의 3쪽은 그대로 남는다
+r = graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "더 짧게",
+                                 "output_prefix": f"{base}/3/"}), cfg1c)
+ill3 = graph.get_state(cfg1c).values["illustrations"]
+assert all(pg.path.startswith(f"{base}/3/images/") for pg in ill3.pages)
+assert all(k.startswith(f"{base}/3/images/") for k in ill3.character_sheets.values())
+assert storage.exists(f"{base}/2/images/page-03.png") and storage.exists(f"{base}/1/03-story.json")
+r = graph.invoke(Command(resume={"action": "approve"}), cfg1c)
+assert r["status"] == "completed"
+
+for bad in ["../x.png", "/abs/x.png", "a\\b.png", "c:/x.png", f"{base}/../../x.png"]:   # 저장소 밖 key는 거부
+    try:
+        storage.write_bytes(bad, b"x")
+        raise AssertionError(f"거부 안 됨: {bad}")
+    except ValueError:
+        pass
+print("run paths ok:", base)
 
 # ── 2) --auto 경로: scripted answers + auto_approve + 병렬 fan-in ──
 tid2 = new_thread_id()
