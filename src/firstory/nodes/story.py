@@ -150,6 +150,12 @@ def parent_review(state: PipelineState) -> dict:
         "guide": state["guide"].model_dump() if state.get("guide") else None,
         "run_dir": state["run_dir"],
     }) or {}
+    return review_update(r)
+
+
+def review_update(r: dict) -> dict:
+    """검토 결과 {action, scope, feedback, output_prefix}를 state에 넣을 값으로.
+    API 서버는 이전 버전 체크포인트에서 다시 만들 때 이 값으로 parent_review를 대신한다 (server.py review)."""
     action = r.get("action", "approve")
     out = {
         "review_action": action,
