@@ -52,6 +52,4 @@ def exists(key: str) -> bool:
 def run_fields(prefix: str) -> dict:
     """실행의 결과물 자리를 state에 넣을 때. run_dir은 CLI·뷰어가 보여 주는 로컬 폴더."""
     prefix = _check(prefix.rstrip("/") + "/")
-    path = local_path(prefix)
-    path.mkdir(parents=True, exist_ok=True)
-    return {"output_prefix": prefix, "run_dir": str(path)}
+    return {"output_prefix": prefix, "run_dir": str(local_path(prefix))}   # 폴더는 처음 쓸 때 생긴다
