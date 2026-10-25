@@ -323,5 +323,15 @@ class CostEntry(BaseModel):
     ms: int = 0
 
 
+SafetyLevel = Literal["OK", "SENSITIVE", "REVISE", "CRISIS"]
+
+
+class SafetyResult(BaseModel):
+    """위기 신호 판단 (API 스펙 4장). reason은 부모에게 그대로 보여줄 문장."""
+    level: SafetyLevel
+    category: Optional[str] = None   # 값 목록은 D4에서 정함
+    reason: Optional[str] = None
+
+
 StoryStatus = Literal["requested", "generating_text", "reviewing", "generating_images", "completed", "failed"]
 RegenerateScope = Literal["character", "story", "text", "images"]

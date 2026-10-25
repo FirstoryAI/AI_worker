@@ -29,7 +29,13 @@ uv run python evals/prompt_lab.py datasets/inputs/byeol.json --presets base engi
 
 # API 없이 배선만 확인 (mock)
 uv run python evals/mock_run.py
+
+# FastAPI 서버 — Spring 백엔드가 부르는 내부 API. 모든 요청에 X-Internal-Token 헤더
+FIRSTORY_INTERNAL_TOKEN=local-test-token FIRSTORY_MOCK=true uv run uvicorn firstory.server:app --port 8000
+uv run python evals/api_run.py                                # 서버 배선 확인 (인증, 오류 형식, mock)
 ```
+
+`FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). `/v1/safety/check`는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
 
 실행마다 `out/<타임스탬프>/`에 `00-context.json … 05-illustrations.json`, `images/`, `book.html`, `99-cost.json`이 남고,
 그래프 상태는 `out/checkpoints.db`(SQLite)에 저장됨. LangSmith 켜져 있으면 smith.langchain.com 프로젝트 `firstory-pipeline`에 트레이스가 올라감.

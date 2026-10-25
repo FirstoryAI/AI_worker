@@ -33,6 +33,10 @@ class Config:
     out_dir: Path = ROOT / "out"
     checkpoint_db: Path = ROOT / "out" / "checkpoints.db"
 
+    # FastAPI 서버 (server.py)
+    mock: bool = _env("FIRSTORY_MOCK", "false").lower() in ("1", "true", "yes")
+    internal_token: str = os.getenv("FIRSTORY_INTERNAL_TOKEN", "")   # Spring이 X-Internal-Token으로 보내는 값
+
 
 config = Config()
 config.out_dir.mkdir(parents=True, exist_ok=True)
