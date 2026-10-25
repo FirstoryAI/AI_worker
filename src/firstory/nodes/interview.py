@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from langgraph.types import interrupt
 
+from .. import storage
 from ..config import config
 from ..llm import prompt, structured
 from ..schemas import InterviewSummary, InterviewTurnResult, Turn
@@ -150,7 +151,8 @@ def interview_finish(state: PipelineState) -> dict:
 
 def confirm_generate(state: PipelineState) -> dict:
     """⏸ 생성 전 확인 (화면 CRT-06). 인터뷰 요약·최종 Context를 보여주고 부모가 [만들기]를 누르면 재개.
-    재개 값 {"action": "generate", "tone": ...}. tone 없으면 시작할 때 받은 값 유지. LLM 호출 없음 (interview_answer와 같은 이유).
+    재개 값 {"action": "generate", "tone": ..., "output_prefix": ...}. tone 없으면 시작할 때 받은 값 유지,
+    output_prefix가 있으면 이번 실행의 결과물을 그 아래에 쓴다 (없으면 form_input이 정한 자리). LLM 호출 없음 (interview_answer와 같은 이유).
     LangGraph는 빈 재개 값(None·{})을 재개로 치지 않으므로, 호출하는 쪽은 최소 {"action": "generate"}를 보낸다."""
     if state.get("auto_confirm"):
         return {"status": "generating_text"}
@@ -164,6 +166,8 @@ def confirm_generate(state: PipelineState) -> dict:
     out: dict = {"status": "generating_text"}
     if r.get("tone"):  # 안 주면 시작할 때 받은 tone 유지
         out["tone"] = r["tone"]
+    if r.get("output_prefix"):
+        out.update(storage.run_fields(r["output_prefix"]))
     return out
 
 

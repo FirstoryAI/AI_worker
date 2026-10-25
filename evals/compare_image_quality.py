@@ -24,15 +24,16 @@ from firstory.schemas import StoryText  # noqa: E402
 def draw(a_dir: Path) -> tuple[Path, float, int]:
     story = StoryText(**json.loads((a_dir / "03-story.json").read_text(encoding="utf-8")))
     out = a_dir.with_name(f"{a_dir.name}__{config.image_quality}") / "images"
+    key = out.resolve().relative_to(config.output_root.resolve()).as_posix()   # 기준 폴더가 저장소 루트(out/) 아래여야 한다
     t0, made = time.time(), 0
-    result, costs = ill._run(story, out)
+    result, costs = ill._run(story, key)
     made += sum(c.images for c in costs)
     for _ in range(6):
         failed = {p.order for p in result.pages if p.status != "completed"}
         if not failed:
             break
         time.sleep(65)
-        result, costs = ill._run(story, out, only_pages=failed, prev=result)
+        result, costs = ill._run(story, key, only_pages=failed, prev=result)
         made += sum(c.images for c in costs)
     return out, time.time() - t0, made
 

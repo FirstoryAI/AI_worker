@@ -5,6 +5,7 @@ from __future__ import annotations
 from langgraph.graph import END
 from langgraph.types import interrupt
 
+from .. import storage
 from ..config import config
 from ..llm import prompt, structured
 from ..schemas import PolishedStory, ReadingGuide, Strategy, StoryText, design_schema
@@ -139,7 +140,8 @@ def polish_story(state: PipelineState) -> dict:
 
 def parent_review(state: PipelineState) -> dict:
     """⏸ 부모 검토 — 텍스트+이미지+가이드 완성 후 (기획안 STEP 5~6).
-    뷰어/CLI가 {action, scope, feedback}를 넣어주면 재개. 자동 재생성 없음."""
+    뷰어/CLI가 {action, scope, feedback}를 넣어주면 재개. 자동 재생성 없음.
+    다시 만들기에 output_prefix가 있으면 그 실행의 결과물은 새 자리에 쓴다."""
     if state.get("auto_approve"):
         return {"review_action": "approve", "regenerate_scope": None, "review_feedback": None, "status": "completed"}
     r = interrupt({
@@ -156,6 +158,8 @@ def parent_review(state: PipelineState) -> dict:
         "writer_feedback": r.get("feedback") if r.get("scope") == "text" else None,
         "status": "completed" if action == "approve" else "generating_text",
     }
+    if action == "regenerate" and r.get("output_prefix"):  # 다시 만든 실행은 새 자리에 (이전 실행 파일은 그대로)
+        out.update(storage.run_fields(r["output_prefix"]))
     return out
 
 

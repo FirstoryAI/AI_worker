@@ -20,6 +20,7 @@ from langgraph.types import Command
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from firstory import storage  # noqa: E402
 from firstory.graph import compile_graph, new_thread_id  # noqa: E402
 from firstory.lab import STRATEGY_LABELS  # noqa: E402
 from firstory.schemas import SituationCategory, MessageDirection, Strategy  # noqa: E402
@@ -211,8 +212,8 @@ with tab_story:
                 for col, c in zip(cols, story.get("characters", [])):
                     pth = sheets.get(c["name"])
                     with col:
-                        if pth and Path(pth).exists():
-                            st.image(pth, width=240)
+                        if pth and storage.exists(pth):
+                            st.image(str(storage.local_path(pth)), width=240)
                         st.markdown(f"**{c['name']}** · {c['role']}")
                         st.caption(c["visual_description"])
         q_after = {}
@@ -222,8 +223,8 @@ with tab_story:
             col_img, col_txt = st.columns([1, 1.4])
             pi = imgs.get(p["order"])
             with col_img:
-                if pi and pi.get("status") == "completed" and pi.get("path") and Path(pi["path"]).exists():
-                    st.image(pi["path"], width="stretch")
+                if pi and pi.get("status") == "completed" and pi.get("path") and storage.exists(pi["path"]):
+                    st.image(str(storage.local_path(pi["path"])), width="stretch")
                 elif pi and pi.get("status") == "failed":
                     st.error(f"이미지 실패: {pi.get('error', '')[:120]}")
                 else:

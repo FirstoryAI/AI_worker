@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
-from pathlib import Path
 
+from .. import storage
 from ..state import PipelineState
 
 _e = html.escape
@@ -17,12 +18,12 @@ def _text(t: str) -> str:
     return _SFX.sub(r'<b class="sfx">\1</b>', _e(t))
 
 
-def _dump(run: Path, state: PipelineState):
+def _dump(prefix: str, state: PipelineState):
     def j(name, obj):
         if obj is None:
             return
         data = obj.model_dump() if hasattr(obj, "model_dump") else obj
-        (run / name).write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        storage.write_text(storage.join(prefix, name), json.dumps(data, ensure_ascii=False, indent=2, default=str))
 
     j("00-context.json", state.get("context"))
     j("01-interview.json", {"turns": [t.model_dump() for t in state.get("interview_turns", [])],
@@ -38,21 +39,26 @@ def _dump(run: Path, state: PipelineState):
 
 def build_html(state: PipelineState) -> str:
     story, guide, ill = state["story"], state.get("guide"), state.get("illustrations")
-    img = {p.order: Path(p.path).name for p in (ill.pages if ill else []) if p.status == "completed" and p.path}
-    sheet = Path(ill.character_sheet_path).name if ill and ill.character_sheet_path else None
+    here = storage.local_path(state["output_prefix"])
+
+    def src(key: str) -> str:  # 그림만 다시 그린 실행은 안 바뀐 쪽이 이전 실행 폴더에 있다
+        return os.path.relpath(storage.local_path(key), here)
+
+    img = {p.order: src(p.path) for p in (ill.pages if ill else []) if p.status == "completed" and p.path}
+    sheet = src(ill.character_sheet_path) if ill and ill.character_sheet_path else None
     prompts_after = {}
     for q in (guide.prompts if guide else []):
         prompts_after.setdefault(q.after_page, []).append(q)
 
     slides = [f"""
     <section class="slide cover">
-      {f'<img src="images/{sheet}" alt="">' if sheet else '<div class="ph"></div>'}
+      {f'<img src="{_e(sheet)}" alt="">' if sheet else '<div class="ph"></div>'}
       <h1>{_e(story.title)}</h1><p class="hint">→ 방향키 또는 클릭</p>
     </section>"""]
     for p in story.pages:
         slides.append(f"""
     <section class="slide page">
-      {f'<img src="images/{img[p.order]}" alt="">' if p.order in img else f'<div class="ph"><span>{_e(p.image_prompt)}</span></div>'}
+      {f'<img src="{_e(img[p.order])}" alt="">' if p.order in img else f'<div class="ph"><span>{_e(p.image_prompt)}</span></div>'}
       <p class="text">{_text(p.text)}</p>
     </section>""")
         for q in prompts_after.get(p.order, []):
@@ -116,8 +122,7 @@ addEventListener('keydown',e=>{{if(e.key==='ArrowRight'||e.key===' ')show(i+1);i
 
 
 def render(state: PipelineState) -> dict:
-    run = Path(state["run_dir"])
-    run.mkdir(parents=True, exist_ok=True)
-    _dump(run, state)
-    (run / "book.html").write_text(build_html(state), encoding="utf-8")
+    prefix = state["output_prefix"]
+    _dump(prefix, state)
+    storage.write_text(storage.join(prefix, "book.html"), build_html(state))
     return {"status": "reviewing"}

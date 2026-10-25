@@ -45,7 +45,8 @@ class PipelineState(TypedDict, total=False):
     guide: Optional[ReadingGuide]
     illustrations: Optional[Illustrations]
     # 메타
-    run_dir: str
+    output_prefix: str                       # 이번 실행의 결과물 key 앞부분 (storage.py). Spring이 실행마다 새로 준다
+    run_dir: str                             # output_prefix의 로컬 폴더 (CLI·뷰어 표시용)
     status: StoryStatus
     cost: Annotated[list[CostEntry], operator.add]   # 병렬 브랜치가 각자 append → 합쳐짐
     # 옵션

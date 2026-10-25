@@ -8,9 +8,9 @@ import base64
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Callable, Optional
 
+from .. import storage
 from ..config import config
 from ..llm import client
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, StoryText
@@ -85,42 +85,41 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
     return "\n".join(lines)
 
 
-def _run(story: StoryText, img_dir: Path, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None):
-    img_dir.mkdir(parents=True, exist_ok=True)
+def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None):
+    """img_prefix: 이번 실행의 그림 key 앞부분 (…/images). 일부 쪽만 다시 그리면 나머지 쪽과 시트는
+    prev의 key를 그대로 둔다 — 파일을 복사하지 않는다 (API 스펙 G4)."""
     costs: list[CostEntry] = []
     ill = prev.model_copy(deep=True) if prev else Illustrations()
     by_name = {c.name: c for c in story.characters}
 
-    # 1) 캐릭터 시트 — 없는 것만 (일부 페이지 재생성 때는 재사용). 여러 명이면 병렬
+    # 1) 캐릭터 시트 — 일부 쪽만 다시 그릴 때는 이전 실행의 시트를 그대로 쓴다. 여러 명이면 병렬
     def make_sheet(c: CharacterSheet):
-        path = img_dir / f"sheet-{c.role}-{_safe(c.name)}.png"
-        if only_pages and path.exists():
-            return c.name, path, None
+        if only_pages and c.name in ill.character_sheets:
+            return c.name, ill.character_sheets[c.name], None
         t0 = time.time()
         png, tin, tout = _gen(sheet_prompt(c, story.style_guide))
-        path.write_bytes(png)
-        return c.name, path, CostEntry(node=f"illustrate:sheet:{c.name}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
+        key = storage.write_bytes(storage.join(img_prefix, f"sheet-{c.role}-{_safe(c.name)}.png"), png)
+        return c.name, key, CostEntry(node=f"illustrate:sheet:{c.name}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
 
     with ThreadPoolExecutor(max_workers=max(1, config.image_concurrency)) as ex:
-        for name, path, cost in ex.map(make_sheet, story.characters):
-            ill.character_sheets[name] = str(path)
+        for name, key, cost in ex.map(make_sheet, story.characters):
+            ill.character_sheets[name] = key
             if cost:
                 costs.append(cost)
-    ref_bytes = {name: Path(p).read_bytes() for name, p in ill.character_sheets.items()}
+    ref_bytes = {name: storage.read_bytes(key) for name, key in ill.character_sheets.items()}
 
     # 2) 페이지 병렬 — 장면에 나오는 캐릭터 시트만 참조로
     targets = [p for p in story.pages if not only_pages or p.order in only_pages]
     by_order = {pi.order: pi for pi in ill.pages}
 
     def work(p):
-        path = img_dir / f"page-{p.order:02d}.png"
         t0 = time.time()
         try:
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
             png, tin, tout = _edit(page_prompt(story, chars, p.image_prompt), refs)
-            path.write_bytes(png)
-            return PageImage(order=p.order, path=str(path), status="completed"), int((time.time() - t0) * 1000), tin, tout
+            key = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.png"), png)
+            return PageImage(order=p.order, path=key, status="completed"), int((time.time() - t0) * 1000), tin, tout
         except Exception as e:  # noqa: BLE001
             return PageImage(order=p.order, status="failed", error=str(e)[:300]), int((time.time() - t0) * 1000), 0, 0
 
@@ -136,7 +135,7 @@ def _run(story: StoryText, img_dir: Path, only_pages: Optional[set[int]] = None,
 def illustrate(state: PipelineState) -> dict:
     if state.get("skip_images"):
         return {"illustrations": Illustrations(), "cost": []}
-    ill, costs = _run(state["story"], Path(state["run_dir"]) / "images")
+    ill, costs = _run(state["story"], storage.join(state["output_prefix"], "images"))
     return {"illustrations": ill, "cost": costs}
 
 
@@ -153,5 +152,6 @@ def _pages_from_feedback(fb: str) -> set[int] | None:
 def illustrate_only(state: PipelineState) -> dict:
     """재생성 scope=images: 그림만 다시 (feedback에 페이지 번호가 있으면 그 페이지만)."""
     pages = _pages_from_feedback(state.get("review_feedback") or "")
-    ill, costs = _run(state["story"], Path(state["run_dir"]) / "images", only_pages=pages, prev=state.get("illustrations"))
+    ill, costs = _run(state["story"], storage.join(state["output_prefix"], "images"), only_pages=pages,
+                      prev=state.get("illustrations"))
     return {"illustrations": ill, "cost": costs}
