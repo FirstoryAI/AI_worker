@@ -42,5 +42,20 @@ git config commit.template .gitmessage.txt
 
 ## 브랜치
 
-- `main` — 돌아가는 상태 유지
-- 작업은 `feat/조연-시트`, `prompt/가이드-질문수` 식으로 따서 PR
+- `main` — 돌아가는 상태 유지. 커밋 전에 `evals/mock_run.py`가 통과해야 함
+- 브랜치는 `feat/조연-시트`, `prompt/가이드-질문수` 식으로, 최신 `main`에서 딴다
+
+언제 PR로 올리나:
+
+| 변경 | 방식 |
+|---|---|
+| 백엔드가 기대는 것 — API 요청·응답, interrupt payload·재개 값, 결과물 저장 경로, 쪽수 | 브랜치 → PR |
+| 크고 커밋이 여러 개인 작업 — FastAPI API, 새 노드 | 브랜치 → PR |
+| 이 저장소 안에서만 끝나는 작은 변경 — 프롬프트 조정, 문서 오타, 테스트 추가 | `main`에 바로 커밋 |
+
+애매하면 PR. 백엔드 저장소(`Backend_Mainpage`)와 API 스펙(`docs/FIRSTORY-AI-API-SPEC-v0.3.md`, 백엔드 저장소에 있음)을 바꿀 때도 PR.
+
+PR:
+- 본문은 `.github/pull_request_template.md` 틀(무엇을 바꿨나 / 참고할 점 / 확인 방법), 합니다체. 그 PR의 변경만 쓴다
+- 합칠 때는 일반 merge 커밋 — squash하지 않는다 (프롬프트·코드 커밋을 나눠 둔 게 남게)
+- 확인을 기다리며 오래 열어 두지 않는다. 합친 뒤 백엔드 쪽에서 고칠 게 생기면 노션 "백엔드 작업목록"에 항목으로 적는다
