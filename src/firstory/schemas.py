@@ -300,13 +300,13 @@ class ReadingGuide(BaseModel):
 # ──────────────────────────────────────────────────────────────
 class PageImage(BaseModel):
     order: int
-    path: Optional[str] = None
+    path: Optional[str] = None   # 저장소 key (storage.py). 그림만 다시 그린 실행에서 안 바뀐 쪽은 이전 실행의 key
     status: Literal["pending", "generating", "completed", "failed"] = "pending"
     error: Optional[str] = None
 
 
 class Illustrations(BaseModel):
-    character_sheets: dict[str, str] = {}   # 이름 → 파일 경로
+    character_sheets: dict[str, str] = {}   # 이름 → 저장소 key
     pages: list[PageImage] = []
 
     @property

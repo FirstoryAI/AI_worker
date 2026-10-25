@@ -39,7 +39,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
-from . import schemas
+from . import schemas, storage
 from .config import config
 from .nodes.illustrate import illustrate, illustrate_only
 from .nodes.interview import (
@@ -57,9 +57,8 @@ def form_input(state: PipelineState) -> dict:
     """🔒 ① 1차 폼 검증. pydantic이 enum·필수 검사. upcoming이면 moment 비어 있어도 OK."""
     ctx = StoryInputContext.model_validate(state["context"])
     name = (state.get("run_name") or "run").replace(" ", "-")
-    run_dir = state.get("run_dir") or str(config.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{name}")
-    Path(run_dir).mkdir(parents=True, exist_ok=True)
-    return {"context": ctx, "run_dir": run_dir, "status": "requested", "cost": []}
+    prefix = state.get("output_prefix") or f"{datetime.now():%Y%m%d-%H%M%S}_{name}/"
+    return {"context": ctx, **storage.run_fields(prefix), "status": "requested", "cost": []}
 
 
 def build_graph():

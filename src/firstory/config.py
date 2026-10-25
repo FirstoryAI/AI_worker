@@ -32,6 +32,7 @@ class Config:
 
     out_dir: Path = ROOT / "out"
     checkpoint_db: Path = ROOT / "out" / "checkpoints.db"
+    output_root: Path = Path(_env("FIRSTORY_OUTPUT_ROOT", str(ROOT / "out")))   # 결과물 저장소 루트 (storage.py)
 
     # FastAPI 서버 (server.py)
     mock: bool = _env("FIRSTORY_MOCK", "false").lower() in ("1", "true", "yes")
