@@ -125,6 +125,7 @@ resumes = [
     {"action": "regenerate", "scope": "images", "feedback": "3, 5쪽"},
     {"action": "regenerate", "scope": "images", "feedback": "p3"},
     {"action": "regenerate", "scope": "images", "feedback": "전부 다시"},
+    {"action": "regenerate", "scope": "images", "feedback": "3쪽 강아지 다리 4개로"},   # 설명 속 숫자는 쪽 아님
     {"action": "approve"},
 ]
 redrawn = []   # 재생성 한 번마다 다시 그린 페이지
@@ -139,7 +140,7 @@ for i, cmd in enumerate(resumes):
         new = graph.get_state(cfg1b).values["cost"][before:]
         redrawn.append(sorted(int(c.node.removeprefix("illustrate:page")) for c in new if c.node.startswith("illustrate:page")))
 assert r["status"] == "completed"
-assert redrawn == [[3], [3, 5], [3], list(range(1, 9))], redrawn   # 숫자 없으면 기존대로 전부
+assert redrawn == [[3], [3, 5], [3], list(range(1, 9)), [3]], redrawn   # 숫자 없으면 기존대로 전부
 print("regen feedback ok:", redrawn)
 
 # ── 2) --auto 경로: scripted answers + auto_approve + 병렬 fan-in ──
