@@ -100,7 +100,8 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert q2["context_update"] == {"parent": {"response": "안아줌", "concern": "뭐라고 말할지 모르겠음"}}, q2
     done = ok(answer(tid, {"answer": "마음을 먼저 받아 주고 싶어요"}))
     assert set(done) == {"type", "summary", "end_reason", "context"} and done["type"] == "confirm", done
-    assert done["end_reason"] == "sufficient" and done["summary"]
+    assert done["end_reason"] == "sufficient"
+    assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
     assert done["context"]["parent"]["message_direction"] == "comfort_first"
     assert done["context"]["situation"] == CONTEXT["situation"] | {"custom_category": None}   # 빈 칸도 null로 채워 돌려준다
     assert server._graph.get_state(server._cfg(tid)).next == ("confirm_generate",)
@@ -203,6 +204,37 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert res["safety"] == {"level": "OK", "category": None, "reason": None}
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     err(c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")
+
+    # 확인 화면에서 고친 입력과 '나누고 싶은 것'이 생성에 반영된다
+    tid_e = to_confirm()
+    edited = json.loads(json.dumps(CONTEXT))
+    edited["situation"]["description"] = "놀이터에서 친구가 그네를 안 비켜 줬어요"
+    edited["child"]["age_months"] = 70
+    edited["moment"]["emotions"] = ["angry"]
+    edited["parent"]["message"] = "기다리면 차례가 온다고 말해 주고 싶어요"
+    new_summary = "차례를 기다리는 게 어렵다는 마음을 알아주고 싶어요."
+    r = c.post(f"/v1/threads/{tid_e}/generate", headers=H, json=run_body(context=edited, summary=new_summary))
+    assert r.status_code == 202, r.text
+    assert wait(tid_e, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    v = server._graph.get_state(server._cfg(tid_e)).values
+    assert v["context"].situation.description == edited["situation"]["description"]
+    assert v["context"].child.age_months == 70 and v["context"].moment.emotions == ["angry"]
+    assert v["context"].parent.message == edited["parent"]["message"]
+    assert v["context"].parent.message_direction == "comfort_first"   # 인터뷰가 채운 칸은 그대로
+    assert v["interview_parent_summary"] == new_summary and new_summary in v["interview_summary"]
+    assert v["interview_summary"].startswith("이 부모는")   # 원래 정리는 남고 고친 문장을 덧붙인다
+
+    # 상황을 안 고쳤으면 인터뷰가 가진 moment를 지키고, 요약을 안 고쳤으면 정리도 그대로
+    tid_k = to_confirm()
+    before = server._graph.get_state(server._cfg(tid_k)).values
+    same = json.loads(json.dumps(CONTEXT))
+    same["moment"]["emotions"] = ["excited"]   # Spring 폼 값이 인터뷰 결과와 달라도
+    r = c.post(f"/v1/threads/{tid_k}/generate", headers=H,
+               json=run_body(context=same, summary=before["interview_parent_summary"]))
+    assert r.status_code == 202, r.text
+    assert wait(tid_k, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    v = server._graph.get_state(server._cfg(tid_k)).values
+    assert v["context"].moment == before["context"].moment and v["interview_summary"] == before["interview_summary"]
 
     # 형식 오류, 없는 thread
     tid2 = to_confirm()
