@@ -1,5 +1,5 @@
 """
-FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, mock /safety/check, 인터뷰. (uv run python evals/api_run.py)
+FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, mock /safety/check, 인터뷰, 생성. (uv run python evals/api_run.py)
 서버를 띄우지 않고 TestClient로 부른다. OpenAI 호출 없음.
 """
 from __future__ import annotations
@@ -9,15 +9,19 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
-os.environ.update(FIRSTORY_MOCK="true", FIRSTORY_INTERNAL_TOKEN="test-token", LANGSMITH_TRACING="false")
+os.environ.update(FIRSTORY_MOCK="true", FIRSTORY_INTERNAL_TOKEN="test-token", LANGSMITH_TRACING="false",
+                  FIRSTORY_OUTPUT_ROOT=tempfile.mkdtemp())
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from firstory import llm, mock, server  # noqa: E402
+from firstory import llm, mock, server, storage  # noqa: E402
+from firstory.config import config  # noqa: E402
 
 H = {"X-Internal-Token": "test-token"}
 server.config = dataclasses.replace(server.config, checkpoint_db=Path(tempfile.mkdtemp()) / "checkpoints.db")
@@ -143,6 +147,115 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert len(server._graph.get_state(server._cfg(tid3)).values["interview_turns"]) == 1
     mock.enable()
 print("interview ok")
+
+# ── 생성·상태·결과 (스펙 7-4 ~ 7-6) ──
+RESULT_KEYS = {"run_no", "checkpoint_id", "title", "design", "character_sheets", "pages", "guide", "cost", "safety"}
+
+
+def run_body(run_no=1, prefix=None, **extra):
+    return {"run_id": str(uuid.uuid4()), "run_no": run_no,
+            "output_prefix": prefix or f"stories/{uuid.uuid4().hex[:6]}/runs/{run_no}/", "tone": None} | extra
+
+
+with TestClient(server.app, raise_server_exceptions=False) as c:
+    def to_confirm():
+        tid = str(uuid.uuid4())
+        assert c.post(f"/v1/threads/{tid}/interview/start", headers=H,
+                      json={"run_id": str(uuid.uuid4()), "context": CONTEXT, "tone": None}).status_code == 200
+        for a in ("안아 줬어요", "마음을 먼저 받아 주고 싶어요"):
+            r = c.post(f"/v1/threads/{tid}/interview/answer", headers=H, json={"answer": a})
+        assert r.json()["type"] == "confirm", r.text
+        return tid
+
+    def status(tid):
+        r = c.get(f"/v1/threads/{tid}/status", headers=H)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def wait(tid, until, timeout=30):
+        end = time.time() + timeout
+        while time.time() < end:
+            st = status(tid)
+            if st["state"] in until:
+                return st
+            time.sleep(0.05)
+        raise AssertionError(f"{until}까지 안 감: {status(tid)}")
+
+    # 끝까지: CONFIRMING → 202 → RUNNING → REVIEWING → result
+    tid = to_confirm()
+    assert status(tid)["state"] == "CONFIRMING"
+    err(c.get(f"/v1/threads/{tid}/result", headers=H), 409, "INVALID_STATE")
+    prefix = "stories/12/runs/1/"
+    r = c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body(prefix=prefix, tone="warm"))
+    assert r.status_code == 202 and r.json() == {"accepted": True}, r.text
+    st = wait(tid, {"REVIEWING", "FAILED"})
+    assert st["state"] == "REVIEWING" and st["run_no"] == 1 and st["error"] is None, st
+    res = c.get(f"/v1/threads/{tid}/result", headers=H).json()
+    assert set(res) == RESULT_KEYS, res.keys()
+    assert res["run_no"] == 1 and res["checkpoint_id"] and res["title"] == "포포와 비어 있는 자리"
+    assert [p["page_no"] for p in res["pages"]] == list(range(1, config.page_count + 1))
+    assert all(p["image_status"] == "done" and p["image_path"] == f"{prefix}images/page-{p['page_no']:02d}.png"
+               and storage.exists(p["image_path"]) for p in res["pages"]), res["pages"][0]
+    assert {(s["role"], s["name"]) for s in res["character_sheets"]} == {("protagonist", "포포"), ("supporting", "엄마곰")}
+    assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
+    assert set(res["guide"]) == {"prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
+    assert res["cost"]["image_count"] == config.page_count + 2 and res["cost"]["input_tokens"] == 0, res["cost"]
+    assert res["safety"] == {"level": "OK", "category": None, "reason": None}
+    assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
+    err(c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")
+
+    # 형식 오류, 없는 thread
+    tid2 = to_confirm()
+    err(c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body(prefix="../outside/")), 422, "VALIDATION_ERROR")
+    err(c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body(run_no=0)), 422, "VALIDATION_ERROR")
+    err(c.post(f"/v1/threads/{uuid.uuid4()}/generate", headers=H, json=run_body()), 404, "THREAD_NOT_FOUND")
+    err(c.get(f"/v1/threads/{uuid.uuid4()}/status", headers=H), 404, "THREAD_NOT_FOUND")
+    assert status(tid2)["state"] == "CONFIRMING"   # 거절된 요청은 아무것도 바꾸지 않는다
+
+    # 진행 중: 설계에서 붙잡아 두고 RUNNING·THREAD_BUSY 확인
+    gate = threading.Event()
+
+    def held(**kw):
+        if kw["node"] == "design_story":
+            gate.wait(10)
+        return mock.fake_structured(**kw)
+
+    llm.set_structured_override(held)
+    assert c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body()).status_code == 202
+    st = status(tid2)
+    assert st["state"] == "RUNNING" and st["current_node"] == "design_story" and st["stage"] == 1, st
+    err(c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body()), 409, "THREAD_BUSY")
+    err(c.post(f"/v1/threads/{tid2}/interview/answer", headers=H, json={"answer": "a"}), 409, "THREAD_BUSY")
+    err(c.get(f"/v1/threads/{tid2}/result", headers=H), 409, "INVALID_STATE")
+    gate.set()
+    assert wait(tid2, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    mock.enable()
+
+    # 실패: 글 쓰기에서 예외 → FAILED, error에 code·node. 잠금은 풀린다
+    tid3 = to_confirm()
+
+    def broken(**kw):
+        if kw["node"] == "write_story":
+            raise RuntimeError("OpenAI 장애 흉내")
+        return mock.fake_structured(**kw)
+
+    llm.set_structured_override(broken)
+    assert c.post(f"/v1/threads/{tid3}/generate", headers=H, json=run_body()).status_code == 202
+    st = wait(tid3, {"FAILED", "REVIEWING"})
+    assert st["state"] == "FAILED" and st["error"]["code"] == "GENERATION_FAILED", st
+    assert st["error"]["node"] == "write_story" and st["stage"] == 2, st
+    err(c.get(f"/v1/threads/{tid3}/result", headers=H), 409, "INVALID_STATE")
+    err(c.post(f"/v1/threads/{tid3}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")   # 잠금은 풀렸다
+    mock.enable()
+
+    # 서버가 꺼질 때 돌던 실행: 다시 띄우면 FAILED(SERVER_RESTARTED)
+    tid4 = to_confirm()
+    server._runs.start(tid4, 1, "illustrate", 0)
+with TestClient(server.app, raise_server_exceptions=False) as c:
+    st = c.get(f"/v1/threads/{tid4}/status", headers=H).json()
+    assert st["state"] == "FAILED" and st["error"]["code"] == "SERVER_RESTARTED", st
+    assert c.get(f"/v1/threads/{tid}/status", headers=H).json()["state"] == "REVIEWING"   # 끝난 실행은 그대로
+print("generation ok")
 
 # ── mock이 아니면: /health는 mock false, /safety/check는 아직 501 ──
 real = server.config
