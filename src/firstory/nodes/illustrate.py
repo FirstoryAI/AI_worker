@@ -140,9 +140,18 @@ def illustrate(state: PipelineState) -> dict:
     return {"illustrations": ill, "cost": costs}
 
 
+_PAGE_RE = re.compile(r"((?:\d+\s*,\s*)*\d+)\s*(?:쪽|페이지)|p\s*(\d+)", re.I)
+
+
+def _pages_from_feedback(fb: str) -> set[int] | None:
+    """쪽·페이지·p가 붙은 숫자만 쪽 번호로 ("3쪽 다리 4개로" → {3}). 숫자만 쓴 피드백("3", "3, 5")도 쪽 번호."""
+    pages = {int(n) for m in _PAGE_RE.finditer(fb) for n in re.findall(r"\d+", m.group(0))}
+    pages |= {int(t) for t in fb.replace(",", " ").split() if t.isdigit()}
+    return pages or None
+
+
 def illustrate_only(state: PipelineState) -> dict:
     """재생성 scope=images: 그림만 다시 (feedback에 페이지 번호가 있으면 그 페이지만)."""
-    fb = state.get("review_feedback") or ""
-    pages = {int(t) for t in re.findall(r"\d+", fb)} or None  # "3페이지", "3, 5쪽", "p3"
+    pages = _pages_from_feedback(state.get("review_feedback") or "")
     ill, costs = _run(state["story"], Path(state["run_dir"]) / "images", only_pages=pages, prev=state.get("illustrations"))
     return {"illustrations": ill, "cost": costs}
