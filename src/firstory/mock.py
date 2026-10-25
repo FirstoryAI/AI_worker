@@ -34,7 +34,8 @@ def fake_structured(*, node, model, schema, system, user):
         return InterviewTurnResult(context_update=ParentUpdate(message_direction="comfort_first", message="네 잘못 아니야"),
                                    status="sufficient", reason="다 채워짐")
     if schema is InterviewSummary:
-        return InterviewSummary(summary="이 부모는 아이 마음을 먼저 받아주고 싶어하며, 친구를 나쁘게 만들고 싶지 않다.")
+        return InterviewSummary(summary="이 부모는 아이 마음을 먼저 받아주고 싶어하며, 친구를 나쁘게 만들고 싶지 않다.",
+                                parent_summary="속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요.")
     if schema.__name__.startswith("StoryDesign"):  # 전략에 따라 칸이 더 붙은 스키마도 같이
         extra = {"want": "다람쥐랑 같이 그리고 싶다",
                  "attempts": [Attempt(action=f"시도 {i}", result="안 됨" if i < 3 else "됨") for i in (1, 2, 3)],

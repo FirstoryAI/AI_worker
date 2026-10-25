@@ -116,7 +116,8 @@ class InterviewTurnResult(BaseModel):
 
 
 class InterviewSummary(BaseModel):
-    summary: str = Field(description="이 부모는 ~를 걱정하고 ~를 전하고 싶어한다 — 한 문단")
+    summary: str = Field(description="이 부모는 ~를 걱정하고 ~를 전하고 싶어한다 — 한 문단 (동화 생성기·독서 코치용)")
+    parent_summary: str = Field(description="부모에게 보여 줄 '이번 이야기에서 나누고 싶은 것' — 부모 입말 해요체 1~2문장")
 
 
 class Turn(BaseModel):

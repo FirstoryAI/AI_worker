@@ -17,7 +17,7 @@ from langgraph.types import interrupt
 from .. import storage
 from ..config import config
 from ..llm import prompt, structured
-from ..schemas import InterviewSummary, InterviewTurnResult, Turn
+from ..schemas import InterviewSummary, InterviewTurnResult, StoryInputContext, Turn
 from ..state import PipelineState
 
 _persona = prompt("_persona")
@@ -143,22 +143,40 @@ def interview_finish(state: PipelineState) -> dict:
             context=ctx,
             turns=[t.model_dump() for t in turns] or "(질문 없이 종료)",
         ),
-        user="한 문단으로 정리하세요.",
+        user="한 문단으로 정리하고, 부모에게 보여 줄 parent_summary도 쓰세요.",
         reasoning="low",
     )
-    return {"interview_summary": s.summary, "cost": [cost]}
+    return {"interview_summary": s.summary, "interview_parent_summary": s.parent_summary, "cost": [cost]}
+
+
+def merge_confirmed_context(current: StoryInputContext, edited: dict) -> StoryInputContext:
+    """확인 화면에서 고친 입력(Spring이 보낸 지금 입력 전체)을 인터뷰가 채운 context에 합친다.
+    - child: Spring 것 (인터뷰는 아이 정보를 바꾸지 않는다)
+    - situation: 바뀌었으면 Spring 것을 moment와 함께 (상황 화면이 반응·감정까지 받는다).
+      안 바뀌었으면 인터뷰가 보충한 moment를 지킨다
+    - parent.message: Spring 것 (전하고 싶은 말을 고쳤을 수 있다). 나머지 parent 칸은 인터뷰가 채운 그대로"""
+    new = StoryInputContext.model_validate(edited)
+    out = current.model_copy(deep=True)
+    out.child = new.child
+    if new.situation != current.situation:
+        out.situation, out.moment = new.situation, new.moment
+    if new.parent.message is not None:
+        out.parent.message = new.parent.message
+    return out
 
 
 def confirm_generate(state: PipelineState) -> dict:
     """⏸ 생성 전 확인 (화면 CRT-06). 인터뷰 요약·최종 Context를 보여주고 부모가 [만들기]를 누르면 재개.
-    재개 값 {"action": "generate", "tone": ..., "output_prefix": ...}. tone 없으면 시작할 때 받은 값 유지,
-    output_prefix가 있으면 이번 실행의 결과물을 그 아래에 쓴다 (없으면 form_input이 정한 자리). LLM 호출 없음 (interview_answer와 같은 이유).
+    재개 값 {"action": "generate", "tone": ..., "output_prefix": ..., "context": ..., "summary": ...}.
+    tone 없으면 시작할 때 받은 값 유지, output_prefix가 있으면 이번 실행의 결과물을 그 아래에 쓴다 (없으면 form_input이 정한 자리).
+    context·summary는 부모가 확인 화면에서 고친 입력과 '나누고 싶은 것' (merge_confirmed_context, 고쳐 쓴 문장은 정리에 덧붙인다).
+    LLM 호출 없음 (interview_answer와 같은 이유).
     LangGraph는 빈 재개 값(None·{})을 재개로 치지 않으므로, 호출하는 쪽은 최소 {"action": "generate"}를 보낸다."""
     if state.get("auto_confirm"):
         return {"status": "generating_text"}
     r = interrupt({
         "type": "confirm",
-        "summary": state.get("interview_summary"),
+        "summary": state.get("interview_parent_summary") or state.get("interview_summary"),   # 부모에게 보여 줄 문장
         "end_reason": state.get("interview_done_by"),
         "context": state["context"].model_dump(),
     })
@@ -168,6 +186,13 @@ def confirm_generate(state: PipelineState) -> dict:
         out["tone"] = r["tone"]
     if r.get("output_prefix"):
         out.update(storage.run_fields(r["output_prefix"]))
+    if r.get("context"):
+        out["context"] = merge_confirmed_context(state["context"], r["context"])
+    edited = (r.get("summary") or "").strip()
+    if edited and edited != (state.get("interview_parent_summary") or "").strip():
+        out["interview_parent_summary"] = edited
+        out["interview_summary"] = (f"{state.get('interview_summary') or ''}\n\n"
+                                    f"부모가 확인 화면에서 고쳐 쓴 '이번 이야기에서 나누고 싶은 것': {edited}").strip()
     return out
 
 

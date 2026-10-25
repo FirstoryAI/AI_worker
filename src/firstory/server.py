@@ -266,6 +266,8 @@ class RunRequest(BaseModel):
     run_no: int = Field(ge=1)
     output_prefix: str = Field(min_length=1)   # stories/{storyId}/runs/{runNo}/
     tone: Optional[Literal["plain", "warm", "undecided"]] = None
+    context: Optional[StoryInputContext] = None   # generate만: 확인 화면에서 고친 지금 입력 전체
+    summary: Optional[str] = None                 # generate만: 부모가 본(고쳤을 수 있는) '나누고 싶은 것'
 
 
 @app.post("/v1/threads/{thread_id}/generate", status_code=202)
@@ -281,7 +283,10 @@ def generate(thread_id: str, body: RunRequest) -> dict:
             storage.run_fields(body.output_prefix)
         except ValueError as e:
             raise ApiError(422, "VALIDATION_ERROR", f"output_prefix: {e}") from e
-        resume = {"action": "generate", "output_prefix": body.output_prefix, **({"tone": body.tone} if body.tone else {})}
+        resume = {"action": "generate", "output_prefix": body.output_prefix,
+                  **({"tone": body.tone} if body.tone else {}),
+                  **({"context": body.context.model_dump(mode="json")} if body.context else {}),
+                  **({"summary": body.summary} if body.summary else {})}
         _start_run(thread_id, lock, body.run_id, body.run_no, Command(resume=resume), "design_story",
                    len(snap.values.get("cost", [])))
     except BaseException:
