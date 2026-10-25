@@ -140,7 +140,8 @@ def make_base(sample: Path) -> Path:
     data.pop("_note", None)
     answers = data.pop("scripted_answers", [])
     r = compile_graph().invoke(
-        {"context": data, "run_name": sample.stem, "auto_answers": answers, "auto_approve": True, "skip_images": True},
+        {"context": data, "run_name": sample.stem, "auto_answers": answers, "auto_confirm": True, "auto_approve": True,
+         "skip_images": True},
         {"configurable": {"thread_id": new_thread_id()}},
     )
     return Path(r["run_dir"])

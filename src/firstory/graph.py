@@ -4,6 +4,9 @@ FIRSTORY 그래프. ARCHITECTURE.md §2.
  form_input ─▶ interview_step ─ask─▶ interview_answer ─▶ interview_step … ─done─▶ interview_finish
                                                                                       │
                                                                                       ▼
+                                                                           ⏸ confirm_generate   ← 생성 전 확인 (CRT-06)
+                                                                                      │
+                                                                                      ▼
                                    (regen: character/story) ─────────────────▶ design_story
                                                                                       │
                                    (regen: text) ────────────────────────────▶ write_story
@@ -39,7 +42,9 @@ from langgraph.graph import END, START, StateGraph
 from . import schemas
 from .config import config
 from .nodes.illustrate import illustrate, illustrate_only
-from .nodes.interview import interview_answer, interview_finish, interview_step, route_after_answer, route_after_step
+from .nodes.interview import (
+    confirm_generate, interview_answer, interview_finish, interview_step, route_after_answer, route_after_step,
+)
 from .nodes.render import render
 from .nodes.story import (
     design_story, parent_review, polish_story, reading_guide, route_after_review, write_story,
@@ -64,6 +69,7 @@ def build_graph():
         ("interview_step", interview_step),
         ("interview_answer", interview_answer),
         ("interview_finish", interview_finish),
+        ("confirm_generate", confirm_generate),
         ("design_story", design_story),
         ("write_story", write_story),
         ("polish_story", polish_story),
@@ -79,7 +85,8 @@ def build_graph():
     g.add_edge("form_input", "interview_step")
     g.add_conditional_edges("interview_step", route_after_step, ["interview_answer", "interview_finish"])
     g.add_conditional_edges("interview_answer", route_after_answer, ["interview_step", "interview_finish"])
-    g.add_edge("interview_finish", "design_story")
+    g.add_edge("interview_finish", "confirm_generate")
+    g.add_edge("confirm_generate", "design_story")
     g.add_edge("design_story", "write_story")
     g.add_edge("write_story", "polish_story")
     # 🔒 ④-1: 텍스트 완료 → 가이드 ∥ 이미지 (fan-out) → render (fan-in)

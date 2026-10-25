@@ -87,6 +87,7 @@ with st.sidebar:
             "context": data,
             "run_name": sample.stem,
             "auto_answers": answers if mode.startswith("자동") else [],
+            "auto_confirm": mode.startswith("자동"),   # 직접 답하기일 때만 생성 전 확인에서 멈춤
             "auto_approve": False,
             "skip_images": skip_images,
             "strategy": Strategy(**{k: True for k in strat}),
@@ -157,6 +158,19 @@ if pause and pause.get("type") == "interview":
     if c2.button("이만 만들어주세요 (skip)"):
         with st.spinner("생성 중…"):
             r, pause = run_until_pause(Command(resume="skip"), tid)
+        st.session_state.update(result=r, pause=pause); st.rerun()
+    st.stop()
+
+# ── 생성 전 확인 ──
+if pause and pause.get("type") == "confirm":
+    st.subheader("이렇게 만들까요?")
+    st.caption(f"인터뷰 종료: {pause.get('end_reason')}")
+    st.markdown(pause.get("summary") or "(요약 없음)")
+    with st.expander("최종 Context"):
+        st.json(pause.get("context"))
+    if st.button("이대로 만들기", type="primary"):
+        with st.spinner("생성 중… (이미지 포함 1~3분)"):
+            r, pause = run_until_pause(Command(resume={"action": "generate"}), tid)
         st.session_state.update(result=r, pause=pause); st.rerun()
     st.stop()
 

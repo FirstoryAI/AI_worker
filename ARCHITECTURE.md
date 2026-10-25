@@ -46,6 +46,9 @@ FIRSTORY 플로우는 직선이 아니다.
                interview_finish  (summary 한 문단)
                       │
                       ▼
+             ⏸ confirm_generate  ← 생성 전 확인 (CRT-06). 요약·최종 Context 보여주고 [만들기]
+                      │
+                      ▼
           💡 design_story   ◀──────────────────────── regenerate: character / story
                       │
                       ▼
@@ -77,6 +80,7 @@ FIRSTORY 플로우는 직선이 아니다.
 |---|---|---|---|---|
 | `form_input` | – | – | 1차 폼 JSON 검증 → `StoryInputContext` (parent 비어 있음) | 🔒 ① |
 | `interview` | **Role A · 인터뷰어** | light | Context + 대화 이력 + `missingFields` + `remaining` → `InterviewTurnResult` | 🔒 ② |
+| `confirm_generate` | – | – | `interrupt()`. 인터뷰 요약·최종 Context를 보여주고 부모가 확인하면 생성 시작. 재개 값 `{action: "generate", tone}`. `auto_confirm`이면 안 멈춤 | 화면 CRT-06 |
 | `design_story` | 💡 작가(설계) | main | Context + summary → 간접화 설정 (주인공·세계·상황 재구성, 질문 씨앗) | 기획안 9 |
 | `write_story` | **동화 생성기** | main | Context + summary (+설계, +피드백) → 전체 텍스트 + `characterSheet` + 페이지별 `imagePrompt` | 🔒 ④-1 |
 | `parent_review` | – | – | `interrupt()`. 텍스트+이미지+가이드 **완성 후** 부모가 확인. 완료 / 재생성(scope) | 기획안 10, STEP 5 |
