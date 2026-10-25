@@ -35,6 +35,8 @@ FIRSTORY_INTERNAL_TOKEN=local-test-token FIRSTORY_MOCK=true uv run uvicorn first
 uv run python evals/api_run.py                                # 서버 배선 확인 (인증, 오류 형식, mock)
 ```
 
+결과물은 `FIRSTORY_OUTPUT_ROOT`(없으면 `out/`) 아래 실행의 `output_prefix`(Spring이 실행마다 주는 `stories/{id}/runs/{n}/`)에 쓴다. 그림만 다시 그리면 안 바뀐 쪽과 캐릭터 시트는 이전 실행의 파일을 그대로 가리킨다 (`src/firstory/storage.py`). CLI·뷰어는 `output_prefix`가 없어 예전처럼 `out/<타임스탬프>_<이름>/`이다.
+
 `FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). `/v1/safety/check`는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
 
 실행마다 `out/<타임스탬프>/`에 `00-context.json … 05-illustrations.json`, `images/`, `book.html`, `99-cost.json`이 남고,
