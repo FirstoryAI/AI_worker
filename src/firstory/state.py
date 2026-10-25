@@ -29,7 +29,8 @@ class PipelineState(TypedDict, total=False):
     pending_question: Optional[str]          # interview_step → interview_answer 로 넘기는 질문
     pending_reason: str
     interview_done_by: Optional[Literal["sufficient", "max_turns", "user_skip"]]
-    interview_summary: Optional[str]
+    interview_summary: Optional[str]                 # 동화 생성기·독서 코치가 읽는 정리 ("이 부모는 ~")
+    interview_parent_summary: Optional[str]          # 부모에게 보여 주는 '이번 이야기에서 나누고 싶은 것' (확인 화면에서 고칠 수 있다)
     tone: Optional[Literal["plain", "warm", "undecided"]]   # 민감 주제일 때 부모가 고른 분위기 (시작 또는 confirm_generate 재개 값)
     # 💡 설계
     story_design: Optional[StoryDesign]      # 전략에 따라 StoryDesignEngine 등 칸이 더 붙은 스키마
