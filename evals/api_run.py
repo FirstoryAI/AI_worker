@@ -1,5 +1,5 @@
 """
-FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, mock /safety/check, 인터뷰, 생성. (uv run python evals/api_run.py)
+FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, mock /safety/check, 인터뷰, 생성, 검토·재시도. (uv run python evals/api_run.py)
 서버를 띄우지 않고 TestClient로 부른다. OpenAI 호출 없음.
 """
 from __future__ import annotations
@@ -256,6 +256,109 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert st["state"] == "FAILED" and st["error"]["code"] == "SERVER_RESTARTED", st
     assert c.get(f"/v1/threads/{tid}/status", headers=H).json()["state"] == "REVIEWING"   # 끝난 실행은 그대로
 print("generation ok")
+
+# ── 검토·재시도 (스펙 7-7, 7-8, 8장 버전 갈래) ──
+with TestClient(server.app, raise_server_exceptions=False) as c:
+    def review(t, **body):
+        return c.post(f"/v1/threads/{t}/review", headers=H, json=body)
+
+    def result(t):
+        r = c.get(f"/v1/threads/{t}/result", headers=H)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def regen(scope, run_no, base, **extra):
+        return {"action": "regenerate", "scope": scope, "pages": [], "feedback": None, "base_checkpoint_id": base,
+                "run_id": str(uuid.uuid4()), "run_no": run_no, "output_prefix": f"stories/12/runs/{run_no}/"} | extra
+
+    def accepted(r):
+        assert r.status_code == 202 and r.json() == {"accepted": True}, r.text
+
+    def page_paths(res):
+        return {p["page_no"]: p["image_path"] for p in res["pages"]}
+
+    # v1(생성 테스트의 tid, runs/1)에서 그림만 다시 3쪽 → v2(runs/2): 3쪽만 새로, 나머지 쪽·시트는 v1 key
+    v1 = result(tid)
+    accepted(review(tid, **regen("images", 2, v1["checkpoint_id"], pages=[3])))
+    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    v2 = result(tid)
+    assert v2["run_no"] == 2 and v2["checkpoint_id"] != v1["checkpoint_id"]
+    assert page_paths(v2)[3] == "stories/12/runs/2/images/page-03.png"
+    assert all(path == f"stories/12/runs/1/images/page-{n:02d}.png" for n, path in page_paths(v2).items() if n != 3)
+    assert v2["character_sheets"] == v1["character_sheets"] and v2["cost"]["image_count"] == 1, v2["cost"]
+
+    # v1로 되돌려 글 다시 → v3(runs/3)는 v1에서 갈라진다. v2 체크포인트도 그대로 남는다
+    accepted(review(tid, **regen("text", 3, v1["checkpoint_id"], feedback="더 짧게")))
+    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    v3 = result(tid)
+    assert v3["run_no"] == 3 and all(path.startswith("stories/12/runs/3/images/") for path in page_paths(v3).values())
+    assert v3["cost"]["image_count"] == config.page_count + 2
+    assert server._graph.get_state(server._cfg(tid)).values["review_feedback"] == "더 짧게"
+    kept = server._graph.get_state({"configurable": {"thread_id": tid, "checkpoint_id": v2["checkpoint_id"]}})
+    assert {pi.order: pi.path for pi in kept.values["illustrations"].pages}[3] == "stories/12/runs/2/images/page-03.png"
+    assert storage.exists("stories/12/runs/2/images/page-03.png") and storage.exists("stories/12/runs/1/images/page-03.png")
+
+    # 이야기·인물 다시 (지금 버전에서) → v4
+    accepted(review(tid, **regen("story", 4, None, feedback="토끼 말고 공룡으로")))
+    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert result(tid)["run_no"] == 4
+
+    # 형식 오류, 없는 thread, 없는 체크포인트
+    err(review(tid, action="regenerate", scope="text"), 422, "VALIDATION_ERROR")
+    err(review(tid, **regen("text", 5, None, pages=[2])), 422, "VALIDATION_ERROR")
+    err(review(tid, **regen("pictures", 5, None)), 422, "VALIDATION_ERROR")
+    err(review(tid, action="publish"), 422, "VALIDATION_ERROR")
+    err(review(tid, **regen("images", 5, None, output_prefix="../outside/")), 422, "VALIDATION_ERROR")
+    err(review(tid, **regen("images", 5, "no-such-checkpoint")), 409, "INVALID_STATE")
+    err(review(str(uuid.uuid4()), action="approve"), 404, "THREAD_NOT_FOUND")
+    assert status(tid)["state"] == "REVIEWING"   # 거절된 요청은 아무것도 바꾸지 않는다
+
+    # 다시 만드는 중에는 같은 thread의 요청이 THREAD_BUSY
+    gate = threading.Event()
+
+    def held(**kw):
+        if kw["node"] == "write_story":
+            gate.wait(10)
+        return mock.fake_structured(**kw)
+
+    llm.set_structured_override(held)
+    accepted(review(tid, **regen("text", 5, None)))
+    st = status(tid)
+    assert st["state"] == "RUNNING" and st["current_node"] == "write_story" and st["run_no"] == 5, st
+    err(review(tid, action="approve"), 409, "THREAD_BUSY")
+    gate.set()
+    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    mock.enable()
+
+    # 확정
+    r = review(tid, action="approve")
+    assert r.status_code == 200 and r.json() == {"state": "COMPLETED"}, r.text
+    assert status(tid)["state"] == "COMPLETED"
+    err(review(tid, action="approve"), 409, "INVALID_STATE")
+    err(c.get(f"/v1/threads/{tid}/result", headers=H), 409, "INVALID_STATE")
+
+    # 재시도: 글 쓰기에서 실패한 실행을 새 output_prefix로 다시
+    tid5 = to_confirm()
+
+    def broken_once(**kw):
+        if kw["node"] == "write_story":
+            raise RuntimeError("OpenAI 장애 흉내")
+        return mock.fake_structured(**kw)
+
+    llm.set_structured_override(broken_once)
+    accepted(c.post(f"/v1/threads/{tid5}/generate", headers=H, json=run_body(prefix="stories/55/runs/1/")))
+    assert wait(tid5, {"FAILED", "REVIEWING"})["state"] == "FAILED"
+    mock.enable()
+    err(c.post(f"/v1/threads/{tid}/retry", headers=H, json=run_body(run_no=9)), 409, "INVALID_STATE")   # 실패한 적 없음
+    err(c.post(f"/v1/threads/{uuid.uuid4()}/retry", headers=H, json=run_body()), 404, "THREAD_NOT_FOUND")
+    accepted(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=2, prefix="stories/55/runs/2/")))
+    st = wait(tid5, {"REVIEWING", "FAILED"})
+    assert st["state"] == "REVIEWING" and st["run_no"] == 2 and st["error"] is None, st
+    retried = result(tid5)
+    assert retried["run_no"] == 2 and all(path.startswith("stories/55/runs/2/images/") for path in page_paths(retried).values())
+    assert not storage.exists("stories/55/runs/1/images/page-01.png")   # 실패한 실행은 그림 전에 멈췄다
+    err(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=3)), 409, "INVALID_STATE")
+print("review / retry ok")
 
 # ── mock이 아니면: /health는 mock false, /safety/check는 아직 501 ──
 real = server.config

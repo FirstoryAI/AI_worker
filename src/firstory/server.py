@@ -4,7 +4,7 @@ FastAPI 서버 — Spring 백엔드가 내부 HTTP로 부르는 AI API (API 스�
   (--http h11: Java HttpClient의 Upgrade: h2c 요청에서 기본 파서가 본문을 버린다. README 참고)
 
 지금 있는 것: 인증(X-Internal-Token), 오류 형식, /health, /v1/safety/check(mock 모드만),
-인터뷰(interview/start, interview/answer), 생성(generate, status, result). 검토·재시도는 다음 단계에서 붙인다.
+인터뷰(interview/start, interview/answer), 생성(generate, status, result), 검토(review), 재시도(retry).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager, contextmanager
 from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from langgraph.types import Command
@@ -26,6 +26,7 @@ from . import mock
 from .config import config
 from . import storage
 from .graph import compile_graph
+from .nodes.story import review_update
 from .runs import Runs
 from .schemas import Illustrations, SafetyResult, StoryInputContext
 
@@ -234,11 +235,14 @@ _PAUSED = {("interview_answer",): "INTERVIEWING", ("interview_step",): "INTERVIE
 
 
 def _start_run(thread_id: str, lock: threading.Lock, run_id: UUID, run_no: int, inp, first_node: str,
-               cost_start: int) -> None:
-    """그래프를 백그라운드에서 돌린다. 끝나거나 실패하면 ai_runs에 적고 thread 잠금을 푼다."""
+               cost_start: int, checkpoint_id: Optional[str] = None) -> None:
+    """그래프를 백그라운드에서 돌린다. 끝나거나 실패하면 ai_runs에 적고 thread 잠금을 푼다.
+    checkpoint_id를 주면 그 체크포인트에서 갈라져 나간다 (이전 버전에서 다시 만들기, 스펙 8장)."""
     _runs.start(thread_id, run_no, first_node, cost_start)
     cfg = _cfg(thread_id, run_id, f"firstory-run-{run_no}")
     cfg["metadata"]["run_no"] = run_no
+    if checkpoint_id:
+        cfg["configurable"]["checkpoint_id"] = checkpoint_id
 
     def work():
         node: Optional[str] = first_node
@@ -336,3 +340,98 @@ def result(thread_id: str) -> dict:
         # TODO(G2): 완성 본문 위기 신호 판단. 만들기 전까지는 OK
         "safety": {"level": "OK", "category": None, "reason": None},
     }
+
+
+# ── 검토·재시도 (스펙 7-7, 7-8) ───────────────────────────────────────────
+
+_REGEN_FIRST_NODE = {"story": "design_story", "text": "write_story", "images": "illustrate_only"}
+
+
+def _at(thread_id: str, snap) -> dict:
+    """update_state에 넘길 그 체크포인트의 config (checkpoint_ns가 꼭 있어야 한다)."""
+    return {"configurable": {"thread_id": thread_id, "checkpoint_ns": "",
+                             "checkpoint_id": snap.config["configurable"]["checkpoint_id"]}}
+
+
+class ReviewRequest(BaseModel):
+    action: Literal["approve", "regenerate"]
+    scope: Optional[Literal["story", "text", "images"]] = None
+    pages: list[int] = []                       # images일 때 다시 그릴 쪽. 비면 전부
+    feedback: Optional[str] = None              # 부모 메모 (Spring이 위기 신호를 먼저 검사한다)
+    base_checkpoint_id: Optional[str] = None    # 이 버전에서 다시 만든다. 없으면 지금 상태에서
+    run_id: Optional[UUID] = None
+    run_no: Optional[int] = Field(None, ge=1)
+    output_prefix: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _regenerate_fields(self):
+        if self.action == "regenerate" and not (self.scope and self.run_id and self.run_no and self.output_prefix):
+            raise ValueError("regenerate에는 scope, run_id, run_no, output_prefix가 필요합니다")
+        if self.pages and self.scope != "images":
+            raise ValueError("pages는 scope가 images일 때만 보낼 수 있습니다")
+        return self
+
+
+def _check_prefix(prefix: str) -> None:
+    try:
+        storage.run_fields(prefix)
+    except ValueError as e:
+        raise ApiError(422, "VALIDATION_ERROR", f"output_prefix: {e}") from e
+
+
+@app.post("/v1/threads/{thread_id}/review")
+def review(thread_id: str, body: ReviewRequest, response: Response) -> dict:
+    lock = _acquire(thread_id)
+    handed_off = False   # 백그라운드 실행에 잠금을 넘겼으면 여기서 풀지 않는다
+    try:
+        if not _graph.get_state(_cfg(thread_id)).values:
+            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        cfg = _cfg(thread_id)
+        if body.base_checkpoint_id:
+            cfg["configurable"]["checkpoint_id"] = body.base_checkpoint_id
+        snap = _graph.get_state(cfg)
+        if tuple(snap.next) != ("parent_review",):
+            raise ApiError(409, "INVALID_STATE", "부모 검토에서 멈춰 있지 않습니다 (없는 checkpoint_id일 수도 있습니다)")
+        # 멈춘 interrupt를 Command(resume)로 풀지 않고, parent_review가 이 값을 돌려준 것으로 새 체크포인트를 만든다.
+        # 한 번 재개한 체크포인트를 다시 재개하면 LangGraph가 처음 재개 값을 다시 써서 (이전 버전에서 다시 만들기가
+        # 그 전 다시 만들기를 되풀이한다), 이렇게 해야 이전 버전에서 새 갈래가 나온다
+        if body.action == "approve":
+            _graph.invoke(None, _graph.update_state(_at(thread_id, snap), review_update({"action": "approve"}),
+                                                    as_node="parent_review"))
+            return {"state": "COMPLETED"}
+        _check_prefix(body.output_prefix)
+        # 그림만 다시는 쪽 번호를 "3,5"로 (illustrate_only가 feedback에서 쪽 번호를 읽는다)
+        feedback = ",".join(map(str, body.pages)) if body.scope == "images" else body.feedback
+        branch = _graph.update_state(_at(thread_id, snap), review_update({
+            "action": "regenerate", "scope": body.scope, "feedback": feedback, "output_prefix": body.output_prefix,
+        }), as_node="parent_review")
+        _start_run(thread_id, lock, body.run_id, body.run_no, None, _REGEN_FIRST_NODE[body.scope],
+                   len(snap.values.get("cost", [])), branch["configurable"]["checkpoint_id"])
+        handed_off = True
+        response.status_code = 202
+        return {"accepted": True}
+    finally:
+        if not handed_off:
+            lock.release()
+
+
+@app.post("/v1/threads/{thread_id}/retry", status_code=202)
+def retry(thread_id: str, body: RunRequest) -> dict:
+    """FAILED에서 마지막 체크포인트부터 다시. 이번 실행의 결과물은 새 output_prefix 아래에."""
+    lock = _acquire(thread_id)
+    handed_off = False
+    try:
+        cfg = _cfg(thread_id)
+        snap = _graph.get_state(cfg)
+        if not snap.values:
+            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        if status(thread_id)["state"] != "FAILED":
+            raise ApiError(409, "INVALID_STATE", "실패한 실행이 없습니다")
+        _check_prefix(body.output_prefix)
+        _graph.update_state(cfg, storage.run_fields(body.output_prefix))   # 멈춘 자리(next)는 그대로
+        _start_run(thread_id, lock, body.run_id, body.run_no, None, snap.next[0], len(snap.values.get("cost", [])))
+        handed_off = True
+        return {"accepted": True}
+    finally:
+        if not handed_off:
+            lock.release()
