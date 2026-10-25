@@ -1,7 +1,7 @@
 """
 CLI.
-  uv run firstory datasets/inputs/donggeul.json              # 인터뷰·검토를 터미널에서
-  uv run firstory datasets/inputs/donggeul.json --auto       # 스크립트 답변 + 자동 완료
+  uv run firstory datasets/inputs/donggeul.json              # 인터뷰·생성 전 확인·검토를 터미널에서
+  uv run firstory datasets/inputs/donggeul.json --auto       # 스크립트 답변 + 확인·검토 자동 통과
   uv run firstory datasets/inputs/donggeul.json --skip-images
   uv run firstory datasets/inputs/donggeul.json --strategy arc,engine   # 프롬프트 전략 켜기 (schemas.Strategy)
   uv run firstory --resume <thread_id>                        # 멈춘 곳부터 재개
@@ -46,6 +46,12 @@ def handle_interrupt(payload: dict, args) -> object:
             print(f"{C['b']}부모{C['0']} › skip  {C['d']}(--auto){C['0']}")
             return "skip"
         return input(f"{C['b']}부모{C['0']} › ").strip()
+    if t == "confirm":
+        say("c", f"\n인터뷰 정리 ({payload.get('end_reason')})")
+        print(f"  {payload.get('summary')}")
+        if not args.auto:
+            input(f"\n  {C['d']}[Enter] 이대로 만들기{C['0']} › ")
+        return {"action": "generate"}
     if t == "review":
         print_story(payload["story"], payload.get("guide"))
         say("g", f"\n  → {payload['run_dir']}/book.html 을 열어서 그림까지 확인")
@@ -108,6 +114,7 @@ def main(argv=None):
             "context": data,
             "run_name": Path(args.input).stem,
             "auto_answers": auto_answers if args.auto else [],
+            "auto_confirm": args.auto,
             "auto_approve": args.auto,
             "skip_images": args.skip_images,
             "strategy": Strategy(**{k: True for k in keys}),

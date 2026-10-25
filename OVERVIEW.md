@@ -20,16 +20,17 @@
 ## 흐름
 
 ```
-form_input ─▶ interview(루프) ─▶ design_story ─▶ write_story ─▶ polish_story ─┬─▶ reading_guide ─┐
-                                                                               └─▶ illustrate    ─┴─▶ render ─▶ ⏸ parent_review
-                                                                                                                     │
-                                         완료 → END  /  다시 만들기: 인물·이야기 → design_story, 글 → write_story, 그림만 → illustrate_only
+form_input ─▶ interview(루프) ─▶ ⏸ 확인 ─▶ design_story ─▶ write_story ─▶ polish_story ─┬─▶ reading_guide ─┐
+                                                                                       └─▶ illustrate    ─┴─▶ render ─▶ ⏸ parent_review
+                                                                                                                             │
+                                                 완료 → END  /  다시 만들기: 인물·이야기 → design_story, 글 → write_story, 그림만 → illustrate_only
 ```
 
 | 노드 | 하는 일 | 모델 |
 |---|---|---|
 | `form_input` | 1차 폼 JSON 검증. 백엔드 사전조사 ①의 `StoryInputContext` 그대로 (pydantic) | – |
 | `interview` | 비어 있는 필드(`concern`, `message_direction`)만 묻는다. 매 턴 **추출+질문 동시**, `missingFields`는 코드가 계산, 종료는 AI+코드 이중 확인. "모르겠다"→정리 질문 2회→`undecided`. 최대 5턴, skip 가능. 끝에 `summary` 한 문단 | mini |
+| `confirm_generate` | 생성 전 확인. 인터뷰 요약·최종 Context를 보여주고 멈춤, 부모가 [만들기]를 누르면 생성 시작 (`auto_confirm`이면 안 멈춤) | – |
 | `design_story` | 간접화 설계: 주인공(아이 관심사에서)·조연·세계·상황 재구성, 원인 1개(`problem_cause`), 주인공이 낸 해결 방법(`solution`), 부모가 바란 장면(`must_show`), 10쪽 줄거리 | 5.5 |
 | `write_story` | 10페이지 텍스트 + 캐릭터 시트(주인공·조연 외형) + 페이지별 이미지 프롬프트. **교훈 선언 금지, 사건은 닫고 의미는 엶, 사람·가족 호칭 금지, 질문은 안 씀** | 5.5 |
 | `polish_story` | 문장만 다듬기. 작가(이야기·구성)와 역할을 나눠 번역투·한 문장에 두 가지·꾸밈말을 아이 말로 고친다. 원문은 `03-draft.json` | 5.5 |

@@ -30,6 +30,7 @@ class PipelineState(TypedDict, total=False):
     pending_reason: str
     interview_done_by: Optional[Literal["sufficient", "max_turns", "user_skip"]]
     interview_summary: Optional[str]
+    tone: Optional[Literal["plain", "warm", "undecided"]]   # 민감 주제일 때 부모가 고른 분위기 (시작 또는 confirm_generate 재개 값)
     # 💡 설계
     story_design: Optional[StoryDesign]      # 전략에 따라 StoryDesignEngine 등 칸이 더 붙은 스키마
     # 생성
@@ -50,6 +51,7 @@ class PipelineState(TypedDict, total=False):
     # 옵션
     run_name: str                            # out/ 폴더 이름에 붙는 샘플 이름
     auto_answers: list[str]                  # --auto: 인터뷰 질문에 순서대로 자동 답변
+    auto_confirm: bool                       # confirm_generate 를 멈추지 않고 바로 생성
     auto_approve: bool                       # parent_review 를 멈추지 않고 완료 처리
     skip_images: bool
     strategy: Strategy                       # 프롬프트 전략. 없으면 전부 꺼짐 (지금 프롬프트 그대로)

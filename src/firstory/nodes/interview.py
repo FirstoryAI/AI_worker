@@ -145,7 +145,26 @@ def interview_finish(state: PipelineState) -> dict:
         user="한 문단으로 정리하세요.",
         reasoning="low",
     )
-    return {"interview_summary": s.summary, "cost": [cost], "status": "generating_text"}
+    return {"interview_summary": s.summary, "cost": [cost]}
+
+
+def confirm_generate(state: PipelineState) -> dict:
+    """⏸ 생성 전 확인 (화면 CRT-06). 인터뷰 요약·최종 Context를 보여주고 부모가 [만들기]를 누르면 재개.
+    재개 값 {"action": "generate", "tone": ...}. tone 없으면 시작할 때 받은 값 유지. LLM 호출 없음 (interview_answer와 같은 이유).
+    LangGraph는 빈 재개 값(None·{})을 재개로 치지 않으므로, 호출하는 쪽은 최소 {"action": "generate"}를 보낸다."""
+    if state.get("auto_confirm"):
+        return {"status": "generating_text"}
+    r = interrupt({
+        "type": "confirm",
+        "summary": state.get("interview_summary"),
+        "end_reason": state.get("interview_done_by"),
+        "context": state["context"].model_dump(),
+    })
+    r = r if isinstance(r, dict) else {}
+    out: dict = {"status": "generating_text"}
+    if r.get("tone"):  # 안 주면 시작할 때 받은 tone 유지
+        out["tone"] = r["tone"]
+    return out
 
 
 def route_after_step(state: PipelineState) -> str:

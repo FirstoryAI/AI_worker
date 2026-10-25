@@ -43,9 +43,9 @@ uv run python evals/api_run.py                                # 서버 배선 �
 ## 흐름
 
 ```
-form_input → interview(루프) → design_story → write_story → [reading_guide ∥ illustrate] → render → ⏸ parent_review
-                                                                                                          │
-                                       approve → END   /   regenerate(scope) → design_story | write_story | illustrate_only
+form_input → interview(루프) → ⏸ confirm_generate → design_story → write_story → [reading_guide ∥ illustrate] → render → ⏸ parent_review
+                                                                                                                               │
+                                                            approve → END   /   regenerate(scope) → design_story | write_story | illustrate_only
 ```
 
 - 자동으로 도는 건 쓰기 1회. 재생성·그림 재시도는 뷰어/CLI 버튼으로 사람이.
