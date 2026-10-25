@@ -119,6 +119,34 @@ assert nodes.count("illustrate:page3") == 2 and nodes.count("illustrate:page1") 
 assert nodes.count("illustrate:sheet:포포") == 1 and nodes.count("illustrate:sheet:엄마곰") == 1, nodes  # 시트는 재사용
 print("run_dir:", r["run_dir"])
 
+# ── 1-2) 재생성 피드백: character는 설계 프롬프트에, images는 "3페이지"·"3, 5쪽"·"p3"에서 쪽 번호만 ──
+_turn["n"] = 0
+cfg1b = {"configurable": {"thread_id": new_thread_id()}}
+r = graph.invoke({"context": data, "auto_answers": ["a1", "a2"], "auto_approve": False, "skip_images": False}, cfg1b)
+assert "## 부모 요청" not in [s for n, s in _prompts if n == "design_story"][-1]   # 처음 설계엔 요청 블록 없음
+resumes = [
+    {"action": "regenerate", "scope": "character", "feedback": "토끼 말고 공룡으로 바꿔 주세요"},
+    {"action": "regenerate", "scope": "images", "feedback": "3페이지"},
+    {"action": "regenerate", "scope": "images", "feedback": "3, 5쪽"},
+    {"action": "regenerate", "scope": "images", "feedback": "p3"},
+    {"action": "regenerate", "scope": "images", "feedback": "전부 다시"},
+    {"action": "approve"},
+]
+redrawn = []   # 재생성 한 번마다 다시 그린 페이지
+for i, cmd in enumerate(resumes):
+    assert r["__interrupt__"][0].value["type"] == "review", r.get("__interrupt__")
+    before = len(graph.get_state(cfg1b).values["cost"])
+    r = graph.invoke(Command(resume=cmd), cfg1b)
+    if i == 0:
+        design = [s for n, s in _prompts if n == "design_story"][-1]
+        assert "## 부모 요청" in design and "토끼 말고 공룡으로 바꿔 주세요" in design, design[-300:]
+    if cmd["action"] == "regenerate" and cmd["scope"] == "images":
+        new = graph.get_state(cfg1b).values["cost"][before:]
+        redrawn.append(sorted(int(c.node.removeprefix("illustrate:page")) for c in new if c.node.startswith("illustrate:page")))
+assert r["status"] == "completed"
+assert redrawn == [[3], [3, 5], [3], list(range(1, 9))], redrawn   # 숫자 없으면 기존대로 전부
+print("regen feedback ok:", redrawn)
+
 # ── 2) --auto 경로: scripted answers + auto_approve + 병렬 fan-in ──
 _turn["n"] = 0
 tid2 = new_thread_id()
