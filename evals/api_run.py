@@ -354,11 +354,13 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert v2["character_sheets"] == v1["character_sheets"] and v2["cost"]["image_count"] == 1, v2["cost"]
 
     # v1로 되돌려 글 다시 → v3(runs/3)는 v1에서 갈라진다. v2 체크포인트도 그대로 남는다
+    # mock 작가는 1쪽만 고쳐 그 쪽 장면이 바뀐다 → 1쪽만 runs/3에 새로 그리고 나머지 쪽·시트는 v1 key
     accepted(review(tid, **regen("text", 3, v1["checkpoint_id"], feedback="더 짧게")))
     assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
     v3 = result(tid)
-    assert v3["run_no"] == 3 and all(path.startswith("stories/12/runs/3/images/") for path in page_paths(v3).values())
-    assert v3["cost"]["image_count"] == config.page_count + 2
+    assert v3["run_no"] == 3 and page_paths(v3)[1] == "stories/12/runs/3/images/page-01.png"
+    assert all(path == page_paths(v1)[n] for n, path in page_paths(v3).items() if n != 1)
+    assert v3["character_sheets"] == v1["character_sheets"] and v3["cost"]["image_count"] == 1, v3["cost"]
     assert server._graph.get_state(server._cfg(tid)).values["review_feedback"] == "더 짧게"
     kept = server._graph.get_state({"configurable": {"thread_id": tid, "checkpoint_id": v2["checkpoint_id"]}})
     assert {pi.order: pi.path for pi in kept.values["illustrations"].pages}[3] == "stories/12/runs/2/images/page-03.png"
@@ -428,14 +430,17 @@ print("review / retry ok")
 
 # ── 글 다시 만들기: 작가는 메모 때문에 고친 쪽만 돌려주고, 나머지 쪽은 이전 원고 그대로. 다듬기는 메모를 받고 고친 쪽만 ──
 polish_systems, writer_calls = [], []
-revised_pages = {"value": [6]}
+revised_pages = {"value": [6], "same_scene": False}
 
 
 def rewrite_page6(**kw):
     if kw["node"] == "write_story" and kw["schema"] is StoryRevision:
         writer_calls.append(kw["system"])
-        return StoryRevision(reason="test", pages=[StoryPage(order=n, text=f"{n}쪽. 포포는 깜짝 놀랐어요.", characters_in_scene=["포포"],
-                                                             image_prompt=f"scene {n} revised") for n in revised_pages["value"]])
+        same = revised_pages["same_scene"]   # True면 글만 고치고 장면(그림 지시·등장인물)은 mock 첫 원고와 같게
+        return StoryRevision(reason="test", pages=[StoryPage(order=n, text=f"{n}쪽. 포포는 깜짝 놀랐어요.",
+                                                             characters_in_scene=["포포"] + (["엄마곰"] if same and n % 2 == 0 else []),
+                                                             image_prompt=f"scene {n}" if same else f"scene {n} revised")
+                                                   for n in revised_pages["value"]])
     if kw["node"] == "polish_story":
         polish_systems.append(kw["system"])
     return mock.fake_structured(**kw)
@@ -461,12 +466,26 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert [(p["text"], p["image_prompt"]) for p in second["pages"] if p["page_no"] != 6] == unchanged   # 글·그림 지시 그대로
     assert next(p for p in second["pages"] if p["page_no"] == 6)["image_prompt"] == "scene 6 revised"
     assert second["title"] == first["title"]
+    # 장면이 바뀐 6쪽만 새로 그리고, 나머지 쪽과 캐릭터 시트는 v1 그림 그대로
+    assert page_paths(second)[6] == "stories/78/runs/2/images/page-06.png"
+    assert all(path == page_paths(first)[n] for n, path in page_paths(second).items() if n != 6)
+    assert second["character_sheets"] == first["character_sheets"] and second["cost"]["image_count"] == 1, second["cost"]
     after = server._graph.get_state(server._cfg(tid8)).values
     assert after.get("revision_feedback") is None and after.get("revision_base") is None   # 다음 실행에 남지 않는다
+    assert after.get("redraw_pages") is None
+
+    # 글만 고치고 장면은 그대로면 그림을 하나도 다시 그리지 않는다
+    revised_pages.update(value=[3], same_scene=True)
+    accepted(review(tid8, **regen("text", 3, second["checkpoint_id"], feedback="3쪽 말투만", output_prefix="stories/78/runs/3/")))
+    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    third = result(tid8)
+    draft3 = server._graph.get_state(server._cfg(tid8)).values["story_draft"]
+    assert {pg.order: pg.text for pg in draft3.pages}[3] == "3쪽. 포포는 깜짝 놀랐어요."   # 작가는 3쪽 글을 고쳤다
+    assert page_paths(third) == page_paths(second) and third["cost"]["image_count"] == 0, third["cost"]
 
     # 작가가 없는 쪽을 돌려주면 실패 (부모는 다시 시도할 수 있다). 앞선 버전은 그대로
-    revised_pages["value"] = [99]
-    accepted(review(tid8, **regen("text", 3, second["checkpoint_id"], feedback="더 짧게", output_prefix="stories/78/runs/3/")))
+    revised_pages.update(value=[99], same_scene=False)
+    accepted(review(tid8, **regen("text", 4, third["checkpoint_id"], feedback="더 짧게", output_prefix="stories/78/runs/4/")))
     assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "FAILED"
     mock.enable()
 print("text regen keeps other pages ok")

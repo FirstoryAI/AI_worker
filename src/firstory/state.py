@@ -42,6 +42,7 @@ class PipelineState(TypedDict, total=False):
     writer_feedback: Optional[str]           # 부모 피드백 → 작가에게 (뷰어 [다시 쓰기])
     revision_feedback: Optional[str]         # 글 다시 만들기 메모 → polish_story (write_story가 넣고 polish_story가 비운다)
     revision_base: Optional[dict[int, str]]  # 그때 이전 원고의 쪽별 글. 작가가 그대로 둔 쪽은 다시 다듬지 않는다
+    redraw_pages: Optional[list[int]]        # 글 다시 만들기에서 장면(그림 지시·등장인물)이 바뀐 쪽. illustrate가 그 쪽만 그리고 비운다
     # 검토 (parent_review interrupt 가 받는 값)
     review_action: Optional[Literal["approve", "regenerate"]]
     regenerate_scope: Optional[RegenerateScope]

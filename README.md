@@ -36,7 +36,7 @@ uv run python evals/api_run.py                                # 서버 배선 �
 uv run python evals/safety_eval.py                            # 위기 신호 판단 품질 (진짜 OpenAI, 사례 31개)
 ```
 
-결과물은 `FIRSTORY_OUTPUT_ROOT`(없으면 `out/`) 아래 실행의 `output_prefix`(Spring이 실행마다 주는 `stories/{id}/runs/{n}/`)에 쓴다. 그림만 다시 그리면 안 바뀐 쪽과 캐릭터 시트는 이전 실행의 파일을 그대로 가리킨다 (`src/firstory/storage.py`). CLI·뷰어는 `output_prefix`가 없어 예전처럼 `out/<타임스탬프>_<이름>/`이다.
+결과물은 `FIRSTORY_OUTPUT_ROOT`(없으면 `out/`) 아래 실행의 `output_prefix`(Spring이 실행마다 주는 `stories/{id}/runs/{n}/`)에 쓴다. 그림만 다시 그리면 안 바뀐 쪽과 캐릭터 시트는 이전 실행의 파일을 그대로 가리킨다 (`src/firstory/storage.py`). 글 다시 만들기도 장면(그림 지시·등장인물)이 바뀐 쪽만 새로 그리고 나머지는 같은 방식이다 (`redraw_pages`). CLI·뷰어는 `output_prefix`가 없어 예전처럼 `out/<타임스탬프>_<이름>/`이다.
 
 `--http h11`: Spring(Java HttpClient)이 `Upgrade: h2c` 헤더를 붙여 보내는데, uvicorn 기본 파서(httptools)는 이때 본문을 버려 422가 난다. h11 파서는 헤더를 무시하고 본문을 받는다.
 
