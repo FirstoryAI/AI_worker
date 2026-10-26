@@ -1,5 +1,5 @@
 """
-FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, mock /safety/check, 인터뷰, 생성, 검토·재시도. (uv run python evals/api_run.py)
+FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, /safety/check, 인터뷰, 생성, 검토·재시도, 완성 본문 위기 신호. (uv run python evals/api_run.py)
 서버를 띄우지 않고 TestClient로 부른다. OpenAI 호출 없음.
 """
 from __future__ import annotations
@@ -22,7 +22,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from firstory import llm, mock, server, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
-from firstory.schemas import InterviewTurnResult, ParentUpdate  # noqa: E402
+from firstory.nodes import safety  # noqa: E402
+from firstory.schemas import InterviewTurnResult, ParentUpdate, SafetyJudgement, SafetyResult  # noqa: E402
 
 H = {"X-Internal-Token": "test-token"}
 server.config = dataclasses.replace(server.config, checkpoint_db=Path(tempfile.mkdtemp()) / "checkpoints.db")
@@ -69,6 +70,21 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert level("괜찮아요", "[[CRISIS]]") == "CRISIS"
     assert level("[[REVISE]] [[CRISIS]] [[SENSITIVE]]") == "CRISIS"
     assert level("그때 울었대요", source="interview_answer", context={"question": "아이는 어땠나요?"}) == "OK"
+    revise = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["[[REVISE]]"]}).json()["safety"]
+    assert revise["category"] == "other" and revise["reason"], revise   # REVISE·CRISIS에는 category와 부모용 문장
+
+    # 판단 프롬프트에 글의 종류와 직전 질문이 들어간다 (글은 user로)
+    seen = {}
+
+    def capture(**kw):
+        seen.update(kw)
+        return mock.fake_structured(**kw)
+
+    llm.set_structured_override(capture)
+    level("문 앞에서 울었어요", source="interview_answer", context={"question": "아이는 어땠나요?"})
+    assert seen["node"] == "safety_check" and seen["user"] == "문 앞에서 울었어요"
+    assert "인터뷰 질문에 한 답" in seen["system"] and "아이는 어땠나요?" in seen["system"]
+    mock.enable()
 
     # ── 오류 형식 ──
     err(c.post("/v1/safety/check", headers=H, json={"source": "form"}), 422, "VALIDATION_ERROR")
@@ -407,12 +423,47 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     err(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=3)), 409, "INVALID_STATE")
 print("review / retry ok")
 
-# ── mock이 아니면: /health는 mock false, /safety/check는 아직 501 ──
+# ── 완성 본문 위기 신호 (스펙 4장): result의 safety. 그림만 다시는 글이 그대로라 지난 판단을 쓴다 ──
+judged = []
+
+
+def unsafe_output(**kw):
+    if kw["node"] == "safety_output":
+        judged.append(kw["user"])
+        return SafetyJudgement(basis="test", level="REVISE", category=None, reason=" ")
+    return mock.fake_structured(**kw)
+
+
+with TestClient(server.app, raise_server_exceptions=False) as c:
+    llm.set_structured_override(unsafe_output)   # 시작할 때 mock.enable()이 덮어쓰므로 그 뒤에
+    tid7 = to_confirm()
+    accepted(c.post(f"/v1/threads/{tid7}/generate", headers=H, json=run_body()))
+    assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    out = result(tid7)
+    assert out["safety"] == {"level": "REVISE", "category": "other", "reason": safety._FALLBACK_REASON["REVISE"]}, out["safety"]
+    assert len(judged) == 1 and judged[0].startswith("제목: ") and "\n1쪽: " in judged[0], judged
+    accepted(review(tid7, **regen("images", 2, out["checkpoint_id"], pages=[2])))
+    assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert result(tid7)["safety"]["level"] == "REVISE" and len(judged) == 1   # 그림만 다시: 다시 판단하지 않음
+    accepted(review(tid7, **regen("text", 3, result(tid7)["checkpoint_id"])))
+    assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert len(judged) == 2   # 글 다시: 새 본문을 다시 판단
+    mock.enable()
+
+# 정리 규칙: 완성 본문에는 SENSITIVE가 없고, category는 REVISE·CRISIS에만
+j = SafetyJudgement(basis="t", level="SENSITIVE", category="other", reason="무거운 주제예요")
+assert safety._tidy("output", j) == SafetyResult(level="OK")
+assert safety._tidy("form", j) == SafetyResult(level="SENSITIVE", category=None, reason="무거운 주제예요")
+assert safety._tidy("form", SafetyJudgement(basis="t", level="OK", category="other", reason="x")) == SafetyResult(level="OK")
+print("output safety ok")
+
+# ── mock이 아니면: /health는 mock false, /safety/check는 판단 노드로 (여기서는 LLM 대신 가짜 응답) ──
 real = server.config
 server.config = dataclasses.replace(real, mock=False)
 with TestClient(server.app) as c:
     assert c.get("/health", headers=H).json() == {"status": "ok", "mock": False}
-    err(c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["a"]}), 501, "NOT_IMPLEMENTED")
+    r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["a"]})
+    assert r.status_code == 200 and r.json()["safety"]["level"] == "OK", r.text
 
 # ── 토큰 설정이 비어 있으면 시작하지 않는다 ──
 server.config = dataclasses.replace(real, internal_token="")

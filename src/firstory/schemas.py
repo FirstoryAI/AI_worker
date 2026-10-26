@@ -327,13 +327,34 @@ class CostEntry(BaseModel):
 
 
 SafetyLevel = Literal["OK", "SENSITIVE", "REVISE", "CRISIS"]
+SafetySource = Literal["form", "interview_answer", "regen_feedback", "output"]   # output: 완성 동화 본문
+# REVISE·CRISIS일 때만 붙는다 (API 스펙 4장, D4)
+SafetyCategory = Literal[
+    "violence",            # 폭력을 해결책으로 그리거나 미화
+    "harmful_discipline",  # 체벌·위협·공포·수치심 훈육
+    "discrimination",      # 차별·혐오
+    "illegal",             # 불법·위험 행동 미화
+    "blame_child",         # 죽음·이혼·질병 같은 일을 아이 탓으로
+    "self_harm",           # 아이의 자해·자살 언급
+    "abuse_neglect",       # 학대·방임 정황
+    "harm_intent",         # 아이를 해치려는 의도
+    "other",
+]
 
 
 class SafetyResult(BaseModel):
     """위기 신호 판단 (API 스펙 4장). reason은 부모에게 그대로 보여줄 문장."""
     level: SafetyLevel
-    category: Optional[str] = None   # 값 목록은 D4에서 정함
+    category: Optional[str] = None   # SafetyCategory. REVISE·CRISIS일 때만
     reason: Optional[str] = None
+
+
+class SafetyJudgement(BaseModel):
+    """위기 신호 판단 프롬프트의 출력. nodes/safety.py가 SafetyResult로 정리한다."""
+    basis: str = Field(description="디버깅용: 어떤 맥락에서 왜 이 level인지 한두 문장. 부모에게 보이지 않는다")
+    level: SafetyLevel
+    category: Optional[SafetyCategory] = Field(None, description="REVISE·CRISIS일 때만. OK·SENSITIVE면 null")
+    reason: Optional[str] = Field(None, description="부모에게 그대로 보일 해요체 한 문장. OK면 null")
 
 
 StoryStatus = Literal["requested", "generating_text", "reviewing", "generating_images", "completed", "failed"]
