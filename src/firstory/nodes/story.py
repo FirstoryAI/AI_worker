@@ -119,7 +119,14 @@ def write_story(state: PipelineState) -> dict:
     return {"story_draft": s, "story": s, "writer_feedback": None, "cost": [cost], "status": "generating_text",
             # 글 다시 만들기면 polish_story가 메모를 지키고, 작가가 그대로 둔 쪽은 다시 다듬지 않도록
             "revision_feedback": fb or None,
-            "revision_base": {pg.order: pg.text for pg in prev.pages} if prev else None}
+            "revision_base": {pg.order: pg.text for pg in prev.pages} if prev else None,
+            # 그리고 illustrate가 장면이 바뀐 쪽만 다시 그리도록 (글만 바뀐 쪽은 그림 그대로)
+            "redraw_pages": _scene_changed(prev, s) if revising else None}
+
+
+def _scene_changed(prev: StoryText, new: StoryText) -> list[int]:
+    before = {pg.order: (pg.image_prompt, pg.characters_in_scene) for pg in prev.pages}
+    return [pg.order for pg in new.pages if before.get(pg.order) != (pg.image_prompt, pg.characters_in_scene)]
 
 
 def _apply_revision(prev: StoryText, r: StoryRevision) -> StoryText:

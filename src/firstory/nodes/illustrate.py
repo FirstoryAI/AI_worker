@@ -133,10 +133,21 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
 
 
 def illustrate(state: PipelineState) -> dict:
+    """처음 그리기·이야기 다시 만들기: 시트와 모든 쪽. 글 다시 만들기(redraw_pages가 있음): 장면이 바뀐 쪽과
+    이전에 실패했거나 없던 쪽만 그리고, 나머지 쪽과 시트는 이전 실행의 key를 그대로 쓴다 (G4와 같은 방식)."""
     if state.get("skip_images"):
-        return {"illustrations": Illustrations(), "cost": []}
-    ill, costs = _run(state["story"], storage.join(state["output_prefix"], "images"))
-    return {"illustrations": ill, "cost": costs}
+        return {"illustrations": Illustrations(), "cost": [], "redraw_pages": None}
+    story, prev, redraw = state["story"], state.get("illustrations"), state.get("redraw_pages")
+    prefix = storage.join(state["output_prefix"], "images")
+    if redraw is None or prev is None:
+        ill, costs = _run(story, prefix)
+        return {"illustrations": ill, "cost": costs, "redraw_pages": None}
+    done = {pi.order for pi in prev.pages if pi.status == "completed" and pi.path}
+    pages = set(redraw) | ({p.order for p in story.pages} - done)
+    if not pages:   # 글만 바뀌고 장면은 그대로 — 그림은 전부 이전 실행 것
+        return {"illustrations": prev, "cost": [], "redraw_pages": None}
+    ill, costs = _run(story, prefix, only_pages=pages, prev=prev)
+    return {"illustrations": ill, "cost": costs, "redraw_pages": None}
 
 
 _PAGE_RE = re.compile(r"((?:\d+\s*,\s*)*\d+)\s*(?:쪽|페이지)|p\s*(\d+)", re.I)
