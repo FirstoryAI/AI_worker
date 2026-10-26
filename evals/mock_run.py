@@ -116,12 +116,14 @@ assert storage.exists(f"{base}/1/images/page-03.png")   # 이전 실행 파일�
 book = storage.local_path(f"{base}/2/book.html").read_text(encoding="utf-8")
 assert 'src="../1/images/page-01.png"' in book and 'src="images/page-03.png"' in book
 
-# 글 다시 → 그림도 전부 runs/3에 새로. runs/2의 3쪽은 그대로 남는다
+# 글 다시 → mock 작가가 1쪽만 고쳐 그 쪽 장면이 바뀐다. 1쪽 그림만 runs/3에 새로, 나머지 쪽과 시트는 v2의 key 그대로
 r = graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "더 짧게",
                                  "output_prefix": f"{base}/3/"}), cfg1c)
 ill3 = graph.get_state(cfg1c).values["illustrations"]
-assert all(pg.path.startswith(f"{base}/3/images/") for pg in ill3.pages)
-assert all(k.startswith(f"{base}/3/images/") for k in ill3.character_sheets.values())
+paths2, paths3 = ({pg.order: pg.path for pg in ill.pages} for ill in (ill2, ill3))
+assert paths3[1] == f"{base}/3/images/page-01.png"
+assert all(paths3[o] == paths2[o] for o in paths3 if o != 1), paths3
+assert ill3.character_sheets == ill1.character_sheets
 assert storage.exists(f"{base}/2/images/page-03.png") and storage.exists(f"{base}/1/03-story.json")
 r = graph.invoke(Command(resume={"action": "approve"}), cfg1c)
 assert r["status"] == "completed"
