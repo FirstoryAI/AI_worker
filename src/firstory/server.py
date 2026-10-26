@@ -171,7 +171,7 @@ def _interview_reply(before: StoryInputContext, result: dict) -> dict:
         update = {name: diff for name, diff in (("parent", _changed(before.parent, after.parent)),
                                                 ("moment", _changed(before.moment, after.moment))) if diff}
         return {"type": "question", "turn": pause["turn"], "question": pause["question"],
-                "context_update": update or None}
+                "choices": pause.get("choices") or [], "context_update": update or None}
     if pause["type"] == "confirm":
         return {"type": "confirm", "summary": pause["summary"], "end_reason": pause["end_reason"],
                 "context": StoryInputContext.model_validate(pause["context"]).model_dump(mode="json")}

@@ -27,6 +27,7 @@ class Config:
     page_count: int = 10
     max_interview_turns: int = 5        # 🔒 ②-5
     max_clarify_turns: int = 2          # 🔒 ②-4 "모르겠다" 정리 질문
+    max_interview_choices: int = 4      # 질문마다 주는 답변 카드 수 (화면이 4개까지 보여 준다)
     guide_prompts_min: int = 2          # 🔒 ③-4
     guide_prompts_max: int = 3
 

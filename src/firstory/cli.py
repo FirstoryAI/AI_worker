@@ -41,11 +41,17 @@ def handle_interrupt(payload: dict, args) -> object:
     t = payload.get("type")
     if t == "interview":
         say("m", f"\nFIRSTORY AI › {payload['question']}")
-        print(f"{C['d']}  (skip 입력 시 인터뷰 종료){C['0']}")
+        choices = payload.get("choices") or []
+        for i, c in enumerate(choices, 1):
+            print(f"{C['d']}  {i}) {c}{C['0']}")
+        print(f"{C['d']}  (번호로 카드 고르기, skip 입력 시 인터뷰 종료){C['0']}")
         if args.auto:  # scripted_answers가 바닥나면 더 묻지 않고 끝낸다
             print(f"{C['b']}부모{C['0']} › skip  {C['d']}(--auto){C['0']}")
             return "skip"
-        return input(f"{C['b']}부모{C['0']} › ").strip()
+        answer = input(f"{C['b']}부모{C['0']} › ").strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1]
+        return answer
     if t == "confirm":
         say("c", f"\n인터뷰 정리 ({payload.get('end_reason')})")
         print(f"  {payload.get('summary')}")

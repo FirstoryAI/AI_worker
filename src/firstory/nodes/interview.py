@@ -93,14 +93,25 @@ def interview_step(state: PipelineState) -> dict:
     else:
         done_by = None
 
-    out: dict = {"context": ctx, "cost": [cost], "pending_question": None, "pending_reason": r.reason}
+    out: dict = {"context": ctx, "cost": [cost], "pending_question": None, "pending_choices": [],
+                 "pending_reason": r.reason}
     if done_by:
         out["interview_done_by"] = done_by
-    else:
-        out["pending_question"] = r.next_question or (
-            "아이에게 이번 일로 어떤 이야기를 해주고 싶으세요? 아직 잘 모르겠다고 하셔도 괜찮아요."
-        )
+    elif r.next_question:
+        out["pending_question"] = r.next_question
+        out["pending_choices"] = _choices(r.choices)
+    else:  # AI가 질문 없이 ask만 준 경우. 카드는 그 질문 것이 아니라 버린다
+        out["pending_question"] = "아이에게 이번 일로 어떤 이야기를 해주고 싶으세요? 아직 잘 모르겠다고 하셔도 괜찮아요."
     return out
+
+
+def _choices(raw: list[str]) -> list[str]:
+    """답변 카드: 빈 것·겹치는 것을 빼고 최대 config.max_interview_choices개."""
+    out: list[str] = []
+    for c in (x.strip() for x in raw):
+        if c and c not in out:
+            out.append(c)
+    return out[:config.max_interview_choices]
 
 
 def interview_answer(state: PipelineState) -> dict:
@@ -111,7 +122,8 @@ def interview_answer(state: PipelineState) -> dict:
     if auto:
         answer = auto.pop(0)
     else:
-        answer = interrupt({"type": "interview", "question": q, "turn": len(turns) + 1})
+        answer = interrupt({"type": "interview", "question": q, "turn": len(turns) + 1,
+                            "choices": state.get("pending_choices") or []})
     answer = (answer or "").strip()
 
     out: dict = {"auto_answers": auto}

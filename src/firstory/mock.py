@@ -26,10 +26,15 @@ def fake_structured(*, node, model, schema, system, user):
         n = system.count('"answer":') + 1
         if n == 1:
             return InterviewTurnResult(context_update=ParentUpdate(), status="ask",
-                                       next_question="당시에 어떻게 반응해주셨어요?", reason="response 비어있음")
+                                       next_question="당시에 어떻게 반응해주셨어요?",
+                                       choices=["꼭 안아 줬어요", "괜찮다고 말해 줬어요", "뭐라고 할지 몰라 가만히 있었어요"],
+                                       reason="response 비어있음")
         if n == 2:
             return InterviewTurnResult(context_update=ParentUpdate(response="안아줌", concern="뭐라고 말할지 모르겠음"),
                                        status="ask", next_question="아이 마음을 먼저 다독이고 싶으신지, 친구 입장도 생각해보게 하고 싶으신지요?",
+                                       # 빈 카드·겹치는 카드·4개 넘김: 인터뷰 노드가 정리하는지 보려고 일부러 넣는다
+                                       choices=["마음을 먼저 다독이고 싶어요", "친구 입장도 생각해 보게 하고 싶어요",
+                                                "  ", "잘 모르겠어요", "마음을 먼저 다독이고 싶어요", "둘 다요"],
                                        reason="direction 비어있음")
         return InterviewTurnResult(context_update=ParentUpdate(message_direction="comfort_first", message="네 잘못 아니야"),
                                    status="sufficient", reason="다 채워짐")
