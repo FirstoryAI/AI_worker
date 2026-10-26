@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from firstory import llm, mock, server, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
+from firstory.schemas import InterviewTurnResult, ParentUpdate  # noqa: E402
 
 H = {"X-Internal-Token": "test-token"}
 server.config = dataclasses.replace(server.config, checkpoint_db=Path(tempfile.mkdtemp()) / "checkpoints.db")
@@ -93,11 +94,15 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 
     tid = str(uuid.uuid4())
     q1 = ok(start(tid, tone="warm"))
-    assert q1 == {"type": "question", "turn": 1, "question": "당시에 어떻게 반응해주셨어요?", "context_update": None}, q1
+    assert q1 == {"type": "question", "turn": 1, "question": "당시에 어떻게 반응해주셨어요?",
+                  "choices": ["꼭 안아 줬어요", "괜찮다고 말해 줬어요", "뭐라고 할지 몰라 가만히 있었어요"],
+                  "context_update": None}, q1
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     q2 = ok(answer(tid, {"answer": "안아 줬어요"}))
     assert q2["type"] == "question" and q2["turn"] == 2, q2
     assert q2["context_update"] == {"parent": {"response": "안아줌", "concern": "뭐라고 말할지 모르겠음"}}, q2
+    # 빈 카드·겹치는 카드를 빼고 4개까지
+    assert q2["choices"] == ["마음을 먼저 다독이고 싶어요", "친구 입장도 생각해 보게 하고 싶어요", "잘 모르겠어요", "둘 다요"], q2
     done = ok(answer(tid, {"answer": "마음을 먼저 받아 주고 싶어요"}))
     assert set(done) == {"type", "summary", "end_reason", "context"} and done["type"] == "confirm", done
     assert done["end_reason"] == "sufficient"
@@ -146,6 +151,16 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     retried = ok(answer(tid3, {"answer": "안아 줬어요"}))
     assert retried["type"] == "question" and retried["turn"] == 2, retried
     assert len(server._graph.get_state(server._cfg(tid3)).values["interview_turns"]) == 1
+
+    # AI가 질문 없이 ask만 주면 기본 질문을 묻고, 그 질문과 상관없는 카드는 버린다
+    def no_question(**kw):
+        if kw["schema"] is InterviewTurnResult:
+            return InterviewTurnResult(context_update=ParentUpdate(), status="ask", choices=["엉뚱한 카드"], reason="질문 빠짐")
+        return mock.fake_structured(**kw)
+
+    llm.set_structured_override(no_question)
+    fallback = ok(start(str(uuid.uuid4())))
+    assert fallback["question"].startswith("아이에게 이번 일로") and fallback["choices"] == [], fallback
     mock.enable()
 print("interview ok")
 
