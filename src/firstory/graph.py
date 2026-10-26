@@ -13,13 +13,14 @@ FIRSTORY 그래프. ARCHITECTURE.md §2.
                                                                                       │
                                                                                 polish_story   ← 문장만 다듬기
                                                                                       │
-                                                                     ┌────────────────┴────────────────┐
-                                                                     ▼                                 ▼
-                                                              reading_guide                       illustrate
-                                                                     │                                 │
-                                   (regen: images) ─▶ illustrate_only ─┐                               │
-                                                                       ▼                               │
-                                                                    render ◀───────────────────────────┘
+                                                                     ┌────────────────┼────────────────┐
+                                                                     ▼                ▼                ▼
+                                                              reading_guide     safety_output     illustrate
+                                                                     │          (본문 위기 신호)       │
+                                                                     │                │                │
+                                   (regen: images) ─▶ illustrate_only ─┐              │                │
+                                                                       ▼              │                │
+                                                                    render ◀──────────┴────────────────┘
                                                                        │
                                                                        ▼
                                                                ⏸ parent_review   ← 텍스트+이미지 완성 후 (기획안 STEP 5~6)
@@ -46,6 +47,7 @@ from .nodes.interview import (
     confirm_generate, interview_answer, interview_finish, interview_step, route_after_answer, route_after_step,
 )
 from .nodes.render import render
+from .nodes.safety import safety_output
 from .nodes.story import (
     design_story, parent_review, polish_story, reading_guide, route_after_review, write_story,
 )
@@ -73,6 +75,7 @@ def build_graph():
         ("write_story", write_story),
         ("polish_story", polish_story),
         ("reading_guide", reading_guide),
+        ("safety_output", safety_output),
         ("illustrate", illustrate),
         ("illustrate_only", illustrate_only),
         ("render", render),
@@ -88,10 +91,11 @@ def build_graph():
     g.add_edge("confirm_generate", "design_story")
     g.add_edge("design_story", "write_story")
     g.add_edge("write_story", "polish_story")
-    # 🔒 ④-1: 텍스트 완료 → 가이드 ∥ 이미지 (fan-out) → render (fan-in)
+    # 🔒 ④-1: 텍스트 완료 → 가이드 ∥ 본문 위기 신호 ∥ 이미지 (fan-out) → render (fan-in)
     g.add_edge("polish_story", "reading_guide")
+    g.add_edge("polish_story", "safety_output")
     g.add_edge("polish_story", "illustrate")
-    g.add_edge(["reading_guide", "illustrate"], "render")
+    g.add_edge(["reading_guide", "safety_output", "illustrate"], "render")
     g.add_edge("illustrate_only", "render")
     g.add_edge("render", "parent_review")
     g.add_conditional_edges(

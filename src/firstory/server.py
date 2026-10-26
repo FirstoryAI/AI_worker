@@ -3,7 +3,7 @@ FastAPI 서버 — Spring 백엔드가 내부 HTTP로 부르는 AI API (API 스�
   FIRSTORY_INTERNAL_TOKEN=local-test-token FIRSTORY_MOCK=true uv run uvicorn firstory.server:app --port 8000 --http h11
   (--http h11: Java HttpClient의 Upgrade: h2c 요청에서 기본 파서가 본문을 버린다. README 참고)
 
-지금 있는 것: 인증(X-Internal-Token), 오류 형식, /health, /v1/safety/check(mock 모드만),
+지금 있는 것: 인증(X-Internal-Token), 오류 형식, /health, /v1/safety/check,
 인터뷰(interview/start, interview/answer), 생성(generate, status, result), 검토(review), 재시도(retry).
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ from . import mock
 from .config import config
 from . import storage
 from .graph import compile_graph
+from .nodes import safety
 from .nodes.story import review_update
 from .runs import Runs
 from .schemas import Illustrations, SafetyResult, StoryInputContext
@@ -111,9 +112,9 @@ class SafetyCheckRequest(BaseModel):
 
 @app.post("/v1/safety/check")
 def safety_check(body: SafetyCheckRequest) -> dict[str, SafetyResult]:
-    if not config.mock:
-        raise ApiError(501, "NOT_IMPLEMENTED", "위기 신호 판단(G2)은 아직 없습니다. 지금은 FIRSTORY_MOCK=true에서만 동작합니다")
-    return {"safety": mock.fake_safety(body.texts)}
+    question = (body.context or {}).get("question")
+    result, _ = safety.judge(body.source, body.texts, question if isinstance(question, str) else None)
+    return {"safety": result}
 
 
 # ── 그래프 실행: thread 하나에 동시에 하나만 (스펙 6장) ──────────────────────
@@ -229,7 +230,7 @@ def interview_answer(thread_id: str, body: InterviewAnswerRequest) -> dict:
 # ── 생성 (스펙 7-4 ~ 7-6) ────────────────────────────────────────────────
 
 _STAGE = {"design_story": 1, "write_story": 2, "polish_story": 2,      # Spring GenerationStage와 같은 묶음
-          "reading_guide": 3, "illustrate": 3, "illustrate_only": 3, "render": 4}
+          "reading_guide": 3, "safety_output": 3, "illustrate": 3, "illustrate_only": 3, "render": 4}
 _PAUSED = {("interview_answer",): "INTERVIEWING", ("interview_step",): "INTERVIEWING", ("interview_finish",): "INTERVIEWING",
            ("confirm_generate",): "CONFIRMING", ("parent_review",): "REVIEWING"}
 
@@ -342,8 +343,7 @@ def result(thread_id: str) -> dict:
         "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,
         "cost": {"input_tokens": sum(c.input_tokens for c in costs), "output_tokens": sum(c.output_tokens for c in costs),
                  "image_count": sum(c.images for c in costs)},
-        # TODO(G2): 완성 본문 위기 신호 판단. 만들기 전까지는 OK
-        "safety": {"level": "OK", "category": None, "reason": None},
+        "safety": (v.get("output_safety") or SafetyResult(level="OK")).model_dump(mode="json"),   # 완성 본문 판단 (스펙 4장)
     }
 
 

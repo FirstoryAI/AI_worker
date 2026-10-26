@@ -33,13 +33,16 @@ uv run python evals/mock_run.py
 # FastAPI 서버 — Spring 백엔드가 부르는 내부 API. 모든 요청에 X-Internal-Token 헤더
 FIRSTORY_INTERNAL_TOKEN=local-test-token FIRSTORY_MOCK=true uv run uvicorn firstory.server:app --port 8000 --http h11
 uv run python evals/api_run.py                                # 서버 배선 확인 (인증, 오류 형식, mock)
+uv run python evals/safety_eval.py                            # 위기 신호 판단 품질 (진짜 OpenAI, 사례 31개)
 ```
 
 결과물은 `FIRSTORY_OUTPUT_ROOT`(없으면 `out/`) 아래 실행의 `output_prefix`(Spring이 실행마다 주는 `stories/{id}/runs/{n}/`)에 쓴다. 그림만 다시 그리면 안 바뀐 쪽과 캐릭터 시트는 이전 실행의 파일을 그대로 가리킨다 (`src/firstory/storage.py`). CLI·뷰어는 `output_prefix`가 없어 예전처럼 `out/<타임스탬프>_<이름>/`이다.
 
 `--http h11`: Spring(Java HttpClient)이 `Upgrade: h2c` 헤더를 붙여 보내는데, uvicorn 기본 파서(httptools)는 이때 본문을 버려 422가 난다. h11 파서는 헤더를 무시하고 본문을 받는다.
 
-`FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). `/v1/safety/check`는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
+위기 신호(G2)는 `src/firstory/nodes/safety.py` 하나가 판단한다. `/v1/safety/check`(폼, 인터뷰 답변, 다시 만들기 메모)와 완성 본문(`safety_output` 노드, `/result`의 `safety`)이 같은 프롬프트(`prompts/safety_check.md`)를 쓴다. 판단만 하고, 횟수를 세고 막는 건 Spring이 한다.
+
+`FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). 위기 신호는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
 
 실행마다 `out/<타임스탬프>/`에 `00-context.json … 05-illustrations.json`, `images/`, `book.html`, `99-cost.json`이 남고,
 그래프 상태는 `out/checkpoints.db`(SQLite)에 저장됨. LangSmith 켜져 있으면 smith.langchain.com 프로젝트 `firstory-pipeline`에 트레이스가 올라감.
@@ -47,7 +50,7 @@ uv run python evals/api_run.py                                # 서버 배선 �
 ## 흐름
 
 ```
-form_input → interview(루프) → ⏸ confirm_generate → design_story → write_story → [reading_guide ∥ illustrate] → render → ⏸ parent_review
+form_input → interview(루프) → ⏸ confirm_generate → design_story → write_story → polish_story → [reading_guide ∥ safety_output ∥ illustrate] → render → ⏸ parent_review
                                                                                                                                │
                                                             approve → END   /   regenerate(scope) → design_story | write_story | illustrate_only
 ```

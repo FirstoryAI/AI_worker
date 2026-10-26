@@ -11,6 +11,7 @@ from .schemas import (
     Illustrations,
     ReadingGuide,
     RegenerateScope,
+    SafetyResult,
     Strategy,
     StoryDesign,
     StoryInputContext,
@@ -46,6 +47,7 @@ class PipelineState(TypedDict, total=False):
     # 산출물
     guide: Optional[ReadingGuide]
     illustrations: Optional[Illustrations]
+    output_safety: Optional[SafetyResult]    # 완성 본문 위기 신호 판단 (safety_output). /result의 safety
     # 메타
     output_prefix: str                       # 이번 실행의 결과물 key 앞부분 (storage.py). Spring이 실행마다 새로 준다
     run_dir: str                             # output_prefix의 로컬 폴더 (CLI·뷰어 표시용)
