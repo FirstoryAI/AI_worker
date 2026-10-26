@@ -256,6 +256,13 @@ class StoryText(BaseModel):
         return next((c for c in self.characters if c.role == "protagonist"), self.characters[0])
 
 
+class StoryRevision(BaseModel):
+    """write_story (글 다시 만들기) — 부모 요청 때문에 고친 쪽만 돌려준다. 나머지 쪽·인물·화풍은 코드가 이전 원고 그대로 쓴다."""
+    reason: str = Field(description="디버깅용: 요청을 보고 어느 쪽을 왜 고치는지 한두 문장")
+    title: Optional[str] = Field(None, description="요청이 제목을 바꾸라고 할 때만. 아니면 null")
+    pages: list[StoryPage] = Field(description="요청 때문에 고친 쪽만. order는 기존 원고 그대로. 고칠 필요 없는 쪽은 넣지 않는다")
+
+
 class PolishedPage(BaseModel):
     order: int = Field(description="입력 원고의 order 그대로")
     text: str = Field(description="다듬은 본문. 내용·순서는 그대로, 문장만 쉽게")

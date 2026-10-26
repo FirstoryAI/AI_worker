@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -23,7 +24,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from firstory import llm, mock, server, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.nodes import safety  # noqa: E402
-from firstory.schemas import InterviewTurnResult, ParentUpdate, SafetyJudgement, SafetyResult  # noqa: E402
+from firstory.schemas import (  # noqa: E402
+    InterviewTurnResult, ParentUpdate, SafetyJudgement, SafetyResult, StoryPage, StoryRevision,
+)
 
 H = {"X-Internal-Token": "test-token"}
 server.config = dataclasses.replace(server.config, checkpoint_db=Path(tempfile.mkdtemp()) / "checkpoints.db")
@@ -422,6 +425,51 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert not storage.exists("stories/55/runs/1/images/page-01.png")   # 실패한 실행은 그림 전에 멈췄다
     err(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=3)), 409, "INVALID_STATE")
 print("review / retry ok")
+
+# ── 글 다시 만들기: 작가는 메모 때문에 고친 쪽만 돌려주고, 나머지 쪽은 이전 원고 그대로. 다듬기는 메모를 받고 고친 쪽만 ──
+polish_systems, writer_calls = [], []
+revised_pages = {"value": [6]}
+
+
+def rewrite_page6(**kw):
+    if kw["node"] == "write_story" and kw["schema"] is StoryRevision:
+        writer_calls.append(kw["system"])
+        return StoryRevision(reason="test", pages=[StoryPage(order=n, text=f"{n}쪽. 포포는 깜짝 놀랐어요.", characters_in_scene=["포포"],
+                                                             image_prompt=f"scene {n} revised") for n in revised_pages["value"]])
+    if kw["node"] == "polish_story":
+        polish_systems.append(kw["system"])
+    return mock.fake_structured(**kw)
+
+
+with TestClient(server.app, raise_server_exceptions=False) as c:
+    llm.set_structured_override(rewrite_page6)   # 시작할 때 mock.enable()이 덮어쓰므로 그 뒤에
+    tid8 = to_confirm()
+    accepted(c.post(f"/v1/threads/{tid8}/generate", headers=H, json=run_body()))
+    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    first = result(tid8)
+    assert not writer_calls   # 첫 생성은 원고 전체 (StoryText)
+    assert len(polish_systems) == 1 and "부모 요청" not in polish_systems[0]
+    assert len(re.findall(r'"order": \d+', polish_systems[0])) == config.page_count   # 첫 생성은 전부 다듬는다
+    accepted(review(tid8, **regen("text", 2, first["checkpoint_id"], feedback="6쪽은 놀랐다는 마음이 드러나게",
+                                  output_prefix="stories/78/runs/2/")))
+    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    second = result(tid8)
+    assert len(writer_calls) == 1 and "6쪽은 놀랐다는 마음이 드러나게" in writer_calls[0] and "## 기존 원고" in writer_calls[0]
+    assert len(polish_systems) == 2 and "6쪽은 놀랐다는 마음이 드러나게" in polish_systems[1]
+    assert re.findall(r'"order": (\d+)', polish_systems[1]) == ["6"], polish_systems[1][-300:]   # 다시 쓴 쪽만
+    unchanged = [(p["text"], p["image_prompt"]) for p in first["pages"] if p["page_no"] != 6]
+    assert [(p["text"], p["image_prompt"]) for p in second["pages"] if p["page_no"] != 6] == unchanged   # 글·그림 지시 그대로
+    assert next(p for p in second["pages"] if p["page_no"] == 6)["image_prompt"] == "scene 6 revised"
+    assert second["title"] == first["title"]
+    after = server._graph.get_state(server._cfg(tid8)).values
+    assert after.get("revision_feedback") is None and after.get("revision_base") is None   # 다음 실행에 남지 않는다
+
+    # 작가가 없는 쪽을 돌려주면 실패 (부모는 다시 시도할 수 있다). 앞선 버전은 그대로
+    revised_pages["value"] = [99]
+    accepted(review(tid8, **regen("text", 3, second["checkpoint_id"], feedback="더 짧게", output_prefix="stories/78/runs/3/")))
+    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "FAILED"
+    mock.enable()
+print("text regen keeps other pages ok")
 
 # ── 완성 본문 위기 신호 (스펙 4장): result의 safety. 그림만 다시는 글이 그대로라 지난 판단을 쓴다 ──
 judged = []

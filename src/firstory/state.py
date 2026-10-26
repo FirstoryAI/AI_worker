@@ -40,6 +40,8 @@ class PipelineState(TypedDict, total=False):
     story_draft: Optional[StoryText]         # write_story 원문 (polish 전). 전후 비교용
     story: Optional[StoryText]               # polish_story 를 거친 최종본
     writer_feedback: Optional[str]           # 부모 피드백 → 작가에게 (뷰어 [다시 쓰기])
+    revision_feedback: Optional[str]         # 글 다시 만들기 메모 → polish_story (write_story가 넣고 polish_story가 비운다)
+    revision_base: Optional[dict[int, str]]  # 그때 이전 원고의 쪽별 글. 작가가 그대로 둔 쪽은 다시 다듬지 않는다
     # 검토 (parent_review interrupt 가 받는 값)
     review_action: Optional[Literal["approve", "regenerate"]]
     regenerate_scope: Optional[RegenerateScope]
