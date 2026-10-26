@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -422,6 +423,41 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert not storage.exists("stories/55/runs/1/images/page-01.png")   # 실패한 실행은 그림 전에 멈췄다
     err(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=3)), 409, "INVALID_STATE")
 print("review / retry ok")
+
+# ── 글 다시 만들기: 다듬기는 부모 메모를 받고, 작가가 그대로 둔 쪽은 다시 다듬지 않는다 ──
+polish_systems = []
+
+
+def rewrite_page6(**kw):
+    if kw["node"] == "write_story" and "## 부모 피드백" in kw["system"]:
+        s = mock.fake_structured(**kw)   # 작가가 6쪽만 메모대로 고치고 나머지는 다듬은 v1 글 그대로 둔다
+        for pg in s.pages:
+            pg.text = "6쪽. 포포는 깜짝 놀랐어요." if pg.order == 6 else f"{pg.order}쪽. 포포는 깡충 뛰었어요."
+        return s
+    if kw["node"] == "polish_story":
+        polish_systems.append(kw["system"])
+    return mock.fake_structured(**kw)
+
+
+with TestClient(server.app, raise_server_exceptions=False) as c:
+    llm.set_structured_override(rewrite_page6)   # 시작할 때 mock.enable()이 덮어쓰므로 그 뒤에
+    tid8 = to_confirm()
+    accepted(c.post(f"/v1/threads/{tid8}/generate", headers=H, json=run_body()))
+    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    first = result(tid8)
+    assert len(polish_systems) == 1 and "부모 요청" not in polish_systems[0]
+    assert len(re.findall(r'"order": \d+', polish_systems[0])) == config.page_count   # 첫 생성은 전부 다듬는다
+    accepted(review(tid8, **regen("text", 2, first["checkpoint_id"], feedback="6쪽은 놀랐다는 마음이 드러나게",
+                                  output_prefix="stories/78/runs/2/")))
+    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    second = result(tid8)
+    assert len(polish_systems) == 2 and "6쪽은 놀랐다는 마음이 드러나게" in polish_systems[1]
+    assert re.findall(r'"order": (\d+)', polish_systems[1]) == ["6"], polish_systems[1][-300:]   # 다시 쓴 쪽만
+    assert [p["text"] for p in second["pages"] if p["page_no"] != 6] == [p["text"] for p in first["pages"] if p["page_no"] != 6]
+    after = server._graph.get_state(server._cfg(tid8)).values
+    assert after.get("revision_feedback") is None and after.get("revision_base") is None   # 다음 실행에 남지 않는다
+    mock.enable()
+print("polish keeps feedback ok")
 
 # ── 완성 본문 위기 신호 (스펙 4장): result의 safety. 그림만 다시는 글이 그대로라 지난 판단을 쓴다 ──
 judged = []
