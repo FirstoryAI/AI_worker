@@ -10,7 +10,7 @@ from langgraph.types import interrupt
 from .. import storage
 from ..config import config
 from ..llm import prompt, structured
-from ..schemas import PolishedStory, ReadingGuide, Strategy, StoryText, design_schema
+from ..schemas import PolishedStory, ReadingGuide, Strategy, StoryRevision, StoryText, design_schema
 from ..state import PipelineState
 
 _persona = prompt("_persona")
@@ -78,20 +78,27 @@ def _write_extra(s: Strategy) -> str:
 
 
 def write_story(state: PipelineState) -> dict:
+    """처음 쓰기면 원고 전체를 쓴다. 글 다시 만들기(부모 메모 + 이전 원고)면 작가는 메모 때문에 고친 쪽만 돌려주고,
+    나머지 쪽·인물·화풍은 이전 원고 그대로 쓴다 (_apply_revision). 메모와 상관없는 쪽이 바뀌지 않게."""
     ctx = state["context"]
     years, months = _age(ctx)
     fb = state.get("writer_feedback")
     prev = state.get("story") if fb else None
     feedback_block = ""
     if fb:
-        feedback_block = (
-            "## 부모 피드백 (이 부분만 고치고 나머지는 최대한 유지)\n" + fb
-            + ("\n\n## 기존 원고\n" + prev.model_dump_json(indent=2, exclude={"character_sheet", "style_guide"}) if prev else "")
-        )
-    s, cost = structured(
+        feedback_block = "## 부모 피드백 (글 다시 만들기)\n" + fb
+        if prev:
+            feedback_block += (
+                "\n\n## 기존 원고\n" + prev.model_dump_json(indent=2, exclude={"characters", "style_guide"})
+                + "\n\n이번에는 원고 전체가 아니라 **피드백 때문에 고쳐야 하는 쪽만** `pages`에 돌려준다. "
+                "order는 기존 원고 그대로. 피드백과 상관없는 쪽은 넣지 않는다 — 기존 원고 그대로 쓰인다. "
+                "고친 쪽의 `image_prompt`·`characters_in_scene`도 새 글에 맞춘다."
+            )
+    revising = prev is not None
+    r, cost = structured(
         node="write_story",
         model=config.model_main,
-        schema=StoryText,
+        schema=StoryRevision if revising else StoryText,
         system=prompt(
             "write_story",
             persona=_persona,
@@ -104,14 +111,28 @@ def write_story(state: PipelineState) -> dict:
             feedback=feedback_block,
             extra=_write_extra(_strategy(state)),
         ),
-        user="동화를 작성하세요.",
+        user="피드백 때문에 고쳐야 하는 쪽만 다시 쓰세요." if revising else "동화를 작성하세요.",
         reasoning="medium",
     )
+    s = _apply_revision(prev, r) if revising else r
     s.pages.sort(key=lambda p: p.order)
     return {"story_draft": s, "story": s, "writer_feedback": None, "cost": [cost], "status": "generating_text",
             # 글 다시 만들기면 polish_story가 메모를 지키고, 작가가 그대로 둔 쪽은 다시 다듬지 않도록
             "revision_feedback": fb or None,
             "revision_base": {pg.order: pg.text for pg in prev.pages} if prev else None}
+
+
+def _apply_revision(prev: StoryText, r: StoryRevision) -> StoryText:
+    """고친 쪽만 이전 원고에 끼운다. 없는 쪽·겹치는 쪽이 오거나 고친 쪽이 없으면 실패로 (부모는 다시 시도할 수 있다)."""
+    orders = [pg.order for pg in r.pages]
+    if not orders or len(set(orders)) != len(orders) or not set(orders) <= {pg.order for pg in prev.pages}:
+        raise RuntimeError(f"[write_story] 고친 쪽이 기존 원고와 맞지 않습니다: {orders}")
+    changed = {pg.order: pg for pg in r.pages}
+    s = prev.model_copy(deep=True)
+    s.pages = [changed.get(pg.order, pg) for pg in s.pages]
+    if r.title and r.title.strip():
+        s.title = r.title.strip()
+    return s
 
 
 def polish_story(state: PipelineState) -> dict:

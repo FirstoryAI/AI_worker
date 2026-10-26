@@ -16,7 +16,7 @@ from .nodes import illustrate
 from .schemas import (
     AfterReading, Attempt, BeforeReading, CharacterSheet, GuidePrompt, InterviewSummary, InterviewTurnResult,
     JudgeScore, ParentUpdate, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
-    StoryJudgement, StoryPage, StoryText, SupportingCharacter,
+    StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
 )
 
 
@@ -67,6 +67,9 @@ def fake_structured(*, node, model, schema, system, user):
                                      CharacterSheet(name="엄마곰", role="supporting", visual_description="large brown bear")],
                          style_guide="soft watercolor",
                          pages=[StoryPage(order=i, text=f"{i}페이지. 포포는 깡충 뛰었어요.", characters_in_scene=["포포"] + (["엄마곰"] if i % 2 == 0 else []), image_prompt=f"scene {i}") for i in pages])
+    if schema is StoryRevision:   # 글 다시 만들기: 1쪽만 고친다
+        return StoryRevision(reason="mock", pages=[StoryPage(order=1, text="1페이지. 포포는 천천히 걸었어요.",
+                                                             characters_in_scene=["포포"], image_prompt="scene 1 revised")])
     if schema is PolishedStory:
         given = [int(n) for n in re.findall(r'"order": (\d+)', system)]   # 글 다시 만들기면 다시 쓴 쪽만 온다
         return PolishedStory(pages=[PolishedPage(order=i, text=f"{i}쪽. 포포는 깡충 뛰었어요.") for i in given])
