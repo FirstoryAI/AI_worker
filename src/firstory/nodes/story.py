@@ -2,6 +2,8 @@
 프롬프트 전략(state["strategy"])이 켜져 있으면 prompts/strategies/ 블록을 {{extra}} 자리에 끼운다. 다 꺼져 있으면 지금 프롬프트 그대로."""
 from __future__ import annotations
 
+from typing import Optional
+
 from langgraph.graph import END
 from langgraph.types import interrupt
 
@@ -79,9 +81,9 @@ def write_story(state: PipelineState) -> dict:
     ctx = state["context"]
     years, months = _age(ctx)
     fb = state.get("writer_feedback")
+    prev = state.get("story") if fb else None
     feedback_block = ""
     if fb:
-        prev = state.get("story")
         feedback_block = (
             "## 부모 피드백 (이 부분만 고치고 나머지는 최대한 유지)\n" + fb
             + ("\n\n## 기존 원고\n" + prev.model_dump_json(indent=2, exclude={"character_sheet", "style_guide"}) if prev else "")
@@ -106,15 +108,25 @@ def write_story(state: PipelineState) -> dict:
         reasoning="medium",
     )
     s.pages.sort(key=lambda p: p.order)
-    return {"story_draft": s, "story": s, "writer_feedback": None, "cost": [cost], "status": "generating_text"}
+    return {"story_draft": s, "story": s, "writer_feedback": None, "cost": [cost], "status": "generating_text",
+            # 글 다시 만들기면 polish_story가 메모를 지키고, 작가가 그대로 둔 쪽은 다시 다듬지 않도록
+            "revision_feedback": fb or None,
+            "revision_base": {pg.order: pg.text for pg in prev.pages} if prev else None}
 
 
 def polish_story(state: PipelineState) -> dict:
     """작가와 역할을 나눈다: 작가는 이야기·구성, 여기서는 문장만.
-    쉬운 말·번역투·한 문장에 두 가지를 고친다. 쪽 수와 order가 어긋나면 원문을 그대로 쓴다."""
+    쉬운 말·번역투·한 문장에 두 가지를 고친다. 쪽 수와 order가 어긋나면 원문을 그대로 쓴다.
+    글 다시 만들기(revision_base가 있음): 작가가 이전 글 그대로 둔 쪽은 이미 다듬은 글이라 보내지 않고,
+    다시 쓴 쪽만 부모 메모와 함께 다듬는다. 메모로 고친 표현을 되돌리지 않게."""
     ctx = state["context"]
     years, _ = _age(ctx)
     draft = state["story"]
+    base = state.get("revision_base") or {}
+    done: dict = {"revision_feedback": None, "revision_base": None, "status": "generating_images"}
+    targets = [pg for pg in draft.pages if base.get(pg.order) != pg.text]
+    if not targets:
+        return done
     p, cost = structured(
         node="polish_story",
         model=config.model_main,
@@ -122,20 +134,29 @@ def polish_story(state: PipelineState) -> dict:
         system=prompt(
             "polish_story",
             persona=_persona,
-            page_count=len(draft.pages),
+            page_count=len(targets),
             age_years=years,
-            pages=[{"order": pg.order, "text": pg.text} for pg in draft.pages],
+            feedback=_polish_feedback(state.get("revision_feedback")),
+            pages=[{"order": pg.order, "text": pg.text} for pg in targets],
         ),
         user="원고의 문장을 다듬으세요.",
         reasoning="low",
     )
     polished = {pg.order: pg.text.strip() for pg in p.pages}
-    if set(polished) != {pg.order for pg in draft.pages} or any(not t for t in polished.values()):
-        return {"cost": [cost], "status": "generating_images"}  # 쪽이 안 맞으면 원문 유지
+    if set(polished) != {pg.order for pg in targets} or any(not t for t in polished.values()):
+        return {**done, "cost": [cost]}  # 쪽이 안 맞으면 원문 유지
     story = draft.model_copy(deep=True)
     for pg in story.pages:
-        pg.text = polished[pg.order]
-    return {"story": story, "cost": [cost], "status": "generating_images"}
+        pg.text = polished.get(pg.order, pg.text)
+    return {**done, "story": story, "cost": [cost]}
+
+
+def _polish_feedback(fb: Optional[str]) -> str:
+    if not fb:
+        return ""
+    return ("### 부모 요청 (글 다시 만들기)\n"
+            "작가가 아래 요청대로 원고를 다시 썼다. 받은 쪽은 이번에 다시 쓴 쪽만이다. "
+            "요청으로 고친 표현은 되돌리거나 요청과 다른 쪽으로 바꾸지 않는다.\n\n" + fb.strip())
 
 
 def parent_review(state: PipelineState) -> dict:

@@ -6,6 +6,7 @@ mock 모드 (API 스펙 G6). OpenAI를 부르지 않고 가짜 응답으로 그�
 """
 from __future__ import annotations
 
+import re
 import struct
 import zlib
 
@@ -67,7 +68,8 @@ def fake_structured(*, node, model, schema, system, user):
                          style_guide="soft watercolor",
                          pages=[StoryPage(order=i, text=f"{i}페이지. 포포는 깡충 뛰었어요.", characters_in_scene=["포포"] + (["엄마곰"] if i % 2 == 0 else []), image_prompt=f"scene {i}") for i in pages])
     if schema is PolishedStory:
-        return PolishedStory(pages=[PolishedPage(order=i, text=f"{i}쪽. 포포는 깡충 뛰었어요.") for i in pages])
+        given = [int(n) for n in re.findall(r'"order": (\d+)', system)]   # 글 다시 만들기면 다시 쓴 쪽만 온다
+        return PolishedStory(pages=[PolishedPage(order=i, text=f"{i}쪽. 포포는 깡충 뛰었어요.") for i in given])
     if schema is ReadingGuide:
         return ReadingGuide(prompts=[GuidePrompt(id="q1", after_page=3, text="포포는 어떤 기분이었을까요?", purpose="empathy", parent_hint="대답 안 해도 괜찮아요"),
                                      GuidePrompt(id="q2", after_page=8, text="내일 포포는 뭐라고 말하고 싶을까요?", purpose="predict")],
