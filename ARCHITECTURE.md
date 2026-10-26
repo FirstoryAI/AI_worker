@@ -162,9 +162,10 @@ class PipelineState(TypedDict):
 - 종료 판단도 AI 말만 믿지 않고 코드가 `concern`·`messageDirection` 채워졌는지 **이중 확인**.
 - "모르겠다" → 바로 `undecided`로 확정하지 않고 **정리 질문 최대 2회** (MessageDirection 후보 중 상황에 맞는 2~3개를 선택지처럼). 그래도 모르면 `undecided` + `concern`에 부모 말 그대로 → 생성 프롬프트에서 주인공의 행동을 "한 번 해 봤다" 수준에 두고 어느 쪽이 옳은지 드러내지 않음.
 - 최대 **5턴**. 넘으면 `undecided`로 강제 종료. 부모가 언제든 "이만 만들어주세요" → `user_skip`.
+- 질문마다 **답변 카드(`choices`) 2~4개**를 같은 호출에서 만든다. 부모가 누르면 그 문장이 답변으로 간다. 노드가 빈 카드·겹치는 카드를 빼고 4개까지 남겨 interrupt 값과 FastAPI 인터뷰 응답에 싣는다.
 - 끝날 때 `interview_summary` 한 문단 — "이 부모는 ~를 걱정하고 ~를 전하고 싶어한다". 구조화 필드에 빠지는 뉘앙스를 담는다. 생성기와 B가 둘 다 읽는다.
 
-LangGraph에서: `interview` 노드가 `interrupt(nextQuestion)`으로 멈추고, 답변이 들어오면 재개 → `contextUpdate` 병합 → 조건부 엣지가 `sufficient / max_turns / user_skip` 판정.
+LangGraph에서: `interview` 노드가 `interrupt({question, turn, choices})`로 멈추고, 답변이 들어오면 재개 → `contextUpdate` 병합 → 조건부 엣지가 `sufficient / max_turns / user_skip` 판정.
 
 ---
 

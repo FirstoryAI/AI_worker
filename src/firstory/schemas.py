@@ -112,6 +112,8 @@ class InterviewTurnResult(BaseModel):
     moment_update: Optional[MomentUpdate] = Field(None, description="당시 정보가 보완됐으면")
     status: Literal["ask", "sufficient"]
     next_question: Optional[str] = Field(None, description="status=ask 일 때 다음 질문 하나")
+    choices: list[str] = Field(default_factory=list,
+                               description="status=ask 일 때 next_question에 부모가 눌러서 보낼 수 있는 짧은 답 2~4개. 부모 입말 해요체")
     reason: str = Field(description="디버깅용: 왜 이 질문을 했는지 / 왜 충분하다고 봤는지")
 
 

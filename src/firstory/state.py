@@ -27,6 +27,7 @@ class PipelineState(TypedDict, total=False):
     interview_turns: list[Turn]
     clarify_count: int                       # "모르겠다" 정리 질문 횟수 (max 2)
     pending_question: Optional[str]          # interview_step → interview_answer 로 넘기는 질문
+    pending_choices: list[str]               # 그 질문의 답변 카드 (화면에서 눌러 답한다)
     pending_reason: str
     interview_done_by: Optional[Literal["sufficient", "max_turns", "user_skip"]]
     interview_summary: Optional[str]                 # 동화 생성기·독서 코치가 읽는 정리 ("이 부모는 ~")

@@ -150,6 +150,8 @@ else:
 if pause and pause.get("type") == "interview":
     st.subheader(f"인터뷰 · {pause['turn']}번째 질문")
     st.markdown(f"**FIRSTORY AI** › {pause['question']}")
+    if pause.get("choices"):
+        st.caption("답변 카드: " + " · ".join(pause["choices"]))
     ans = st.text_input("부모 답변", key=f"ans{pause['turn']}")
     c1, c2 = st.columns([1, 1])
     if c1.button("답하기", type="primary") and ans.strip():
