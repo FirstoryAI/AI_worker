@@ -33,7 +33,11 @@ class Config:
 
     out_dir: Path = ROOT / "out"
     checkpoint_db: Path = ROOT / "out" / "checkpoints.db"
-    output_root: Path = Path(_env("FIRSTORY_OUTPUT_ROOT", str(ROOT / "out")))   # 결과물 저장소 루트 (storage.py)
+    output_root: Path = Path(_env("FIRSTORY_OUTPUT_ROOT", str(ROOT / "out")))   # 결과물 저장소 루트 (storage.py, local일 때)
+    storage: str = _env("FIRSTORY_STORAGE", "local").lower()   # local | s3. Spring STORAGE_TYPE과 같게 (storage.py)
+    s3_bucket: str = os.getenv("FIRSTORY_S3_BUCKET", "").strip()   # s3면 필수. Spring STORAGE_S3_BUCKET과 같은 버킷
+    s3_region: str = _env("FIRSTORY_S3_REGION", "ap-northeast-2")
+    # S3 접근 키는 여기에 두지 않는다. boto3가 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (또는 EC2 IAM 역할)로 찾는다
 
     # FastAPI 서버 (server.py)
     mock: bool = _env("FIRSTORY_MOCK", "false").lower() in ("1", "true", "yes")
