@@ -3,10 +3,15 @@
   key = 실행의 output_prefix + 파일 이름   예) stories/123/runs/2/images/page-03.png
   - 서버: Spring이 실행마다 새 output_prefix를 준다 → 다시 만들어도 이전 실행 파일이 남는다
   - CLI·뷰어: output_prefix가 없으면 form_input이 "<시각>_<이름>/"로 만든다 (예전 out/ 폴더와 같은 자리)
-지금은 로컬 폴더(FIRSTORY_OUTPUT_ROOT, 없으면 out/). S3로 바꿀 때는 이 파일만 바꾼다.
+FIRSTORY_STORAGE로 고른다 (Spring STORAGE_TYPE과 같게 맞춘다).
+  - local(기본): 로컬 폴더 FIRSTORY_OUTPUT_ROOT (없으면 out/). Spring과 같은 컴퓨터에서 같은 폴더를 볼 때
+  - s3: FIRSTORY_S3_BUCKET 버킷에 key 그대로. Spring이 같은 버킷에서 읽는다 (서버가 서로 다른 컴퓨터일 때)
+local_path는 로컬 폴더 기준이라 CLI·뷰어용이다. 서버 흐름은 write_*·read_bytes·exists만 쓴다.
 """
 from __future__ import annotations
 
+import functools
+import mimetypes
 from pathlib import Path, PurePosixPath
 
 from .config import config
@@ -30,8 +35,25 @@ def local_path(key: str) -> Path:
     return config.output_root / _check(key)
 
 
+@functools.cache
+def _s3():
+    if not config.s3_bucket:
+        raise RuntimeError("FIRSTORY_STORAGE=s3면 FIRSTORY_S3_BUCKET이 필요합니다")
+    import boto3   # local에서는 부르지 않는다
+    return boto3.client("s3", region_name=config.s3_region)
+
+
+def _use_s3() -> bool:
+    return config.storage == "s3"
+
+
 def write_bytes(key: str, data: bytes) -> str:
-    p = local_path(_check(key))
+    _check(key)
+    if _use_s3():
+        content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
+        _s3().put_object(Bucket=config.s3_bucket, Key=key, Body=data, ContentType=content_type)
+        return key
+    p = local_path(key)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(data)
     return key
@@ -42,10 +64,21 @@ def write_text(key: str, text: str) -> str:
 
 
 def read_bytes(key: str) -> bytes:
+    if _use_s3():
+        return _s3().get_object(Bucket=config.s3_bucket, Key=_check(key))["Body"].read()
     return local_path(key).read_bytes()
 
 
 def exists(key: str) -> bool:
+    if _use_s3():
+        from botocore.exceptions import ClientError
+        try:
+            _s3().head_object(Bucket=config.s3_bucket, Key=_check(key))
+            return True
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey", "NotFound"):
+                return False
+            raise
     return local_path(key).exists()
 
 

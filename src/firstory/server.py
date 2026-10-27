@@ -84,6 +84,10 @@ def check_token(request: Request) -> None:
 async def lifespan(_: FastAPI):
     if not config.internal_token:
         raise RuntimeError("FIRSTORY_INTERNAL_TOKEN이 비어 있습니다. Spring과 같은 값을 넣어 주세요.")
+    if config.storage not in ("local", "s3"):
+        raise RuntimeError(f"FIRSTORY_STORAGE는 local 또는 s3입니다: {config.storage!r}")
+    if config.storage == "s3" and not config.s3_bucket:
+        raise RuntimeError("FIRSTORY_STORAGE=s3면 FIRSTORY_S3_BUCKET이 필요합니다. Spring STORAGE_S3_BUCKET과 같은 버킷을 넣어 주세요.")
     if config.mock:
         mock.enable()
         log.warning("mock 모드: OpenAI를 부르지 않습니다")
