@@ -129,6 +129,10 @@
 - 각 페이지:
   - `characters_in_scene`: 그 그림에 실제로 보이는 캐릭터 이름만. 본문에 언급돼도 화면에 없으면 뺀다.
   - `image_prompt`: 외형은 반복하지 않는다 (참조 이미지로 따로 간다). 대신 **정확한 동작과 위치**를 쓴다. 본문이 "바퀴 하나만 담요 밖으로 내밀었다"면 그림도 정확히 그것 — "fully out of the blanket"이 아니라 "only one front wheel peeking out from under the blanket, rest of body still covered". 누가 어디에 서/앉아 있는지, 서로 얼마나 떨어져 있는지, 시선이 어디를 향하는지, 소품이 어디 있는지.
+  - `text_position`: 화면에서 글을 그림 위 어디에 얹을지. 그림은 이쪽 30%를 빈 바닥·벽·하늘로 비우고, 인물과 중요한 물건은 나머지 70%에 그린다.
+    - 기본은 `bottom`. 실내에서 앉거나 서 있는 장면은 대부분 bottom이다 (인물을 조금 위로 올리고 아래는 빈 바닥). 탁자나 러그에 앉아 있다는 것만으로는 top이 아니다.
+    - 다음 중 하나면 **반드시 `top`**: 핵심 행동·물건이 바닥이나 땅 자체에 있음(분필로 바닥에 그리기, 땅에 그린 길, 바닥·침대에 누움, 땅 위의 작은 물건, 발·신발, 물웅덩이, 물) / 위에서 내려다보는 구도, 넓은 공간 아래쪽의 아주 작은 인물 / 장면에 넓은 하늘·별 뜬 밤하늘·높은 천장이 있음.
+    - `image_prompt`도 이 자리에 맞게 쓴다 (top이면 인물을 화면 아래쪽에, bottom이면 위쪽에).
   - 배경 인물도 동물로 쓴다 ("other animal children", "a raccoon teacher"처럼). people, boy, girl처럼 사람을 가리키는 단어를 쓰지 않고, child·children·teacher는 반드시 종 이름과 함께 쓴다 ("rabbit child", "both animal children").
 
 ## Context

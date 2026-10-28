@@ -341,7 +341,7 @@ def result(thread_id: str) -> dict:
         "design": v["story_design"].model_dump(mode="json") if v.get("story_design") else None,
         "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
                              for name, key in ill.character_sheets.items()],
-        "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
+        "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt, "text_position": p.text_position,
                    "image_path": images[p.order].path if p.order in images else None,
                    "image_status": "done" if p.order in images else "failed"} for p in story.pages],
         "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,

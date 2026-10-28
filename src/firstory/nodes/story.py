@@ -92,7 +92,7 @@ def write_story(state: PipelineState) -> dict:
                 "\n\n## 기존 원고\n" + prev.model_dump_json(indent=2, exclude={"characters", "style_guide"})
                 + "\n\n이번에는 원고 전체가 아니라 **피드백 때문에 고쳐야 하는 쪽만** `pages`에 돌려준다. "
                 "order는 기존 원고 그대로. 피드백과 상관없는 쪽은 넣지 않는다 — 기존 원고 그대로 쓰인다. "
-                "고친 쪽의 `image_prompt`·`characters_in_scene`도 새 글에 맞춘다."
+                "고친 쪽의 `image_prompt`·`characters_in_scene`·`text_position`도 새 글에 맞춘다."
             )
     revising = prev is not None
     r, cost = structured(
@@ -125,8 +125,9 @@ def write_story(state: PipelineState) -> dict:
 
 
 def _scene_changed(prev: StoryText, new: StoryText) -> list[int]:
-    before = {pg.order: (pg.image_prompt, pg.characters_in_scene) for pg in prev.pages}
-    return [pg.order for pg in new.pages if before.get(pg.order) != (pg.image_prompt, pg.characters_in_scene)]
+    scene = lambda pg: (pg.image_prompt, pg.characters_in_scene, pg.text_position)  # noqa: E731
+    before = {pg.order: scene(pg) for pg in prev.pages}
+    return [pg.order for pg in new.pages if before.get(pg.order) != scene(pg)]
 
 
 def _apply_revision(prev: StoryText, r: StoryRevision) -> StoryText:
