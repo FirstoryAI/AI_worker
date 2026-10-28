@@ -244,6 +244,9 @@ class StoryPage(BaseModel):
     image_prompt: str = Field(
         description="이 페이지 장면. 캐릭터 외형은 반복하지 말고 **정확한 자세·동작·위치·표정·구도**를 구체적으로. 본문의 미묘한 동작(예: 바퀴 하나만 담요 밖으로)을 그대로. 영어로"
     )
+    text_position: Literal["top", "bottom"] = Field(
+        "bottom", description="글을 얹을 자리. 그림의 이쪽 30%를 비워 둔다. 기본 bottom, 바닥이 장면의 핵심이거나 넓은 하늘·천장이 있으면 top"
+    )
 
 
 class StoryText(BaseModel):

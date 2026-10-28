@@ -134,7 +134,7 @@ class PipelineState(TypedDict):
 - **`InterviewTurnResult`** = `contextUpdate` + `status: ask|sufficient` + `nextQuestion` + `reason`
 - **`StoryText`** — title, pages[].text, `characterSheet`(주인공 묘사 한 문단), pages[].`imagePrompt`
 - **`ReadingGuide`** — `prompts[]{afterPage, text, purpose: empathy|predict|perspective|connect, parentHint}` + `beforeReading{intent, tips[]}` + `afterReading{bridgeQuestion, ifUndecided}`
-- **`StoryResult`** — 프론트에 주는 최종 구조. `pages[]{order, text, image{url,status}}` + `guide` + `status/progress`
+- **`StoryResult`** — 프론트에 주는 최종 구조. `pages[]{order, text, text_position, image{url,status}}` + `guide` + `status/progress`
 
 ### 💡 제안 스키마
 

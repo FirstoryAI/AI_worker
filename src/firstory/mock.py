@@ -66,7 +66,7 @@ def fake_structured(*, node, model, schema, system, user):
                          characters=[CharacterSheet(name="포포", role="protagonist", visual_description="small pink rabbit"),
                                      CharacterSheet(name="엄마곰", role="supporting", visual_description="large brown bear")],
                          style_guide="soft watercolor",
-                         pages=[StoryPage(order=i, text=f"{i}페이지. 포포는 깡충 뛰었어요.", characters_in_scene=["포포"] + (["엄마곰"] if i % 2 == 0 else []), image_prompt=f"scene {i}") for i in pages])
+                         pages=[StoryPage(order=i, text=f"{i}페이지. 포포는 깡충 뛰었어요.", characters_in_scene=["포포"] + (["엄마곰"] if i % 2 == 0 else []), image_prompt=f"scene {i}", text_position="top" if i % 3 == 0 else "bottom") for i in pages])
     if schema is StoryRevision:   # 글 다시 만들기: 1쪽만 고친다
         return StoryRevision(reason="mock", pages=[StoryPage(order=1, text="1페이지. 포포는 천천히 걸었어요.",
                                                              characters_in_scene=["포포"], image_prompt="scene 1 revised")])

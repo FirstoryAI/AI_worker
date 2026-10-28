@@ -231,6 +231,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert [p["page_no"] for p in res["pages"]] == list(range(1, config.page_count + 1))
     assert all(p["image_status"] == "done" and p["image_path"] == f"{prefix}images/page-{p['page_no']:02d}.png"
                and storage.exists(p["image_path"]) for p in res["pages"]), res["pages"][0]
+    assert [p["text_position"] for p in res["pages"]][:3] == ["bottom", "bottom", "top"]   # 가짜 원고는 3의 배수 쪽만 top
     assert {(s["role"], s["name"]) for s in res["character_sheets"]} == {("protagonist", "포포"), ("supporting", "엄마곰")}
     assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
     assert set(res["guide"]) == {"prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
@@ -436,10 +437,11 @@ revised_pages = {"value": [6], "same_scene": False}
 def rewrite_page6(**kw):
     if kw["node"] == "write_story" and kw["schema"] is StoryRevision:
         writer_calls.append(kw["system"])
-        same = revised_pages["same_scene"]   # True면 글만 고치고 장면(그림 지시·등장인물)은 mock 첫 원고와 같게
+        same = revised_pages["same_scene"]   # True면 글만 고치고 장면(그림 지시·등장인물·글 위치)은 mock 첫 원고와 같게
         return StoryRevision(reason="test", pages=[StoryPage(order=n, text=f"{n}쪽. 포포는 깜짝 놀랐어요.",
                                                              characters_in_scene=["포포"] + (["엄마곰"] if same and n % 2 == 0 else []),
-                                                             image_prompt=f"scene {n}" if same else f"scene {n} revised")
+                                                             image_prompt=f"scene {n}" if same else f"scene {n} revised",
+                                                             text_position="top" if same and n % 3 == 0 else "bottom")
                                                    for n in revised_pages["value"]])
     if kw["node"] == "polish_story":
         polish_systems.append(kw["system"])

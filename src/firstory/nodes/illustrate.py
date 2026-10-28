@@ -70,7 +70,17 @@ def sheet_prompt(c: CharacterSheet, style: str) -> str:
     ])
 
 
-def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt: str) -> str:
+_LAYOUT = {
+    "bottom": "Layout: keep the bottom 30% of the image as a calm, empty area for the story text to be placed later — "
+              "only a soft, plain continuation of the floor or ground with very little detail. "
+              "Place all characters, faces and important objects in the upper 70%. Nothing important may touch the bottom 30%.",
+    "top": "Layout: keep the top 30% of the image as a calm, empty area for the story text to be placed later — "
+           "only a soft, plain continuation of the wall, ceiling or sky with very little detail. "
+           "Place all characters, faces and important objects in the lower 70%. Nothing important may touch the top 30%.",
+}
+
+
+def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt: str, text_position: str = "bottom") -> str:
     lines = [
         f"Illustrate this picture-book scene. {len(page_chars)} reference image(s) are attached, one per character, in this order:",
     ]
@@ -81,6 +91,7 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
         f"Scene (follow the described poses and positions precisely): {image_prompt}",
         f"Style: {story.style_guide}",
         "Full-bleed illustration, no text, no speech bubbles, no borders.",
+        _LAYOUT[text_position],
     ]
     return "\n".join(lines)
 
@@ -117,7 +128,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         try:
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
-            png, tin, tout = _edit(page_prompt(story, chars, p.image_prompt), refs)
+            png, tin, tout = _edit(page_prompt(story, chars, p.image_prompt, p.text_position), refs)
             key = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.png"), png)
             return PageImage(order=p.order, path=key, status="completed"), int((time.time() - t0) * 1000), tin, tout
         except Exception as e:  # noqa: BLE001
