@@ -300,6 +300,7 @@ class AfterReading(BaseModel):
 
 
 class ReadingGuide(BaseModel):
+    synopsis: str = Field("", description="서재에서 부모가 보는 동화 줄거리. 해요체 2~3문장, 동화 안에서 일어난 일만")
     prompts: list[GuidePrompt] = Field(description="기본 2개, 최대 3개")
     before_reading: BeforeReading
     after_reading: AfterReading

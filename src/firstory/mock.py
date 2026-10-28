@@ -74,7 +74,8 @@ def fake_structured(*, node, model, schema, system, user):
         given = [int(n) for n in re.findall(r'"order": (\d+)', system)]   # 글 다시 만들기면 다시 쓴 쪽만 온다
         return PolishedStory(pages=[PolishedPage(order=i, text=f"{i}쪽. 포포는 깡충 뛰었어요.") for i in given])
     if schema is ReadingGuide:
-        return ReadingGuide(prompts=[GuidePrompt(id="q1", after_page=3, text="포포는 어떤 기분이었을까요?", purpose="empathy", parent_hint="대답 안 해도 괜찮아요"),
+        return ReadingGuide(synopsis="토끼 포포는 친구에게 같이 놀자고 했다가 거절당해 속상했어요. 다음 날 포포는 다시 말을 걸었어요.",
+                            prompts=[GuidePrompt(id="q1", after_page=3, text="포포는 어떤 기분이었을까요?", purpose="empathy", parent_hint="대답 안 해도 괜찮아요"),
                                      GuidePrompt(id="q2", after_page=8, text="내일 포포는 뭐라고 말하고 싶을까요?", purpose="predict")],
                             before_reading=BeforeReading(intent="거절당한 마음을 함께 보기", tips=["3페이지에서 잠깐 멈춰보세요"]),
                             after_reading=AfterReading(bridge_question="너도 포포처럼 느낀 적 있어?"))

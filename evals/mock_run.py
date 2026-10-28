@@ -55,7 +55,7 @@ while "__interrupt__" in r:
             r = graph.invoke(Command(resume={"action": "approve"}), cfg)
 print("interrupts:", seen)
 assert seen == ["interview", "interview", "confirm", "review", "review"], seen  # images 재생성 → render → review 다시
-assert r["status"] == "completed" and len(r["guide"].prompts) == 2
+assert r["status"] == "completed" and len(r["guide"].prompts) == 2 and r["guide"].synopsis
 assert r["tone"] == "warm"   # 확인 재개 값의 tone이 state에 남음
 nodes = [c.node for c in r["cost"]]
 assert nodes.count("illustrate:page3") == 2 and nodes.count("illustrate:page1") == 1, nodes  # 3페이지만 다시 그림
