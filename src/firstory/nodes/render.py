@@ -78,7 +78,7 @@ def build_html(state: PipelineState) -> str:
         panel = f"""
   <aside id="library">
     <h2>부모용 · 읽기 전에</h2>
-    <div class="card"><h3>{_e(story.title)}</h3><p>{_e(g.before_reading.intent)}</p></div>
+    <div class="card"><h3>{_e(story.title)}</h3>{f'<p>{_e(g.synopsis)}</p>' if g.synopsis else ''}<p>{_e(g.before_reading.intent)}</p></div>
     <h4>함께 읽을 때</h4><ul>{''.join(f'<li>{_e(t)}</li>' for t in g.before_reading.tips)}</ul>
     <h4>이야기 속 질문</h4>{starters}
     <h4>다 읽은 뒤</h4><p class="say">“{_e(g.after_reading.bridge_question)}”</p>
