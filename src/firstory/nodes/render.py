@@ -97,7 +97,7 @@ def build_html(state: PipelineState) -> str:
 @media(max-width:900px){{body{{grid-template-columns:1fr}}#library{{display:none}}}}
 #book{{position:relative;display:flex;align-items:center;justify-content:center;padding:24px;cursor:pointer;user-select:none}}
 .slide{{display:none;width:min(720px,100%);text-align:center}}.slide.active{{display:block}}
-.slide img,.ph{{width:100%;aspect-ratio:1;object-fit:cover;border-radius:24px;box-shadow:0 12px 40px rgba(60,40,20,.15);background:var(--soft)}}
+.slide img,.ph{{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:24px;box-shadow:0 12px 40px rgba(60,40,20,.15);background:var(--soft)}}
 .ph{{display:flex;align-items:center;justify-content:center;padding:32px;color:var(--dim);font-size:14px;line-height:1.6}}
 .cover h1{{font-size:40px;margin:28px 0 8px}}.hint{{color:var(--dim);font-size:14px}}
 .page .text{{font-size:26px;line-height:1.65;margin:28px 12px 0;word-break:keep-all}}.sfx{{font-weight:800;font-size:1.2em;color:var(--accent)}}
