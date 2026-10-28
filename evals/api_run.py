@@ -234,7 +234,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert [p["text_position"] for p in res["pages"]][:3] == ["bottom", "bottom", "top"]   # 가짜 원고는 3의 배수 쪽만 top
     assert {(s["role"], s["name"]) for s in res["character_sheets"]} == {("protagonist", "포포"), ("supporting", "엄마곰")}
     assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
-    assert set(res["guide"]) == {"prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
+    assert set(res["guide"]) == {"synopsis", "prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
     assert res["cost"]["image_count"] == config.page_count + 2 and res["cost"]["input_tokens"] == 0, res["cost"]
     assert res["safety"] == {"level": "OK", "category": None, "reason": None}
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
