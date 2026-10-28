@@ -22,6 +22,7 @@ class Config:
     image_model: str = _env("IMAGE_MODEL", "gpt-image-2")
     image_quality: str = _env("IMAGE_QUALITY", "low")
     image_size: str = _env("IMAGE_SIZE", "1920x1088")  # 16:9. 가로·세로 모두 16의 배수여야 해서 1080 대신 1088
+    cover_size: str = _env("COVER_SIZE", "1024x1024")  # 표지는 정사각형
     image_concurrency: int = int(_env("IMAGE_CONCURRENCY", "3"))
 
     page_count: int = 10

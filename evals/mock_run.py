@@ -196,4 +196,33 @@ assert lab.score_row(e["variants"]["all"])["설계 반영"] == "4/5"
 assert "| 기본 |" in (exp / "compare.md").read_text(encoding="utf-8")
 print("lab ok:", exp)
 
+# ── 6) 표지: 전부 그릴 때 그리고, 글 다시 만들기에서 제목이 그대로면 재사용, 제목만 바뀌면 표지만. 실패하면 None ──
+from firstory.nodes import illustrate as il  # noqa: E402
+from firstory.schemas import CharacterSheet, StoryPage, StoryText  # noqa: E402
+
+il.set_image_override(mock.tiny_png)
+st = StoryText(title="A", characters=[CharacterSheet(name="포포", role="protagonist", visual_description="rabbit")],
+               style_guide="s", pages=[StoryPage(order=i, text="t", characters_in_scene=["포포"], image_prompt="p") for i in (1, 2)])
+c1 = il.illustrate({"story": st, "output_prefix": "stories/c/runs/1/"})["illustrations"]
+assert c1.cover == "stories/c/runs/1/images/cover.png" and c1.cover_title == "A"
+same = il.illustrate({"story": st, "illustrations": c1, "redraw_pages": [], "output_prefix": "stories/c/runs/2/"})
+assert same["illustrations"] is c1 and same["cost"] == []
+retitled = il.illustrate({"story": st.model_copy(update={"title": "B"}), "illustrations": c1, "redraw_pages": [],
+                          "output_prefix": "stories/c/runs/3/"})
+assert retitled["illustrations"].cover == "stories/c/runs/3/images/cover.png" and retitled["illustrations"].cover_title == "B"
+assert [p.path for p in retitled["illustrations"].pages] == [p.path for p in c1.pages]
+assert [c.node for c in retitled["cost"]] == ["illustrate:cover"]
+
+
+def no_cover(prompt, refs):
+    if "Front cover" in prompt:
+        raise RuntimeError("표지 실패 흉내")
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(no_cover)
+failed = il.illustrate({"story": st, "output_prefix": "stories/c/runs/4/"})["illustrations"]
+assert failed.cover is None and failed.cover_title is None and all(p.status == "completed" for p in failed.pages)
+print("cover ok")
+
 print("\nALL OK")

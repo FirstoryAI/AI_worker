@@ -322,6 +322,8 @@ class PageImage(BaseModel):
 class Illustrations(BaseModel):
     character_sheets: dict[str, str] = {}   # 이름 → 저장소 key
     pages: list[PageImage] = []
+    cover: Optional[str] = None             # 표지 key (제목이 들어간 정사각형 그림). 못 그렸으면 None
+    cover_title: Optional[str] = None       # 그 표지에 쓴 제목. 제목이 그대로면 다시 그리지 않는다
 
     @property
     def character_sheet_path(self) -> Optional[str]:  # 하위 호환 (주인공)

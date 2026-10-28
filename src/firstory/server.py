@@ -339,6 +339,7 @@ def result(thread_id: str) -> dict:
         "checkpoint_id": snap.config["configurable"]["checkpoint_id"],   # 이 버전에서 다시 만들 때 쓴다 (스펙 8장)
         "title": story.title,
         "design": v["story_design"].model_dump(mode="json") if v.get("story_design") else None,
+        "cover_path": ill.cover,   # 제목이 들어간 정사각형 표지. 못 그렸으면 null
         "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
                              for name, key in ill.character_sheets.items()],
         "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt, "text_position": p.text_position,

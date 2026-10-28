@@ -40,7 +40,7 @@ def _gen(prompt_text: str) -> tuple[bytes, int, int]:
     return base64.b64decode(res.data[0].b64_json), *_usage(res)
 
 
-def _edit(prompt_text: str, refs: list[tuple[str, bytes]]) -> tuple[bytes, int, int]:
+def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] = None) -> tuple[bytes, int, int]:
     """refs: [(파일명, png bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2는 참조 이미지 여러 장 지원)."""
     if _override:
         return _override(prompt_text, [b for _, b in refs]), 0, 0
@@ -49,7 +49,7 @@ def _edit(prompt_text: str, refs: list[tuple[str, bytes]]) -> tuple[bytes, int, 
         model=config.image_model,
         image=images if len(images) > 1 else images[0],
         prompt=prompt_text,
-        size=config.image_size,
+        size=size or config.image_size,
         quality=config.image_quality,
         n=1,
         **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
@@ -80,6 +80,20 @@ _LAYOUT = {
 }
 
 
+def cover_prompt(story: StoryText) -> str:
+    lines = [f"Front cover of a children's picture book. {len(story.characters)} reference image(s) are attached, one per character, in this order:"]
+    for i, c in enumerate(story.characters, 1):
+        lines.append(f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}")
+    lines += [
+        "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add other characters.",
+        "The protagonist is the clear focus, warm and inviting, in a simple setting that hints at the story.",
+        f"Story setting (for mood only): {story.pages[0].image_prompt if story.pages else ''}",
+        f"Style: {story.style_guide}",
+        f'Put the book title in Korean at the top in large, rounded, hand-lettered style, spelled exactly: "{story.title}". No other text, no borders.',
+    ]
+    return "\n".join(lines)
+
+
 def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt: str, text_position: str = "bottom") -> str:
     lines = [
         f"Illustrate this picture-book scene. {len(page_chars)} reference image(s) are attached, one per character, in this order:",
@@ -98,14 +112,16 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
 
 def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None):
     """img_prefix: 이번 실행의 그림 key 앞부분 (…/images). 일부 쪽만 다시 그리면 나머지 쪽과 시트는
-    prev의 key를 그대로 둔다 — 파일을 복사하지 않는다 (API 스펙 G4)."""
+    prev의 key를 그대로 둔다 — 파일을 복사하지 않는다 (API 스펙 G4).
+    only_pages가 None이면 시트·표지·모든 쪽, 집합이면 그 쪽만(빈 집합이면 쪽은 그대로). 표지는 전부 그릴 때와
+    제목이 바뀌었거나 이전 표지가 없을 때만 다시 그린다."""
     costs: list[CostEntry] = []
     ill = prev.model_copy(deep=True) if prev else Illustrations()
     by_name = {c.name: c for c in story.characters}
 
     # 1) 캐릭터 시트 — 일부 쪽만 다시 그릴 때는 이전 실행의 시트를 그대로 쓴다. 여러 명이면 병렬
     def make_sheet(c: CharacterSheet):
-        if only_pages and c.name in ill.character_sheets:
+        if only_pages is not None and c.name in ill.character_sheets:
             return c.name, ill.character_sheets[c.name], None
         t0 = time.time()
         png, tin, tout = _gen(sheet_prompt(c, story.style_guide))
@@ -120,7 +136,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
     ref_bytes = {name: storage.read_bytes(key) for name, key in ill.character_sheets.items()}
 
     # 2) 페이지 병렬 — 장면에 나오는 캐릭터 시트만 참조로
-    targets = [p for p in story.pages if not only_pages or p.order in only_pages]
+    targets = [p for p in story.pages if only_pages is None or p.order in only_pages]
     by_order = {pi.order: pi for pi in ill.pages}
 
     def work(p):
@@ -134,10 +150,27 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         except Exception as e:  # noqa: BLE001
             return PageImage(order=p.order, status="failed", error=str(e)[:300]), int((time.time() - t0) * 1000), 0, 0
 
+    def cover():
+        t0 = time.time()
+        try:
+            refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in story.characters]
+            png, tin, tout = _edit(cover_prompt(story), refs, size=config.cover_size)
+            key = storage.write_bytes(storage.join(img_prefix, "cover.png"), png)
+            return key, CostEntry(node="illustrate:cover", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
+        except Exception:  # noqa: BLE001 — 표지가 없으면 Spring이 캐릭터 시트를 쓴다
+            return None, CostEntry(node="illustrate:cover", model=config.image_model, ms=int((time.time() - t0) * 1000))
+
+    redraw_cover = only_pages is None or not ill.cover or ill.cover_title != story.title
     with ThreadPoolExecutor(max_workers=max(1, config.image_concurrency)) as ex:
+        cover_job = ex.submit(cover) if redraw_cover else None
         for pi, ms, tin, tout in ex.map(work, targets):
             by_order[pi.order] = pi
             costs.append(CostEntry(node=f"illustrate:page{pi.order}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1 if pi.status == "completed" else 0, ms=ms))
+
+        if cover_job:
+            key, cost = cover_job.result()
+            ill.cover, ill.cover_title = key, story.title if key else None
+            costs.append(cost)
 
     ill.pages = [by_order[o] for o in sorted(by_order)]
     return ill, costs
@@ -155,7 +188,7 @@ def illustrate(state: PipelineState) -> dict:
         return {"illustrations": ill, "cost": costs, "redraw_pages": None}
     done = {pi.order for pi in prev.pages if pi.status == "completed" and pi.path}
     pages = set(redraw) | ({p.order for p in story.pages} - done)
-    if not pages:   # 글만 바뀌고 장면은 그대로 — 그림은 전부 이전 실행 것
+    if not pages and prev.cover and prev.cover_title == story.title:   # 글만 바뀌고 장면·제목은 그대로 — 그림은 전부 이전 실행 것
         return {"illustrations": prev, "cost": [], "redraw_pages": None}
     ill, costs = _run(story, prefix, only_pages=pages, prev=prev)
     return {"illustrations": ill, "cost": costs, "redraw_pages": None}

@@ -46,6 +46,7 @@ def build_html(state: PipelineState) -> str:
         return os.path.relpath(storage.local_path(key), here)
 
     img = {p.order: src(p.path) for p in (ill.pages if ill else []) if p.status == "completed" and p.path}
+    cover = src(ill.cover) if ill and ill.cover else None
     sheet = src(ill.character_sheet_path) if ill and ill.character_sheet_path else None
     prompts_after = {}
     for q in (guide.prompts if guide else []):
@@ -53,7 +54,7 @@ def build_html(state: PipelineState) -> str:
 
     slides = [f"""
     <section class="slide cover">
-      {f'<img src="{_e(sheet)}" alt="">' if sheet else '<div class="ph"></div>'}
+      {f'<img class="square" src="{_e(cover)}" alt="">' if cover else f'<img src="{_e(sheet)}" alt="">' if sheet else '<div class="ph"></div>'}
       <h1>{_e(story.title)}</h1><p class="hint">→ 방향키 또는 클릭</p>
     </section>"""]
     for p in story.pages:
@@ -99,7 +100,7 @@ def build_html(state: PipelineState) -> str:
 .slide{{display:none;width:min(720px,100%);text-align:center}}.slide.active{{display:block}}
 .slide img,.ph{{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:24px;box-shadow:0 12px 40px rgba(60,40,20,.15);background:var(--soft)}}
 .ph{{display:flex;align-items:center;justify-content:center;padding:32px;color:var(--dim);font-size:14px;line-height:1.6}}
-.cover h1{{font-size:40px;margin:28px 0 8px}}.hint{{color:var(--dim);font-size:14px}}
+.cover img.square{{aspect-ratio:1/1;width:min(520px,100%)}}.cover h1{{font-size:40px;margin:28px 0 8px}}.hint{{color:var(--dim);font-size:14px}}
 .page{{position:relative}}.page .text{{position:absolute;left:4%;right:4%;margin:0;padding:10px 18px;border-radius:16px;background:rgba(251,246,238,.85);font-size:22px;line-height:1.55;word-break:keep-all}}.page .text.top{{top:3%}}.page .text.bottom{{bottom:3%}}.sfx{{font-weight:800;font-size:1.2em;color:var(--accent)}}
 .question.active{{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh}}
 .bubble{{background:#fff;border:3px solid var(--accent);border-radius:32px;padding:40px 48px;max-width:640px}}
