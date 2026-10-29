@@ -85,7 +85,7 @@ FIRSTORY 플로우는 직선이 아니다.
 | `write_story` | **동화 생성기** | main | Context + summary (+설계, +피드백) → 전체 텍스트 + `characterSheet` + 페이지별 `imagePrompt` | 🔒 ④-1 |
 | `parent_review` | – | – | `interrupt()`. 텍스트+이미지+가이드 **완성 후** 부모가 확인. 완료 / 재생성(scope) | 기획안 10, STEP 5 |
 | `reading_guide` | **Role B · 독서 코치** | main | Context + summary + 페이지 텍스트 → `ReadingGuide` (synopsis·prompts·before·after). **이미지 안 봄, illustrate와 병렬** | 🔒 ③ |
-| `illustrate` | – | image | characterSheet → 시트 1장 → 페이지 N장 병렬, 페이지 단위 실패 처리 | 🔒 ④ |
+| `illustrate` | – | image | characterSheet → 시트 1장 → 페이지 N장 + 표지 1장(제목 들어간 정사각형, `COVER_SIZE`) 병렬, 페이지 단위 실패 처리. 표지는 전부 그릴 때와 제목이 바뀌었을 때만 다시 | 🔒 ④ |
 | `render` | – | – | 단계별 JSON + book.html. 재생성 후에도 다시 돈다 | 🔒 ⑤ |
 
 - **동화 속 질문은 B가 만든다.** 작가가 쓰지 않는다. `guide.prompts[]`에 `afterPage`로만 페이지와 연결 → 질문 수·위치를 바꿔도 `pages`는 안 건드린다. 🔒 ⑤-1
@@ -117,7 +117,7 @@ class PipelineState(TypedDict):
     review_feedback: str | None         # 자유 서술. "토끼 말고 공룡으로" / "3p 엄마 말이 설명조"
     # 산출물
     guide: ReadingGuide | None          # 🔒 synopsis / prompts / beforeReading / afterReading
-    illustrations: Illustrations | None # 🔒 pages[].image.{url,status}
+    illustrations: Illustrations | None # 🔒 pages[].image.{url,status} + cover
     # 메타
     status: StoryStatus                 # 🔒 requested → generating_text → generating_images → completed | failed
     cost: CostLog                       # 노드별 토큰·시간·이미지 수

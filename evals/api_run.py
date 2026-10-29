@@ -184,7 +184,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 print("interview ok")
 
 # ── 생성·상태·결과 (스펙 7-4 ~ 7-6) ──
-RESULT_KEYS = {"run_no", "checkpoint_id", "title", "design", "character_sheets", "pages", "guide", "cost", "safety"}
+RESULT_KEYS = {"run_no", "checkpoint_id", "title", "design", "cover_path", "character_sheets", "pages", "guide", "cost", "safety"}
 
 
 def run_body(run_no=1, prefix=None, **extra):
@@ -235,7 +235,8 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert {(s["role"], s["name"]) for s in res["character_sheets"]} == {("protagonist", "포포"), ("supporting", "엄마곰")}
     assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
     assert set(res["guide"]) == {"synopsis", "prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
-    assert res["cost"]["image_count"] == config.page_count + 2 and res["cost"]["input_tokens"] == 0, res["cost"]
+    assert res["cover_path"] == f"{prefix}images/cover.png" and storage.exists(res["cover_path"])
+    assert res["cost"]["image_count"] == config.page_count + 3 and res["cost"]["input_tokens"] == 0, res["cost"]   # 쪽 + 시트 2 + 표지
     assert res["safety"] == {"level": "OK", "category": None, "reason": None}
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     err(c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")
@@ -353,6 +354,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert page_paths(v2)[3] == "stories/12/runs/2/images/page-03.png"
     assert all(path == f"stories/12/runs/1/images/page-{n:02d}.png" for n, path in page_paths(v2).items() if n != 3)
     assert v2["character_sheets"] == v1["character_sheets"] and v2["cost"]["image_count"] == 1, v2["cost"]
+    assert v2["cover_path"] == v1["cover_path"]   # 일부 쪽만 그림만 다시: 표지는 그대로
 
     # v1로 되돌려 글 다시 → v3(runs/3)는 v1에서 갈라진다. v2 체크포인트도 그대로 남는다
     # mock 작가는 1쪽만 고쳐 그 쪽 장면이 바뀐다 → 1쪽만 runs/3에 새로 그리고 나머지 쪽·시트는 v1 key
@@ -472,6 +474,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert page_paths(second)[6] == "stories/78/runs/2/images/page-06.png"
     assert all(path == page_paths(first)[n] for n, path in page_paths(second).items() if n != 6)
     assert second["character_sheets"] == first["character_sheets"] and second["cost"]["image_count"] == 1, second["cost"]
+    assert second["cover_path"] == first["cover_path"]   # 제목이 그대로라 표지 재사용
     after = server._graph.get_state(server._cfg(tid8)).values
     assert after.get("revision_feedback") is None and after.get("revision_base") is None   # 다음 실행에 남지 않는다
     assert after.get("redraw_pages") is None
