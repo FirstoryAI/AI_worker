@@ -39,7 +39,9 @@ uv run python evals/s3_storage_check.py                       # S3 저장소 배
 
 결과물은 `FIRSTORY_OUTPUT_ROOT`(없으면 `out/`) 아래 실행의 `output_prefix`(Spring이 실행마다 주는 `stories/{id}/runs/{n}/`)에 쓴다. 그림만 다시 그리면 안 바뀐 쪽과 캐릭터 시트는 이전 실행의 파일을 그대로 가리킨다 (`src/firstory/storage.py`). 글 다시 만들기도 장면(그림 지시·등장인물)이 바뀐 쪽만 새로 그리고 나머지는 같은 방식이다 (`redraw_pages`). CLI·뷰어는 `output_prefix`가 없어 예전처럼 `out/<타임스탬프>_<이름>/`이다.
 
-Spring과 서버가 다른 컴퓨터면(Railway, EC2 등) 폴더를 같이 쓸 수 없어 S3에 둔다. `FIRSTORY_STORAGE=s3`, `FIRSTORY_S3_BUCKET`(Spring `STORAGE_S3_BUCKET`과 같은 버킷), `FIRSTORY_S3_REGION`(기본 `ap-northeast-2`). 접근 키는 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`(EC2는 IAM 역할). key가 그대로 객체 key라 Spring이 같은 key로 읽는다. 버킷을 공개하지 않는다. S3 모드에서도 체크포인트(`out/checkpoints.db`)는 로컬이다. CLI·뷰어는 로컬(`local`, 기본)로 쓴다.
+Spring과 서버가 다른 컴퓨터면(Railway, EC2 등) 폴더를 같이 쓸 수 없어 S3에 둔다. `FIRSTORY_STORAGE=s3`, `FIRSTORY_S3_BUCKET`(Spring `STORAGE_S3_BUCKET`과 같은 버킷), `FIRSTORY_S3_REGION`(기본 `ap-northeast-2`). 접근 키는 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`(EC2는 IAM 역할). key가 그대로 객체 key라 Spring이 같은 key로 읽는다. 버킷을 공개하지 않는다. S3 모드에서도 체크포인트는 로컬 파일이다. CLI·뷰어는 로컬(`local`, 기본)로 쓴다.
+
+체크포인트(그래프 상태와 실행 기록 `ai_runs`, SQLite)는 `FIRSTORY_CHECKPOINT_DB`(없으면 `out/checkpoints.db`)에 둔다. 서버는 이 파일이 다시 배포해도 남아야 한다. 지워지면 진행 중인 인터뷰와 미리보기 중인 동화의 다시 만들기·다시 시도·확정이 모두 `THREAD_NOT_FOUND`가 된다. Railway는 AI 서비스에 볼륨을 붙이고(Mount path `/data`) `FIRSTORY_CHECKPOINT_DB=/data/checkpoints.db`로 띄운다. 볼륨이 붙은 서비스는 레플리카 1개이고, 배포할 때 이전 컨테이너를 먼저 내려 잠깐 멈춘다. 배포 순간 돌던 생성은 다음 기동 때 FAILED가 되고(`Runs.interrupt_running`) 부모가 다시 시도하면 체크포인트에서 이어 간다. 컨테이너가 root가 아닌 사용자로 돌아 볼륨에 쓰지 못하면 `RAILWAY_RUN_UID=0`을 넣는다.
 
 `--http h11`: Spring(Java HttpClient)이 `Upgrade: h2c` 헤더를 붙여 보내는데, uvicorn 기본 파서(httptools)는 이때 본문을 버려 422가 난다. h11 파서는 헤더를 무시하고 본문을 받는다.
 
@@ -48,7 +50,7 @@ Spring과 서버가 다른 컴퓨터면(Railway, EC2 등) 폴더를 같이 쓸 �
 `FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). 위기 신호는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
 
 실행마다 `out/<타임스탬프>/`에 `00-context.json … 05-illustrations.json`, `images/`, `book.html`, `99-cost.json`이 남고,
-그래프 상태는 `out/checkpoints.db`(SQLite)에 저장됨. LangSmith 켜져 있으면 smith.langchain.com 프로젝트 `firstory-pipeline`에 트레이스가 올라감.
+그래프 상태는 `out/checkpoints.db`(SQLite, `FIRSTORY_CHECKPOINT_DB`로 바꿀 수 있음)에 저장됨. LangSmith 켜져 있으면 smith.langchain.com 프로젝트 `firstory-pipeline`에 트레이스가 올라감.
 
 ## 흐름
 
