@@ -14,7 +14,7 @@
 - **Python + LangGraph** — 플로우를 그래프로 선언. 인터뷰 루프, 사람 입력 대기(interrupt), 병렬 실행, 상태 저장·재개가 기본 제공
 - **LangSmith** — 모든 LLM 호출이 자동 기록됨. "이 동화 왜 이렇게 나왔지?"를 노드별로 추적
 - **OpenAI** — 텍스트 `gpt-5.5` / `gpt-5.4-mini`, 이미지 `gpt-image-2`
-- **SQLite** — 그래프 상태 체크포인트 (`out/checkpoints.db`). 나중에 Postgres로 교체
+- **SQLite** — 그래프 상태 체크포인트 (`FIRSTORY_CHECKPOINT_DB`, 기본 `out/checkpoints.db`). 나중에 Postgres로 교체
 - **Streamlit** — 입력↔출력 확인용 뷰어. 버리는 물건, 진짜 프론트 아님
 
 ## 흐름

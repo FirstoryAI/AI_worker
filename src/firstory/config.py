@@ -33,7 +33,7 @@ class Config:
     guide_prompts_max: int = 3
 
     out_dir: Path = ROOT / "out"
-    checkpoint_db: Path = ROOT / "out" / "checkpoints.db"
+    checkpoint_db: Path = Path(_env("FIRSTORY_CHECKPOINT_DB", str(ROOT / "out" / "checkpoints.db")))   # 그래프 체크포인트 + ai_runs (SQLite). 서버는 볼륨 위에 둔다
     output_root: Path = Path(_env("FIRSTORY_OUTPUT_ROOT", str(ROOT / "out")))   # 결과물 저장소 루트 (storage.py, local일 때)
     storage: str = _env("FIRSTORY_STORAGE", "local").lower()   # local | s3. Spring STORAGE_TYPE과 같게 (storage.py)
     s3_bucket: str = os.getenv("FIRSTORY_S3_BUCKET", "").strip()   # s3면 필수. Spring STORAGE_S3_BUCKET과 같은 버킷
