@@ -225,4 +225,34 @@ failed = il.illustrate({"story": st, "output_prefix": "stories/c/runs/4/"})["ill
 assert failed.cover is None and failed.cover_title is None and all(p.status == "completed" for p in failed.pages)
 print("cover ok")
 
+# ── 인터뷰 상한(15)과 반복: 몇 턴 전 질문으로 돌아가도 끝내고, 15턴째에는 max_turns ──
+from firstory.nodes import interview as iv  # noqa: E402
+from firstory.schemas import InterviewTurnResult, ParentUpdate, StoryInputContext, Turn  # noqa: E402
+
+assert config.max_interview_turns == 15
+ctx0 = StoryInputContext.model_validate(data)
+asked = [Turn(question=f"질문 {i}번째는 무엇인가요?", answer="답") for i in range(1, 4)]
+
+
+def asks(question):
+    return lambda **kw: InterviewTurnResult(context_update=ParentUpdate(), status="ask", next_question=question,
+                                            choices=["예"], reason="r")
+
+
+llm.set_structured_override(asks("질문 1번째는 무엇인가요?"))   # 직전(3번째)이 아니라 첫 질문을 다시
+o = iv.interview_step({"context": ctx0, "interview_turns": asked})
+assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None, o
+assert o["context"].parent.message_direction == "undecided"
+
+llm.set_structured_override(asks("새로운 질문인가요?"))
+o = iv.interview_step({"context": ctx0, "interview_turns": asked})
+assert "interview_done_by" not in o and o["pending_question"] == "새로운 질문인가요?"
+many = [Turn(question=f"서로 다른 질문 {chr(0xAC00 + i * 97)}?", answer="답") for i in range(14)]
+o = iv.interview_step({"context": ctx0, "interview_turns": many})
+assert "interview_done_by" not in o and o["pending_question"] == "새로운 질문인가요?"   # 14개 답한 뒤에도 15번째 질문
+o = iv.interview_step({"context": ctx0, "interview_turns": many + [Turn(question="열다섯째?", answer="답")]})
+assert o["interview_done_by"] == "max_turns", o
+llm.set_structured_override(recording_structured)
+print("interview limit ok")
+
 print("\nALL OK")

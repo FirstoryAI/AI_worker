@@ -343,7 +343,7 @@ GET  /stories/:id            → StoryResult
 
 ### 🔒 확정 (백엔드 사전조사)
 - 입력 스키마 `StoryInputContext` (enum 포함), 필수 4개, `moment` 선택
-- 인터뷰: 4요소 종료 조건, 추출+질문 동시, missingFields 서버 계산, "모르겠다" 정리 질문 2회, 최대 5턴, user_skip, summary
+- 인터뷰: 4요소 종료 조건, 추출+질문 동시, missingFields 서버 계산, "모르겠다" 정리 질문 2회, 최대 15턴(백엔드 상한과 같게), user_skip, summary
 - A/B는 같은 Context 공유 + 역할 프롬프트 분리
 - 질문은 B가 생성, `guide.prompts[]` + `afterPage`, 기본 2 최대 3, `undecided`면 열린 질문만
 - 텍스트 전체 → 이미지 병렬 + 가이드 병렬, `characterSheet` 공통 주입
