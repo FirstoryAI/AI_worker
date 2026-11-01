@@ -3,7 +3,7 @@
 - 매 턴: 추출 + 질문 동시 (호출 1회)
 - missing_fields 는 코드가 계산해서 프롬프트에 넣는다
 - 종료 판단은 AI 말 + 코드 이중 확인
-- "모르겠다" 정리 질문 최대 2회, 최대 5턴, user_skip
+- "모르겠다" 정리 질문 최대 2회, 최대 config.max_interview_turns턴(15), user_skip
 
 세 노드로 나눈 이유: interrupt()는 재개 시 노드를 처음부터 다시 실행한다.
 LLM 호출과 interrupt를 같은 노드에 두면 답변 받을 때마다 LLM이 다시 돈다.
@@ -65,8 +65,9 @@ def interview_step(state: PipelineState) -> dict:
         for k, v in r.moment_update.model_dump(exclude_none=True).items():
             setattr(ctx.moment, k, v)
 
-    # 안전장치: 직전 질문을 그대로 반복하면 더 물을 게 없다는 뜻 → undecided 확정
-    if turns and r.next_question and _same(r.next_question, turns[-1].question):
+    # 안전장치: 이미 한 질문을 또 하면 더 물을 게 없다는 뜻 → undecided 확정.
+    # 직전 것만 보지 않는다. 질문이 많아지면 몇 턴 전 질문으로 돌아가는 반복이 생긴다
+    if r.next_question and any(_same(r.next_question, t.question) for t in turns):
         r.status, r.next_question = "sufficient", None
         if not ctx.parent.message_direction:
             ctx.parent.message_direction = "undecided"
