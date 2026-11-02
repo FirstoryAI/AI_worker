@@ -225,6 +225,29 @@ failed = il.illustrate({"story": st, "output_prefix": "stories/c/runs/4/"})["ill
 assert failed.cover is None and failed.cover_title is None and all(p.status == "completed" for p in failed.pages)
 print("cover ok")
 
+# ── 그림이 콘텐츠 정책에 막히면 장면을 순화해 한 번 더 (#37). 순화해도 막히면 그 쪽만 failed ──
+policy_prompts: list[str] = []
+
+
+def policy(prompt, refs):
+    policy_prompts.append(prompt)
+    if "Scene" in prompt and ("scene-a" in prompt and "gentle" not in prompt or "scene-b" in prompt):
+        raise il.PolicyBlocked("safety system 흉내")
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(policy)
+st2 = st.model_copy(update={"pages": [StoryPage(order=1, text="t", characters_in_scene=["포포"], image_prompt="scene-a"),
+                                      StoryPage(order=2, text="t", characters_in_scene=["포포"], image_prompt="scene-b")]})
+blocked = il.illustrate({"story": st2, "output_prefix": "stories/c/runs/5/"})
+p1, p2 = blocked["illustrations"].pages
+assert p1.status == "completed" and any("gentle scene-a" in x for x in policy_prompts)   # 순화한 장면으로 다시 그림
+assert p2.status == "failed" and "safety system" in p2.error                              # 순화해도 막힘 → 그 쪽만 실패
+assert sum(c.node == "illustrate:soften" for c in blocked["cost"]) == 2
+assert blocked["illustrations"].cover                                                      # 다른 그림은 그대로
+il.set_image_override(mock.tiny_png)
+print("policy retry ok")
+
 # ── 인터뷰 상한(15)과 반복: 몇 턴 전 질문으로 돌아가도 끝내고, 15턴째에는 max_turns ──
 from firstory.nodes import interview as iv  # noqa: E402
 from firstory.schemas import InterviewTurnResult, ParentUpdate, StoryInputContext, Turn  # noqa: E402
