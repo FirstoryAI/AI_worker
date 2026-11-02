@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.claude
+out
+docs
+evals
+viewer
+datasets
+동화책
+**/__pycache__
+*.jpg
+*.html

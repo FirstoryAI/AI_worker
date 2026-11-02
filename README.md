@@ -43,6 +43,15 @@ Spring과 서버가 다른 컴퓨터면(Railway, EC2 등) 폴더를 같이 쓸 �
 
 체크포인트(그래프 상태와 실행 기록 `ai_runs`, SQLite)는 `FIRSTORY_CHECKPOINT_DB`(없으면 `out/checkpoints.db`)에 둔다. 서버는 이 파일이 다시 배포해도 남아야 한다. 지워지면 진행 중인 인터뷰와 미리보기 중인 동화의 다시 만들기·다시 시도·확정이 모두 `THREAD_NOT_FOUND`가 된다. Railway는 AI 서비스에 볼륨을 붙이고(Mount path `/data`) `FIRSTORY_CHECKPOINT_DB=/data/checkpoints.db`로 띄운다. 볼륨이 붙은 서비스는 레플리카 1개이고, 배포할 때 이전 컨테이너를 먼저 내려 잠깐 멈춘다. 배포 순간 돌던 생성은 다음 기동 때 FAILED가 되고(`Runs.interrupt_running`) 부모가 다시 시도하면 체크포인트에서 이어 간다. 컨테이너가 root가 아닌 사용자로 돌아 볼륨에 쓰지 못하면 `RAILWAY_RUN_UID=0`을 넣는다.
 
+Docker 이미지(`Dockerfile`)는 위 서버를 `--http h11`, 워커 프로세스 1개로 띄운다(thread 잠금과 실행 기록이 프로세스 메모리에 있어 여러 프로세스면 안 된다). 체크포인트는 `/data/checkpoints.db`라 `/data`에 볼륨을 붙인다. 포트는 `PORT`(없으면 8000). EC2에서는 백엔드 저장소의 `deploy/ec2/` docker compose가 Spring, Postgres와 함께 띄운다.
+
+```bash
+docker build -t firstory-ai .
+docker run -p 8000:8000 -v firstory-ai:/data \
+  -e FIRSTORY_INTERNAL_TOKEN=local-test-token -e FIRSTORY_MOCK=true firstory-ai
+curl -H 'X-Internal-Token: local-test-token' localhost:8000/health   # {"status":"ok","mock":true}
+```
+
 `--http h11`: Spring(Java HttpClient)이 `Upgrade: h2c` 헤더를 붙여 보내는데, uvicorn 기본 파서(httptools)는 이때 본문을 버려 422가 난다. h11 파서는 헤더를 무시하고 본문을 받는다.
 
 위기 신호(G2)는 `src/firstory/nodes/safety.py` 하나가 판단한다. `/v1/safety/check`(폼, 인터뷰 답변, 다시 만들기 메모)와 완성 본문(`safety_output` 노드, `/result`의 `safety`)이 같은 프롬프트(`prompts/safety_check.md`)를 쓴다. 판단만 하고, 횟수를 세고 막는 건 Spring이 한다.
