@@ -24,6 +24,8 @@ class Config:
     image_size: str = _env("IMAGE_SIZE", "1920x1088")  # 16:9. 가로·세로 모두 16의 배수여야 해서 1080 대신 1088
     cover_size: str = _env("COVER_SIZE", "1024x1024")  # 표지는 정사각형
     image_concurrency: int = int(_env("IMAGE_CONCURRENCY", "3"))
+    image_format: str = _env("IMAGE_FORMAT", "webp").lower()   # 쪽·표지 저장 형식 png | webp | jpeg. 시트는 다음 그림의 참조라 PNG 그대로
+    image_compression: int = int(_env("IMAGE_COMPRESSION", "85"))   # webp·jpeg 품질 0~100 (85면 PNG 약 3.7MB → 약 300KB)
 
     page_count: int = 10
     max_interview_turns: int = 15       # 🔒 ②-5. 백엔드 InterviewTurn.MAX_TURNS·DB CHECK(1~15)와 같게. 더 올리려면 백엔드 먼저
