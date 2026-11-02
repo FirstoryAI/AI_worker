@@ -61,7 +61,8 @@ def _gen(prompt_text: str) -> tuple[bytes, int, int]:
 
 
 def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] = None) -> tuple[bytes, int, int]:
-    """refs: [(파일명, png bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2는 참조 이미지 여러 장 지원)."""
+    """refs: [(파일명, png bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2는 참조 이미지 여러 장 지원).
+    쪽·표지라 config.image_format으로 받는다 (#32). 저장 key 확장자는 _ext로 실제 바이트를 보고 정한다."""
     if _override:
         return _override(prompt_text, [b for _, b in refs]), 0, 0
     images = [(name, data, "image/png") for name, data in refs]
@@ -74,6 +75,8 @@ def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] =
             quality=config.image_quality,
             n=1,
             **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
+            **({"output_format": config.image_format, "output_compression": config.image_compression}
+               if config.image_format != "png" else {}),
         )
     except BadRequestError as e:
         raise _policy(e) from e
@@ -106,6 +109,15 @@ def _draw(draw: Callable[[str], tuple[bytes, int, int]], scene: str, what: str, 
         except PolicyBlocked:
             log.warning("순화한 뒤에도 콘텐츠 정책 위반: %s", what)
             raise
+
+
+def _ext(data: bytes) -> str:
+    """저장 key 확장자. 설정이 아니라 받은 바이트로 정해서 key와 내용이 어긋나지 않게 한다 (Spring이 확장자로 Content-Type을 정함)."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    return "png"
 
 
 def _safe(name: str) -> str:
@@ -196,9 +208,9 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         try:
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
-            png, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, p.text_position), refs),
+            img, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, p.text_position), refs),
                                    p.image_prompt, f"{img_prefix} page {p.order}", costs)
-            key = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.png"), png)
+            key = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img)
             return PageImage(order=p.order, path=key, status="completed"), int((time.time() - t0) * 1000), tin, tout
         except Exception as e:  # noqa: BLE001
             return PageImage(order=p.order, status="failed", error=str(e)[:300]), int((time.time() - t0) * 1000), 0, 0
@@ -208,9 +220,9 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         try:
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in story.characters]
             setting = story.pages[0].image_prompt if story.pages else ""
-            png, tin, tout = _draw(lambda scene: _edit(cover_prompt(story, scene), refs, size=config.cover_size),
+            img, tin, tout = _draw(lambda scene: _edit(cover_prompt(story, scene), refs, size=config.cover_size),
                                    setting, f"{img_prefix} cover", costs)
-            key = storage.write_bytes(storage.join(img_prefix, "cover.png"), png)
+            key = storage.write_bytes(storage.join(img_prefix, f"cover.{_ext(img)}"), img)
             return key, CostEntry(node="illustrate:cover", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
         except Exception:  # noqa: BLE001 — 표지가 없으면 Spring이 캐릭터 시트를 쓴다
             return None, CostEntry(node="illustrate:cover", model=config.image_model, ms=int((time.time() - t0) * 1000))

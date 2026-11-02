@@ -248,6 +248,18 @@ assert blocked["illustrations"].cover                                           
 il.set_image_override(mock.tiny_png)
 print("policy retry ok")
 
+# ── 쪽·표지는 받은 형식대로 key 확장자를 정한다 (#32). 시트는 그대로 PNG ──
+def webp_pages(prompt, refs):
+    return b"RIFF\x00\x00\x00\x00WEBPVP8 " if refs else mock.tiny_png(prompt, refs)   # 참조가 있으면 쪽·표지(edit)
+
+
+il.set_image_override(webp_pages)
+w = il.illustrate({"story": st, "output_prefix": "stories/c/runs/6/"})["illustrations"]
+assert [p.path for p in w.pages] == ["stories/c/runs/6/images/page-01.webp", "stories/c/runs/6/images/page-02.webp"]
+assert w.cover == "stories/c/runs/6/images/cover.webp" and all(k.endswith(".png") for k in w.character_sheets.values())
+il.set_image_override(mock.tiny_png)
+print("webp ok")
+
 # ── 인터뷰 상한(15)과 반복: 몇 턴 전 질문으로 돌아가도 끝내고, 15턴째에는 max_turns ──
 from firstory.nodes import interview as iv  # noqa: E402
 from firstory.schemas import InterviewTurnResult, ParentUpdate, StoryInputContext, Turn  # noqa: E402
