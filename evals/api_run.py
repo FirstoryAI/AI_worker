@@ -141,6 +141,13 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     skipped = ok(answer(tid2, {"skip": True}))
     assert skipped["type"] == "confirm" and skipped["end_reason"] == "user_skip", skipped
     assert skipped["context"]["parent"]["message_direction"] == "undecided"
+    # 전하고 싶은 말을 직접 쓰고 건너뛰면 방향을 정한 것 — undecided로 두지 않는다 (#31)
+    tid2b = str(uuid.uuid4())
+    with_message = json.loads(json.dumps(CONTEXT))
+    with_message["parent"]["message"] = "속상한 마음을 말로 표현해도 괜찮다는 걸 알려주고 싶어요"
+    assert ok(start(tid2b, context=with_message))["turn"] == 1
+    skipped = ok(answer(tid2b, {"skip": True}))
+    assert skipped["end_reason"] == "user_skip" and skipped["context"]["parent"]["message_direction"] is None, skipped
 
     # 형식 오류
     bad = dict(CONTEXT)

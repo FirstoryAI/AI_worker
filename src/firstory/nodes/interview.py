@@ -130,7 +130,9 @@ def interview_answer(state: PipelineState) -> dict:
     out: dict = {"auto_answers": auto}
     if answer.lower() in _SKIP:
         ctx = state["context"].model_copy(deep=True)
-        ctx.parent.message_direction = ctx.parent.message_direction or "undecided"
+        # 전하고 싶은 말을 직접 썼으면 방향을 정한 것 — undecided로 두면 요약이 '아직 정하지 못했어요'를 지어낸다
+        if not ctx.parent.message:
+            ctx.parent.message_direction = ctx.parent.message_direction or "undecided"
         ctx.parent.concern = ctx.parent.concern or "(부모가 인터뷰를 건너뜀)"
         turns.append(Turn(question=q, answer="[skip]", reason=state.get("pending_reason", "")))
         out.update(context=ctx, interview_turns=turns, interview_done_by="user_skip")
@@ -145,7 +147,7 @@ def interview_answer(state: PipelineState) -> dict:
 
 def interview_finish(state: PipelineState) -> dict:
     ctx = state["context"]
-    turns = state.get("interview_turns", [])
+    turns = [t for t in state.get("interview_turns", []) if t.answer != "[skip]"]   # 건너뛴 질문은 부모가 답한 게 아니다
     s, cost = structured(
         node="interview_summary",
         model=config.model_light,
