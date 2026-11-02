@@ -122,6 +122,11 @@ class InterviewSummary(BaseModel):
     parent_summary: str = Field(description="부모에게 보여 줄 '이번 이야기에서 나누고 싶은 것' — 부모 입말 해요체 1~2문장")
 
 
+class SoftenedScene(BaseModel):
+    """그림이 이미지 모델 콘텐츠 정책에 막혔을 때 다시 쓴 장면 설명 (nodes/illustrate.py)."""
+    text: str = Field(description="순화한 장면 설명. 인물·자세·구도·분위기는 그대로. 영어로")
+
+
 class Turn(BaseModel):
     question: str
     answer: str

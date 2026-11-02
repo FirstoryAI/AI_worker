@@ -16,7 +16,7 @@ from .nodes import illustrate
 from .schemas import (
     AfterReading, Attempt, BeforeReading, CharacterSheet, GuidePrompt, InterviewSummary, InterviewTurnResult,
     JudgeScore, ParentUpdate, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
-    StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
+    SoftenedScene, StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
 )
 
 
@@ -56,6 +56,8 @@ def fake_structured(*, node, model, schema, system, user):
                       world="숲속 그림 교실", mirrored_situation="같이 그리던 다람쥐가 오늘은 혼자 그리겠다고 함", problem_cause="다람쥐가 혼자 그리겠다고 함",
                       values_to_honor=["아이 마음 먼저"], story_arc=["시작", "상황", "감정", "교류", "결말"],
                       **{k: v for k, v in extra.items() if k in schema.model_fields})
+    if schema is SoftenedScene:   # 원래 지시는 프롬프트 맨 끝 (prompts/soften_image_prompt.md)
+        return SoftenedScene(text="gentle " + system.rstrip().rsplit("\n", 1)[-1])
     if schema is StoryJudgement:
         return StoryJudgement(scores=[JudgeScore(criterion=c, feedback="근거", score=3)
                                       for c in ("재미", "개연성", "따뜻함", "눈높이", "부모 의도", "주인공 주도")],

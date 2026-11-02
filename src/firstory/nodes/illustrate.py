@@ -1,10 +1,12 @@
 """
 🔒 ④ 일러스트: 캐릭터 시트(주인공 + 조연) 각 1장 → 페이지마다 그 장면에 나오는 캐릭터의 시트만 참조로 넣고 병렬 생성.
-자동 재시도 없음 — 실패한 페이지는 failed 로 두고, 뷰어 [재시도]로 그 페이지만.
+자동 재시도는 콘텐츠 정책에 막혔을 때만 한 번 — 장면 설명을 순화해서 다시 그린다 (#37).
+그래도 실패한 페이지는 failed 로 두고, 뷰어 [재시도]로 그 페이지만.
 """
 from __future__ import annotations
 
 import base64
+import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,9 +14,13 @@ from typing import Callable, Optional
 
 from .. import storage
 from ..config import config
-from ..llm import client
-from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, StoryText
+from openai import BadRequestError
+
+from ..llm import client, prompt, structured
+from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText
 from ..state import PipelineState
+
+log = logging.getLogger("firstory.illustrate")
 
 # 테스트용 훅: (prompt, [ref_png...]) -> png bytes
 _override: Optional[Callable[[str, list[bytes]], bytes]] = None
@@ -23,6 +29,17 @@ _override: Optional[Callable[[str, list[bytes]], bytes]] = None
 def set_image_override(fn):
     global _override
     _override = fn
+
+
+class PolicyBlocked(Exception):
+    """이미지 모델의 콘텐츠 정책(safety system)에 막힘. 테스트 훅도 이걸 던져 재시도를 흉내 낸다."""
+
+
+def _policy(e: BadRequestError) -> Exception:
+    code = getattr(e, "code", None) or (getattr(e, "body", None) or {}).get("code")
+    if code in ("moderation_blocked", "content_policy_violation") or "safety system" in str(e).lower():
+        return PolicyBlocked(str(e)[:300])
+    return e
 
 
 def _usage(res) -> tuple[int, int]:
@@ -34,9 +51,12 @@ def _gen(prompt_text: str) -> tuple[bytes, int, int]:
     """→ (png, input_tokens, output_tokens). 이미지 비용은 토큰으로 매겨진다."""
     if _override:
         return _override(prompt_text, []), 0, 0
-    res = client().images.generate(
-        model=config.image_model, prompt=prompt_text, size=config.image_size, quality=config.image_quality, n=1
-    )
+    try:
+        res = client().images.generate(
+            model=config.image_model, prompt=prompt_text, size=config.image_size, quality=config.image_quality, n=1
+        )
+    except BadRequestError as e:
+        raise _policy(e) from e
     return base64.b64decode(res.data[0].b64_json), *_usage(res)
 
 
@@ -45,16 +65,47 @@ def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] =
     if _override:
         return _override(prompt_text, [b for _, b in refs]), 0, 0
     images = [(name, data, "image/png") for name, data in refs]
-    res = client().images.edit(
-        model=config.image_model,
-        image=images if len(images) > 1 else images[0],
-        prompt=prompt_text,
-        size=size or config.image_size,
-        quality=config.image_quality,
-        n=1,
-        **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
-    )
+    try:
+        res = client().images.edit(
+            model=config.image_model,
+            image=images if len(images) > 1 else images[0],
+            prompt=prompt_text,
+            size=size or config.image_size,
+            quality=config.image_quality,
+            n=1,
+            **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
+        )
+    except BadRequestError as e:
+        raise _policy(e) from e
     return base64.b64decode(res.data[0].b64_json), *_usage(res)
+
+
+def _soften(scene: str) -> tuple[str, CostEntry]:
+    s, cost = structured(
+        node="illustrate:soften",
+        model=config.model_light,
+        schema=SoftenedScene,
+        system=prompt("soften_image_prompt", text=scene),
+        user="같은 장면을 정책에 걸리지 않게 다시 쓰세요.",
+        reasoning="low",
+    )
+    return s.text, cost
+
+
+def _draw(draw: Callable[[str], tuple[bytes, int, int]], scene: str, what: str, costs: list[CostEntry]):
+    """draw(scene)으로 그린다. 콘텐츠 정책에 막히면 장면만 순화해서 한 번 더 (#37).
+    로그에는 어느 그림인지만 남긴다 — 장면 설명은 부모 입력에서 나와서 남기지 않는다."""
+    try:
+        return draw(scene)
+    except PolicyBlocked:
+        log.warning("그림 콘텐츠 정책 위반, 장면을 순화해 다시 그림: %s", what)
+        softened, cost = _soften(scene)
+        costs.append(cost)
+        try:
+            return draw(softened)
+        except PolicyBlocked:
+            log.warning("순화한 뒤에도 콘텐츠 정책 위반: %s", what)
+            raise
 
 
 def _safe(name: str) -> str:
@@ -80,14 +131,14 @@ _LAYOUT = {
 }
 
 
-def cover_prompt(story: StoryText) -> str:
+def cover_prompt(story: StoryText, setting: Optional[str] = None) -> str:
     lines = [f"Front cover of a children's picture book. {len(story.characters)} reference image(s) are attached, one per character, in this order:"]
     for i, c in enumerate(story.characters, 1):
         lines.append(f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}")
     lines += [
         "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add other characters.",
         "The protagonist is the clear focus, warm and inviting, in a simple setting that hints at the story.",
-        f"Story setting (for mood only): {story.pages[0].image_prompt if story.pages else ''}",
+        f"Story setting (for mood only): {setting if setting is not None else story.pages[0].image_prompt if story.pages else ''}",
         f"Style: {story.style_guide}",
         f'Put the book title in Korean at the top in large, rounded, hand-lettered style, spelled exactly: "{story.title}". No other text, no borders.',
     ]
@@ -124,7 +175,8 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         if only_pages is not None and c.name in ill.character_sheets:
             return c.name, ill.character_sheets[c.name], None
         t0 = time.time()
-        png, tin, tout = _gen(sheet_prompt(c, story.style_guide))
+        png, tin, tout = _draw(lambda desc: _gen(sheet_prompt(c.model_copy(update={"visual_description": desc}), story.style_guide)),
+                               c.visual_description, f"{img_prefix} sheet {c.role}", costs)
         key = storage.write_bytes(storage.join(img_prefix, f"sheet-{c.role}-{_safe(c.name)}.png"), png)
         return c.name, key, CostEntry(node=f"illustrate:sheet:{c.name}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
 
@@ -144,7 +196,8 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         try:
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
-            png, tin, tout = _edit(page_prompt(story, chars, p.image_prompt, p.text_position), refs)
+            png, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, p.text_position), refs),
+                                   p.image_prompt, f"{img_prefix} page {p.order}", costs)
             key = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.png"), png)
             return PageImage(order=p.order, path=key, status="completed"), int((time.time() - t0) * 1000), tin, tout
         except Exception as e:  # noqa: BLE001
@@ -154,7 +207,9 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         t0 = time.time()
         try:
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in story.characters]
-            png, tin, tout = _edit(cover_prompt(story), refs, size=config.cover_size)
+            setting = story.pages[0].image_prompt if story.pages else ""
+            png, tin, tout = _draw(lambda scene: _edit(cover_prompt(story, scene), refs, size=config.cover_size),
+                                   setting, f"{img_prefix} cover", costs)
             key = storage.write_bytes(storage.join(img_prefix, "cover.png"), png)
             return key, CostEntry(node="illustrate:cover", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
         except Exception:  # noqa: BLE001 — 표지가 없으면 Spring이 캐릭터 시트를 쓴다
