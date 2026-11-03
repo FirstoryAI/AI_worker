@@ -132,9 +132,10 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     again = ok(answer(tid, {"answer": "친구랑 다시 놀고 싶어 해요"}))
     assert again["turn"] == 5 and again["question"] == iv.READY_QUESTION, again
     done = ok(answer(tid, {"answer": iv.READY_GO}))
-    assert set(done) == {"type", "summary", "end_reason", "context"} and done["type"] == "confirm", done
+    assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context"} and done["type"] == "confirm", done
     assert done["end_reason"] == "sufficient"
     assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
+    assert done["situation_summary"] == "어린이집에서 친구가 블록을 먼저 가져가서 아이가 울었어요."
     assert done["context"]["parent"]["message_direction"] == "comfort_first"
     assert done["context"]["situation"] == CONTEXT["situation"] | {"custom_category": None}   # 빈 칸도 null로 채워 돌려준다
     assert server._graph.get_state(server._cfg(tid)).next == ("confirm_generate",)
