@@ -291,9 +291,9 @@ PromptPurpose = Literal["empathy", "predict", "perspective", "connect"]
 class GuidePrompt(BaseModel):
     id: str
     after_page: int = Field(description="이 페이지를 읽은 뒤 등장")
-    text: str = Field(description="아이에게 하는 질문. 캐릭터의 속마음 형태")
+    text: str = Field(description="동화 글 안에 이어 붙이는 화자의 말. 장면을 짚고 캐릭터 속마음·다음 일을 묻는다")
     purpose: PromptPurpose
-    parent_hint: Optional[str] = Field(None, description="부모용 한 줄. '아이가 대답 안 해도 괜찮아요'")
+    parent_hint: Optional[str] = Field(None, description="부모용 질문 활용법. 무엇을 들어 보려는지, 아이가 답하면 어떻게 받을지. 항상 쓴다")
 
 
 class BeforeReading(BaseModel):
