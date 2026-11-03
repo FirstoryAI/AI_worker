@@ -44,7 +44,8 @@ def fake_structured(*, node, model, schema, system, user):
         return SafetyJudgement(basis="mock 표시", level=s.level, category=s.category, reason=s.reason)
     if schema is InterviewSummary:
         return InterviewSummary(summary="이 부모는 아이 마음을 먼저 받아주고 싶어하며, 친구를 나쁘게 만들고 싶지 않다.",
-                                parent_summary="속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요.")
+                                parent_summary="속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요.",
+                                situation_summary="어린이집에서 친구가 블록을 먼저 가져가서 아이가 울었어요.")
     if schema.__name__.startswith("StoryDesign"):  # 전략에 따라 칸이 더 붙은 스키마도 같이
         extra = {"want": "다람쥐랑 같이 그리고 싶다",
                  "attempts": [Attempt(action=f"시도 {i}", result="안 됨" if i < 3 else "됨") for i in (1, 2, 3)],

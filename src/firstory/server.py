@@ -178,7 +178,8 @@ def _interview_reply(before: StoryInputContext, result: dict) -> dict:
         return {"type": "question", "turn": pause["turn"], "question": pause["question"],
                 "choices": pause.get("choices") or [], "context_update": update or None}
     if pause["type"] == "confirm":
-        return {"type": "confirm", "summary": pause["summary"], "end_reason": pause["end_reason"],
+        return {"type": "confirm", "summary": pause["summary"], "situation_summary": pause.get("situation_summary"),
+                "end_reason": pause["end_reason"],
                 "context": StoryInputContext.model_validate(pause["context"]).model_dump(mode="json")}
     raise ApiError(500, "INTERNAL_ERROR", f"인터뷰 중 예상하지 못한 멈춤: {pause['type']}")
 

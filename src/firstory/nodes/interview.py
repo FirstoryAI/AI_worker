@@ -158,10 +158,11 @@ def interview_finish(state: PipelineState) -> dict:
             context=ctx,
             turns=[t.model_dump() for t in turns] or "(질문 없이 종료)",
         ),
-        user="한 문단으로 정리하고, 부모에게 보여 줄 parent_summary도 쓰세요.",
+        user="한 문단으로 정리하고, 부모에게 보여 줄 parent_summary와 situation_summary도 쓰세요.",
         reasoning="low",
     )
-    return {"interview_summary": s.summary, "interview_parent_summary": s.parent_summary, "cost": [cost]}
+    return {"interview_summary": s.summary, "interview_parent_summary": s.parent_summary,
+            "interview_situation_summary": s.situation_summary, "cost": [cost]}
 
 
 def merge_confirmed_context(current: StoryInputContext, edited: dict) -> StoryInputContext:
@@ -192,6 +193,7 @@ def confirm_generate(state: PipelineState) -> dict:
     r = interrupt({
         "type": "confirm",
         "summary": state.get("interview_parent_summary") or state.get("interview_summary"),   # 부모에게 보여 줄 문장
+        "situation_summary": state.get("interview_situation_summary"),                       # 부모에게 보여 줄 '상황'
         "end_reason": state.get("interview_done_by"),
         "context": state["context"].model_dump(),
     })
