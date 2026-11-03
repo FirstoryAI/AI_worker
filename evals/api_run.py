@@ -124,7 +124,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert q2["choices"] == ["마음을 먼저 다독이고 싶어요", "친구 입장도 생각해 보게 하고 싶어요", "잘 모르겠어요", "둘 다요"], q2
     ready = ok(answer(tid, {"answer": "마음을 먼저 받아 주고 싶어요"}))   # 충분해도 바로 끝내지 않고 마무리 질문 (#48)
     assert ready["type"] == "question" and ready["turn"] == 3 and ready["question"] == iv.READY_QUESTION, ready
-    assert ready["choices"] == [iv.READY_GO, iv.READY_MORE], ready
+    assert ready["choices"] == [iv.READY_MORE, iv.READY_GO], ready
     assert ready["context_update"]["parent"]["message_direction"] == "comfort_first", ready   # 이번 답에서 채운 칸은 그대로 준다
     more = ok(answer(tid, {"answer": iv.READY_MORE}))
     assert more["type"] == "question" and more["turn"] == 4 and more["question"] == iv.MORE_QUESTION, more
