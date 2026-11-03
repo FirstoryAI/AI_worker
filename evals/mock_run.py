@@ -44,7 +44,7 @@ while "__interrupt__" in r:
     p = r["__interrupt__"][0].value
     seen.append(p["type"])
     if p["type"] == "interview" and p["question"] == iv.READY_QUESTION:
-        assert p["turn"] == 3 and p["choices"] == [iv.READY_GO, iv.READY_MORE], p
+        assert p["turn"] == 3 and p["choices"] == [iv.READY_MORE, iv.READY_GO], p
         r = graph.invoke(Command(resume=iv.READY_GO), cfg)
     elif p["type"] == "interview":
         r = graph.invoke(Command(resume="답변 " + str(p["turn"])), cfg)
@@ -301,25 +301,37 @@ done = ctx0.model_copy(deep=True)
 done.parent.concern, done.parent.message_direction, done.parent.response = "고민", "comfort_first", "안아줌"
 assert done.is_sufficient()
 o = iv.interview_step({"context": done, "interview_turns": many})   # 15번째 질문으로 마무리 질문
-assert o["pending_question"] == iv.READY_QUESTION and o["pending_choices"] == [iv.READY_GO, iv.READY_MORE], o
+assert o["pending_question"] == iv.READY_QUESTION and o["pending_choices"] == [iv.READY_MORE, iv.READY_GO], o
 o = iv.interview_step({"context": done, "interview_turns": many + [Turn(question="열다섯째?", answer="답")]})
 assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None, o   # 남은 질문이 없으면 묻지 않고 끝
 more = asked + [Turn(question=iv.READY_QUESTION, answer=iv.READY_MORE)]
-o = iv.interview_step({"context": done, "interview_turns": more})   # '더 이야기할래요'만 누르면 열어 묻는다
+o = iv.interview_step({"context": done, "interview_turns": more})   # '네'인데 AI가 구체화할 질문을 못 고르면 열어 묻는다
 assert o["pending_question"] == iv.MORE_QUESTION and o["pending_choices"] == [] and "interview_done_by" not in o, o
-llm.set_structured_override(asks("아이는 어떤 반응이었나요?"))
-o = iv.interview_step({"context": ctx0, "interview_turns": more})   # AI가 물을 게 있어도 부모가 말할 차례
-assert o["pending_question"] == iv.MORE_QUESTION, o
+seen_prompts = []
+
+
+def deepens(**kw):
+    seen_prompts.append(kw["system"])
+    return asks("그때 아이를 안아 줬을 때 아이는 어떤 표정이었어요?")(**kw)
+
+
+llm.set_structured_override(deepens)
+for yes in (iv.READY_MORE, "네", "있어요!"):   # 칸이 다 채워졌어도 AI가 고른 구체화 질문과 카드
+    o = iv.interview_step({"context": done, "interview_turns": asked + [Turn(question=iv.READY_QUESTION, answer=yes)]})
+    assert o["pending_question"] == "그때 아이를 안아 줬을 때 아이는 어떤 표정이었어요?" and o["pending_choices"] == ["예"], o
+    assert "## 이번 턴: 부모가 마무리 확인에서 더 이야기하고 싶다고 했다" in seen_prompts[-1]
+iv.interview_step({"context": ctx0, "interview_turns": asked})
+assert "{{deepen}}" not in seen_prompts[-1] and "## 이번 턴" not in seen_prompts[-1]   # 평소에는 안 붙는다
 llm.set_structured_override(lambda **kw: InterviewTurnResult(context_update=ParentUpdate(), status="sufficient", reason="r"))
 told = asked + [Turn(question=iv.READY_QUESTION, answer="사실 동생이 생겨서 더 예민해요")]
 assert iv.interview_step({"context": done, "interview_turns": told})["pending_question"] == iv.READY_QUESTION   # 새 이야기 뒤 다시 확인
 
 ready = {"context": done, "interview_turns": asked, "pending_question": iv.READY_QUESTION}
-for a, kept in ((iv.READY_GO, iv.READY_GO), ("네!", "네!"), ("skip", "[skip]")):
+for a, kept in ((iv.READY_GO, iv.READY_GO), ("아니요!", "아니요!"), ("없어요", "없어요"), ("skip", "[skip]")):
     o = iv.interview_answer(ready | {"auto_answers": [a]})
     assert o["interview_done_by"] == "sufficient" and o["interview_turns"][-1].answer == kept, o
     assert iv.route_after_answer(o) == "interview_finish"
-for a in (iv.READY_MORE, "사실 동생이 생겨서 더 예민해요"):
+for a in (iv.READY_MORE, "네", "사실 동생이 생겨서 더 예민해요"):
     o = iv.interview_answer(ready | {"auto_answers": [a]})
     assert "interview_done_by" not in o and o["interview_turns"][-1].answer == a, o
     assert iv.route_after_answer(o) == "interview_step"

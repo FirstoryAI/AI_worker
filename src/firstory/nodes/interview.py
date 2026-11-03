@@ -5,6 +5,7 @@
 - 종료 판단은 AI 말 + 코드 이중 확인
 - "모르겠다" 정리 질문 최대 2회, 최대 config.max_interview_turns턴(15), user_skip
 - 충분해지면 바로 끝내지 않고 마무리 질문(READY_QUESTION)으로 더 이야기할지 묻는다 (#48)
+- 더 이야기하겠다고 하면 AI가 채운 칸을 더 구체화하는 질문을 고른다 (#53)
 
 세 노드로 나눈 이유: interrupt()는 재개 시 노드를 처음부터 다시 실행한다.
 LLM 호출과 interrupt를 같은 노드에 두면 답변 받을 때마다 LLM이 다시 돈다.
@@ -25,12 +26,18 @@ _persona = prompt("_persona")
 _UNSURE = ("모르", "글쎄", "어떻게 말해야", "뭐라고 해야", "둘 다")
 _SKIP = ("skip", "/skip", "이만 만들어주세요", "그만")
 
-# 마무리 질문. 질문 한 개로 센다 (Spring turn). 카드를 누르거나 비슷하게 답하면 끝, 아니면 인터뷰를 잇는다
-READY_QUESTION = "동화를 만들 준비가 다 됐어요. 이대로 만들러 갈까요, 아니면 더 나누고 싶은 이야기가 있나요?"
-READY_GO = "네, 동화 만들러 갈게요"
-READY_MORE = "더 이야기할래요"
-MORE_QUESTION = "어떤 이야기를 더 나누고 싶으세요? 편하게 들려주세요."
-_GO = {"네동화만들러갈게요", "네", "응", "좋아요", "넘어갈게요", "넘어가요", "만들어주세요", "만들러갈게요", "없어요", "괜찮아요"}
+# 마무리 질문. 질문 한 개로 센다 (Spring turn). "아니요"(_GO)면 끝, "네"(_MORE)면 AI가 구체화 질문, 다른 답은 새 이야기로 잇는다
+READY_QUESTION = "동화를 만들 준비가 다 됐어요. 더 나누고 싶은 이야기가 있나요?"
+READY_MORE = "네, 더 이야기할래요"
+READY_GO = "아니요, 동화 만들러 갈게요"
+MORE_QUESTION = "어떤 이야기를 더 나누고 싶으세요? 편하게 들려주세요."   # AI가 구체화할 질문을 못 고를 때
+_GO = {"아니요동화만들러갈게요", "아니요", "아니", "아뇨", "없어요", "아니요없어요", "넘어갈게요", "넘어가요",
+       "만들어주세요", "만들러갈게요", "동화만들러갈게요", "괜찮아요"}
+_MORE = {"네더이야기할래요", "더이야기할래요", "네", "예", "응", "있어요", "네있어요"}
+_DEEPEN = """## 이번 턴: 부모가 마무리 확인에서 더 이야기하고 싶다고 했다
+비어 있는 항목이 없어도 `ask`로 질문 하나를 한다. 이미 채운 항목(`concern`, `message`, `response`, 아이 반응·감정) 중
+더 구체적으로 알면 동화에 가장 도움이 될 것 하나를 골라 묻는다. 지금까지의 대화에 있는 질문은 다시 묻지 않는다. 답변 카드도 만든다.
+"""
 
 
 def _norm(x: str) -> str:
@@ -52,6 +59,7 @@ def interview_step(state: PipelineState) -> dict:
     turns = state.get("interview_turns", [])
     clarify = state.get("clarify_count", 0)
     remaining = config.max_interview_turns - len(turns)
+    wants_more = bool(turns) and turns[-1].question == READY_QUESTION and _norm(turns[-1].answer) in _MORE
 
     r, cost = structured(
         node="interview",
@@ -65,6 +73,7 @@ def interview_step(state: PipelineState) -> dict:
             remaining=remaining,
             clarify_remaining=max(0, config.max_clarify_turns - clarify),
             turns=[t.model_dump() for t in turns] or "(아직 없음)",
+            deepen=_DEEPEN if wants_more else "",
         ),
         user="다음 행동을 결정하세요.",
         reasoning="low",
@@ -108,13 +117,12 @@ def interview_step(state: PipelineState) -> dict:
 
     out: dict = {"context": ctx, "cost": [cost], "pending_question": None, "pending_choices": [],
                  "pending_reason": r.reason}
-    # 마무리 질문에 '더 이야기할래요'만 눌렀으면 부모가 말할 차례다. AI 질문 대신 열어 묻는다
-    wants_more = bool(turns) and turns[-1].question == READY_QUESTION and _norm(turns[-1].answer) == _norm(READY_MORE)
-    if done_by != "max_turns" and wants_more and remaining > 0:
+    # 더 이야기하겠다는데 AI가 구체화할 질문을 못 골랐으면(또는 반복이라 버렸으면) 열어 묻는다. 다시 마무리 질문을 하지 않는다
+    if wants_more and done_by == "sufficient" and remaining > 0:
         out.update(pending_question=MORE_QUESTION, pending_reason="부모가 더 이야기하고 싶다고 함")
         return out
     if done_by == "sufficient" and remaining > 0 and not state.get("auto_confirm"):   # 자동 실행은 물을 사람이 없다
-        out.update(pending_question=READY_QUESTION, pending_choices=[READY_GO, READY_MORE],
+        out.update(pending_question=READY_QUESTION, pending_choices=[READY_MORE, READY_GO],
                    pending_reason="충분해져서 더 이야기할지 확인")
         return out
     if done_by:
