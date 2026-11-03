@@ -4,6 +4,7 @@
 - missing_fields 는 코드가 계산해서 프롬프트에 넣는다
 - 종료 판단은 AI 말 + 코드 이중 확인
 - "모르겠다" 정리 질문 최대 2회, 최대 config.max_interview_turns턴(15), user_skip
+- 충분해지면 바로 끝내지 않고 마무리 질문(READY_QUESTION)으로 더 이야기할지 묻는다 (#48)
 
 세 노드로 나눈 이유: interrupt()는 재개 시 노드를 처음부터 다시 실행한다.
 LLM 호출과 interrupt를 같은 노드에 두면 답변 받을 때마다 LLM이 다시 돈다.
@@ -24,11 +25,22 @@ _persona = prompt("_persona")
 _UNSURE = ("모르", "글쎄", "어떻게 말해야", "뭐라고 해야", "둘 다")
 _SKIP = ("skip", "/skip", "이만 만들어주세요", "그만")
 
+# 마무리 질문. 질문 한 개로 센다 (Spring turn). 카드를 누르거나 비슷하게 답하면 끝, 아니면 인터뷰를 잇는다
+READY_QUESTION = "동화를 만들 준비가 다 됐어요. 이대로 만들러 갈까요, 아니면 더 나누고 싶은 이야기가 있나요?"
+READY_GO = "네, 동화 만들러 갈게요"
+READY_MORE = "더 이야기할래요"
+MORE_QUESTION = "어떤 이야기를 더 나누고 싶으세요? 편하게 들려주세요."
+_GO = {"네동화만들러갈게요", "네", "응", "좋아요", "넘어갈게요", "넘어가요", "만들어주세요", "만들러갈게요", "없어요", "괜찮아요"}
+
+
+def _norm(x: str) -> str:
+    import re
+    return re.sub(r"[\s\W]+", "", x)
+
 
 def _same(a: str, b: str) -> bool:
     """공백·문장부호 무시하고 거의 같은 질문인지."""
-    import re
-    na, nb = (re.sub(r"[\s\W]+", "", x) for x in (a, b))
+    na, nb = _norm(a), _norm(b)
     if not na or not nb:
         return False
     shorter, longer = sorted((na, nb), key=len)
@@ -96,6 +108,15 @@ def interview_step(state: PipelineState) -> dict:
 
     out: dict = {"context": ctx, "cost": [cost], "pending_question": None, "pending_choices": [],
                  "pending_reason": r.reason}
+    # 마무리 질문에 '더 이야기할래요'만 눌렀으면 부모가 말할 차례다. AI 질문 대신 열어 묻는다
+    wants_more = bool(turns) and turns[-1].question == READY_QUESTION and _norm(turns[-1].answer) == _norm(READY_MORE)
+    if done_by != "max_turns" and wants_more and remaining > 0:
+        out.update(pending_question=MORE_QUESTION, pending_reason="부모가 더 이야기하고 싶다고 함")
+        return out
+    if done_by == "sufficient" and remaining > 0 and not state.get("auto_confirm"):   # 자동 실행은 물을 사람이 없다
+        out.update(pending_question=READY_QUESTION, pending_choices=[READY_GO, READY_MORE],
+                   pending_reason="충분해져서 더 이야기할지 확인")
+        return out
     if done_by:
         out["interview_done_by"] = done_by
     elif r.next_question:
@@ -128,6 +149,11 @@ def interview_answer(state: PipelineState) -> dict:
     answer = (answer or "").strip()
 
     out: dict = {"auto_answers": auto}
+    if q == READY_QUESTION and (answer.lower() in _SKIP or _norm(answer) in _GO):   # 이미 충분하다고 본 뒤라 건너뛰기도 sufficient
+        turns.append(Turn(question=q, answer=answer if _norm(answer) in _GO else "[skip]",
+                          reason=state.get("pending_reason", "")))
+        out.update(interview_turns=turns, interview_done_by="sufficient")
+        return out
     if answer.lower() in _SKIP:
         ctx = state["context"].model_copy(deep=True)
         # 전하고 싶은 말을 직접 썼으면 방향을 정한 것 — undecided로 두면 요약이 '아직 정하지 못했어요'를 지어낸다
@@ -147,7 +173,9 @@ def interview_answer(state: PipelineState) -> dict:
 
 def interview_finish(state: PipelineState) -> dict:
     ctx = state["context"]
-    turns = [t for t in state.get("interview_turns", []) if t.answer != "[skip]"]   # 건너뛴 질문은 부모가 답한 게 아니다
+    # 건너뛴 질문은 부모가 답한 게 아니다. 마무리 질문의 '만들러 갈게요'도 나눈 이야기가 아니라 뺀다
+    turns = [t for t in state.get("interview_turns", [])
+             if t.answer != "[skip]" and not (t.question == READY_QUESTION and _norm(t.answer) in _GO)]
     s, cost = structured(
         node="interview_summary",
         model=config.model_light,
@@ -216,4 +244,4 @@ def route_after_step(state: PipelineState) -> str:
 
 
 def route_after_answer(state: PipelineState) -> str:
-    return "interview_finish" if state.get("interview_done_by") == "user_skip" else "interview_step"
+    return "interview_finish" if state.get("interview_done_by") else "interview_step"   # user_skip, 마무리 질문에서 끝
