@@ -123,9 +123,10 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     # 빈 카드·겹치는 카드를 빼고 4개까지
     assert q2["choices"] == ["마음을 먼저 다독이고 싶어요", "친구 입장도 생각해 보게 하고 싶어요", "잘 모르겠어요", "둘 다요"], q2
     done = ok(answer(tid, {"answer": "마음을 먼저 받아 주고 싶어요"}))
-    assert set(done) == {"type", "summary", "end_reason", "context"} and done["type"] == "confirm", done
+    assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context"} and done["type"] == "confirm", done
     assert done["end_reason"] == "sufficient"
     assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
+    assert done["situation_summary"] == "어린이집에서 친구가 블록을 먼저 가져가서 아이가 울었어요."
     assert done["context"]["parent"]["message_direction"] == "comfort_first"
     assert done["context"]["situation"] == CONTEXT["situation"] | {"custom_category": None}   # 빈 칸도 null로 채워 돌려준다
     assert server._graph.get_state(server._cfg(tid)).next == ("confirm_generate",)

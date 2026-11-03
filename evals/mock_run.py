@@ -45,7 +45,7 @@ while "__interrupt__" in r:
     if p["type"] == "interview":
         r = graph.invoke(Command(resume="답변 " + str(p["turn"])), cfg)
     elif p["type"] == "confirm":
-        assert p["summary"] and p["end_reason"] == "sufficient" and p["context"]["parent"], p
+        assert p["summary"] and p["situation_summary"] and p["end_reason"] == "sufficient" and p["context"]["parent"], p
         assert graph.get_state(cfg).next == ("confirm_generate",)
         r = graph.invoke(Command(resume={"action": "generate", "tone": "warm"}), cfg)
     elif p["type"] == "review":
