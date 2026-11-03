@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from firstory import llm, mock, server, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
-from firstory.nodes import safety  # noqa: E402
+from firstory.nodes import interview as iv, safety  # noqa: E402
 from firstory.schemas import (  # noqa: E402
     InterviewTurnResult, ParentUpdate, SafetyJudgement, SafetyResult, StoryPage, StoryRevision,
 )
@@ -122,7 +122,16 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert q2["context_update"] == {"parent": {"response": "안아줌", "concern": "뭐라고 말할지 모르겠음"}}, q2
     # 빈 카드·겹치는 카드를 빼고 4개까지
     assert q2["choices"] == ["마음을 먼저 다독이고 싶어요", "친구 입장도 생각해 보게 하고 싶어요", "잘 모르겠어요", "둘 다요"], q2
-    done = ok(answer(tid, {"answer": "마음을 먼저 받아 주고 싶어요"}))
+    ready = ok(answer(tid, {"answer": "마음을 먼저 받아 주고 싶어요"}))   # 충분해도 바로 끝내지 않고 마무리 질문 (#48)
+    assert ready["type"] == "question" and ready["turn"] == 3 and ready["question"] == iv.READY_QUESTION, ready
+    assert ready["choices"] == [iv.READY_GO, iv.READY_MORE], ready
+    assert ready["context_update"]["parent"]["message_direction"] == "comfort_first", ready   # 이번 답에서 채운 칸은 그대로 준다
+    more = ok(answer(tid, {"answer": iv.READY_MORE}))
+    assert more["type"] == "question" and more["turn"] == 4 and more["question"] == iv.MORE_QUESTION, more
+    assert more["choices"] == [], more
+    again = ok(answer(tid, {"answer": "친구랑 다시 놀고 싶어 해요"}))
+    assert again["turn"] == 5 and again["question"] == iv.READY_QUESTION, again
+    done = ok(answer(tid, {"answer": iv.READY_GO}))
     assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context"} and done["type"] == "confirm", done
     assert done["end_reason"] == "sufficient"
     assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
@@ -205,7 +214,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
         tid = str(uuid.uuid4())
         assert c.post(f"/v1/threads/{tid}/interview/start", headers=H,
                       json={"run_id": str(uuid.uuid4()), "context": CONTEXT, "tone": None}).status_code == 200
-        for a in ("안아 줬어요", "마음을 먼저 받아 주고 싶어요"):
+        for a in ("안아 줬어요", "마음을 먼저 받아 주고 싶어요", iv.READY_GO):
             r = c.post(f"/v1/threads/{tid}/interview/answer", headers=H, json={"answer": a})
         assert r.json()["type"] == "confirm", r.text
         return tid

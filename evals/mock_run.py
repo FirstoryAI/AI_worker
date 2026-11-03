@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from firstory import llm, mock, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.graph import compile_graph, new_thread_id  # noqa: E402
+from firstory.nodes import interview as iv  # noqa: E402
 from firstory.schemas import Strategy  # noqa: E402
 
 _prompts: list[tuple[str, str]] = []   # (node, system) — 전략 블록이 실제로 들어갔는지 확인용
@@ -34,7 +35,7 @@ data.pop("scripted_answers", None)
 
 graph = compile_graph(Path(__file__).resolve().parents[1] / "out" / "mock-checkpoints.db")
 
-# ── 1) interrupt 경로: 인터뷰 질문 2개 + 생성 전 확인 + 검토 → 재생성(images) → 완료 ──
+# ── 1) interrupt 경로: 인터뷰 질문 2개 + 마무리 질문 + 생성 전 확인 + 검토 → 재생성(images) → 완료 ──
 tid = new_thread_id()
 cfg = {"configurable": {"thread_id": tid}}
 r = graph.invoke({"context": data, "auto_answers": [], "auto_approve": False, "skip_images": False}, cfg)
@@ -42,7 +43,10 @@ seen = []
 while "__interrupt__" in r:
     p = r["__interrupt__"][0].value
     seen.append(p["type"])
-    if p["type"] == "interview":
+    if p["type"] == "interview" and p["question"] == iv.READY_QUESTION:
+        assert p["turn"] == 3 and p["choices"] == [iv.READY_GO, iv.READY_MORE], p
+        r = graph.invoke(Command(resume=iv.READY_GO), cfg)
+    elif p["type"] == "interview":
         r = graph.invoke(Command(resume="답변 " + str(p["turn"])), cfg)
     elif p["type"] == "confirm":
         assert p["summary"] and p["situation_summary"] and p["end_reason"] == "sufficient" and p["context"]["parent"], p
@@ -54,7 +58,7 @@ while "__interrupt__" in r:
         else:
             r = graph.invoke(Command(resume={"action": "approve"}), cfg)
 print("interrupts:", seen)
-assert seen == ["interview", "interview", "confirm", "review", "review"], seen  # images 재생성 → render → review 다시
+assert seen == ["interview", "interview", "interview", "confirm", "review", "review"], seen  # images 재생성 → render → review 다시
 assert r["status"] == "completed" and len(r["guide"].prompts) == 2 and r["guide"].synopsis
 assert r["tone"] == "warm"   # 확인 재개 값의 tone이 state에 남음
 nodes = [c.node for c in r["cost"]]
@@ -95,6 +99,8 @@ print("regen feedback ok:", redrawn)
 base = f"mock-stories/{new_thread_id()}/runs"
 cfg1c = {"configurable": {"thread_id": new_thread_id()}}
 r = graph.invoke({"context": data, "auto_answers": ["a1", "a2"], "auto_approve": False, "skip_images": False}, cfg1c)
+assert r["__interrupt__"][0].value["question"] == iv.READY_QUESTION   # auto_confirm이 아니면 마무리 질문은 사람이 답한다
+r = graph.invoke(Command(resume=iv.READY_GO), cfg1c)
 assert r["__interrupt__"][0].value["type"] == "confirm"
 r = graph.invoke(Command(resume={"action": "generate", "output_prefix": f"{base}/1/"}), cfg1c)
 ill1 = graph.get_state(cfg1c).values["illustrations"]
@@ -261,7 +267,6 @@ il.set_image_override(mock.tiny_png)
 print("webp ok")
 
 # ── 인터뷰 상한(15)과 반복: 몇 턴 전 질문으로 돌아가도 끝내고, 15턴째에는 max_turns ──
-from firstory.nodes import interview as iv  # noqa: E402
 from firstory.schemas import InterviewTurnResult, ParentUpdate, StoryInputContext, Turn  # noqa: E402
 
 assert config.max_interview_turns == 15
@@ -276,8 +281,10 @@ def asks(question):
 
 llm.set_structured_override(asks("질문 1번째는 무엇인가요?"))   # 직전(3번째)이 아니라 첫 질문을 다시
 o = iv.interview_step({"context": ctx0, "interview_turns": asked})
-assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None, o
+assert "interview_done_by" not in o and o["pending_question"] == iv.READY_QUESTION, o   # 끝내기 전에 마무리 질문
 assert o["context"].parent.message_direction == "undecided"
+o = iv.interview_step({"context": ctx0, "interview_turns": asked, "auto_confirm": True})
+assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None, o   # 자동 실행은 묻지 않는다
 
 llm.set_structured_override(asks("새로운 질문인가요?"))
 o = iv.interview_step({"context": ctx0, "interview_turns": asked})
@@ -287,7 +294,42 @@ o = iv.interview_step({"context": ctx0, "interview_turns": many})
 assert "interview_done_by" not in o and o["pending_question"] == "새로운 질문인가요?"   # 14개 답한 뒤에도 15번째 질문
 o = iv.interview_step({"context": ctx0, "interview_turns": many + [Turn(question="열다섯째?", answer="답")]})
 assert o["interview_done_by"] == "max_turns", o
+
+# ── 마무리 질문 (#48) ──
+llm.set_structured_override(lambda **kw: InterviewTurnResult(context_update=ParentUpdate(), status="sufficient", reason="r"))
+done = ctx0.model_copy(deep=True)
+done.parent.concern, done.parent.message_direction, done.parent.response = "고민", "comfort_first", "안아줌"
+assert done.is_sufficient()
+o = iv.interview_step({"context": done, "interview_turns": many})   # 15번째 질문으로 마무리 질문
+assert o["pending_question"] == iv.READY_QUESTION and o["pending_choices"] == [iv.READY_GO, iv.READY_MORE], o
+o = iv.interview_step({"context": done, "interview_turns": many + [Turn(question="열다섯째?", answer="답")]})
+assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None, o   # 남은 질문이 없으면 묻지 않고 끝
+more = asked + [Turn(question=iv.READY_QUESTION, answer=iv.READY_MORE)]
+o = iv.interview_step({"context": done, "interview_turns": more})   # '더 이야기할래요'만 누르면 열어 묻는다
+assert o["pending_question"] == iv.MORE_QUESTION and o["pending_choices"] == [] and "interview_done_by" not in o, o
+llm.set_structured_override(asks("아이는 어떤 반응이었나요?"))
+o = iv.interview_step({"context": ctx0, "interview_turns": more})   # AI가 물을 게 있어도 부모가 말할 차례
+assert o["pending_question"] == iv.MORE_QUESTION, o
+llm.set_structured_override(lambda **kw: InterviewTurnResult(context_update=ParentUpdate(), status="sufficient", reason="r"))
+told = asked + [Turn(question=iv.READY_QUESTION, answer="사실 동생이 생겨서 더 예민해요")]
+assert iv.interview_step({"context": done, "interview_turns": told})["pending_question"] == iv.READY_QUESTION   # 새 이야기 뒤 다시 확인
+
+ready = {"context": done, "interview_turns": asked, "pending_question": iv.READY_QUESTION}
+for a, kept in ((iv.READY_GO, iv.READY_GO), ("네!", "네!"), ("skip", "[skip]")):
+    o = iv.interview_answer(ready | {"auto_answers": [a]})
+    assert o["interview_done_by"] == "sufficient" and o["interview_turns"][-1].answer == kept, o
+    assert iv.route_after_answer(o) == "interview_finish"
+for a in (iv.READY_MORE, "사실 동생이 생겨서 더 예민해요"):
+    o = iv.interview_answer(ready | {"auto_answers": [a]})
+    assert "interview_done_by" not in o and o["interview_turns"][-1].answer == a, o
+    assert iv.route_after_answer(o) == "interview_step"
+
+finish_prompts = []
+llm.set_structured_override(lambda **kw: finish_prompts.append(kw["system"]) or mock.fake_structured(**kw))
+iv.interview_finish({"context": done, "interview_turns": asked + [
+    Turn(question=iv.READY_QUESTION, answer="사실 동생이 생겨서 더 예민해요"), Turn(question=iv.READY_QUESTION, answer=iv.READY_GO)]})
+assert "동생이 생겨서" in finish_prompts[-1] and iv.READY_GO not in finish_prompts[-1]   # '만들러 갈게요'는 요약에 안 넘김
 llm.set_structured_override(recording_structured)
-print("interview limit ok")
+print("interview limit / ready ok")
 
 print("\nALL OK")
