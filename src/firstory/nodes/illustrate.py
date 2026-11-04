@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import logging
 import re
 import threading
@@ -16,6 +17,7 @@ from typing import Callable, Optional
 from .. import storage
 from ..config import config
 from openai import BadRequestError
+from PIL import Image
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText, TextBlock
@@ -274,6 +276,22 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     return [TextBlock(paragraphs=b, **g) for b, g in zip(blocks, got)]
 
 
+def _ref(data: bytes) -> bytes:
+    """첨부용 시트: 긴 변을 config.ref_max_side로 줄인 PNG. 저장된 시트는 그대로 두고, 작거나 읽지 못하면 원본 (#67)."""
+    try:
+        im = Image.open(io.BytesIO(data))
+        if max(im.size) <= config.ref_max_side:
+            return data
+        im = im.convert("RGBA" if "A" in im.getbands() or im.mode == "P" else "RGB")
+        im.thumbnail((config.ref_max_side, config.ref_max_side), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception as e:  # noqa: BLE001 — 줄이지 못해도 그리기는 이어 간다
+        log.warning("첨부 시트를 줄이지 못했어요: %s", type(e).__name__)
+        return data
+
+
 def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None,
          request: Optional[str] = None):
     """img_prefix: 이번 실행의 그림 key 앞부분 (…/images). 일부 쪽만 다시 그리면 나머지 쪽과 시트는
@@ -299,7 +317,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             ill.character_sheets[name] = key
             if cost:
                 costs.append(cost)
-    ref_bytes = {name: storage.read_bytes(key) for name, key in ill.character_sheets.items()}
+    ref_bytes = {name: _ref(storage.read_bytes(key)) for name, key in ill.character_sheets.items()}
 
     # 2) 페이지 병렬 — 장면에 나오는 캐릭터 시트만 참조로
     targets = [p for p in story.pages if only_pages is None or p.order in only_pages]

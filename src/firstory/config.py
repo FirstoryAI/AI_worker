@@ -24,6 +24,7 @@ class Config:
     image_size: str = _env("IMAGE_SIZE", "1920x1088")  # 16:9. 가로·세로 모두 16의 배수여야 해서 1080 대신 1088
     cover_size: str = _env("COVER_SIZE", "1024x1024")  # 표지는 정사각형
     image_concurrency: int = int(_env("IMAGE_CONCURRENCY", "3"))
+    ref_max_side: int = int(_env("REF_MAX_SIDE", "1024"))  # 쪽·표지에 첨부하는 시트의 긴 변(px). 1024면 첨부 토큰 60% 줄고 512와 같다 (#67)
     image_format: str = _env("IMAGE_FORMAT", "webp").lower()   # 쪽·표지 저장 형식 png | webp | jpeg. 시트는 다음 그림의 참조라 PNG 그대로
     image_compression: int = int(_env("IMAGE_COMPRESSION", "85"))   # webp·jpeg 품질 0~100 (85면 PNG 약 3.7MB → 약 300KB)
 
