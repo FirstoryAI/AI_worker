@@ -27,6 +27,7 @@ from .config import config
 from . import storage
 from .graph import compile_graph
 from .nodes import safety
+from .nodes.layout import H, block_size
 from .nodes.story import review_update
 from .runs import Runs
 from .schemas import Illustrations, SafetyResult, StoryInputContext
@@ -322,6 +323,20 @@ def status(thread_id: str) -> dict:
     return out
 
 
+def _text_blocks(pi) -> Optional[list[dict]]:
+    """그림 위 글 덩어리 [{paragraphs, x, y, color}]. 그림이 실패한 쪽·옛 결과는 None"""
+    return [b.model_dump() for b in pi.text_blocks] if pi and pi.text_blocks else None
+
+
+def _text_position(p, pi) -> str:
+    """옛 화면용 top|bottom. 첫 덩어리 가운데가 그림 위쪽 절반이면 top. 덩어리가 없으면 작가 값."""
+    blocks = pi.text_blocks if pi else None
+    if not blocks:
+        return p.text_position
+    first = blocks[0]
+    return "top" if first.y + block_size(first.paragraphs)[1] / H * 100 / 2 < 50 else "bottom"
+
+
 @app.get("/v1/threads/{thread_id}/result")
 def result(thread_id: str) -> dict:
     snap = _graph.get_state(_cfg(thread_id))
@@ -343,7 +358,9 @@ def result(thread_id: str) -> dict:
         "cover_path": ill.cover,   # 제목이 들어간 정사각형 표지. 못 그렸으면 null
         "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
                              for name, key in ill.character_sheets.items()],
-        "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt, "text_position": p.text_position,
+        "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
+                   "text_position": _text_position(p, images.get(p.order)),
+                   "text_blocks": _text_blocks(images.get(p.order)),
                    "image_path": images[p.order].path if p.order in images else None,
                    "image_status": "done" if p.order in images else "failed"} for p in story.pages],
         "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,

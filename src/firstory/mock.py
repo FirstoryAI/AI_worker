@@ -17,10 +17,11 @@ from .schemas import (
     AfterReading, Attempt, BeforeReading, CharacterSheet, GuidePrompt, InterviewSummary, InterviewTurnResult,
     JudgeScore, ParentUpdate, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
     SoftenedScene, StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
+    BlockSpot, TextChunking, TextPlacement,
 )
 
 
-def fake_structured(*, node, model, schema, system, user):
+def fake_structured(*, node, model, schema, system, user, image=None):
     assert "{{" not in system, f"[{node}] 치환 안 된 자리: {system[system.index('{{'):][:40]}"
     if schema is InterviewTurnResult:
         # 지금까지 받은 답변 수로 몇 번째 턴인지 본다 (interview 프롬프트의 {{turns}})
@@ -57,6 +58,10 @@ def fake_structured(*, node, model, schema, system, user):
                       world="숲속 그림 교실", mirrored_situation="같이 그리던 다람쥐가 오늘은 혼자 그리겠다고 함", problem_cause="다람쥐가 혼자 그리겠다고 함",
                       values_to_honor=["아이 마음 먼저"], story_arc=["시작", "상황", "감정", "교류", "결말"],
                       **{k: v for k, v in extra.items() if k in schema.model_fields})
+    if schema is TextChunking:    # 줄 번호 목록은 프롬프트의 "번호: 줄" (prompts/text_chunks.md)
+        return TextChunking(blocks=[[list(range(len(re.findall(r"^\d+: ", system, re.M))))]])
+    if schema is TextPlacement:   # 덩어리 수는 프롬프트의 "n번 덩어리" (prompts/text_place.md)
+        return TextPlacement(blocks=[BlockSpot(x=5, y=7, color="dark") for _ in re.findall(r"^\d+번 덩어리", system, re.M)])
     if schema is SoftenedScene:   # 원래 지시는 프롬프트 맨 끝 (prompts/soften_image_prompt.md)
         return SoftenedScene(text="gentle " + system.rstrip().rsplit("\n", 1)[-1])
     if schema is StoryJudgement:

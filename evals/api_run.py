@@ -25,7 +25,7 @@ from firstory import llm, mock, server, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.nodes import illustrate as il, interview as iv, safety  # noqa: E402
 from firstory.schemas import (  # noqa: E402
-    InterviewTurnResult, ParentUpdate, SafetyJudgement, SafetyResult, StoryPage, StoryRevision,
+    InterviewTurnResult, ParentUpdate, PolishedPage, PolishedStory, SafetyJudgement, SafetyResult, StoryPage, StoryRevision,
 )
 
 H = {"X-Internal-Token": "test-token"}
@@ -248,7 +248,12 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert [p["page_no"] for p in res["pages"]] == list(range(1, config.page_count + 1))
     assert all(p["image_status"] == "done" and p["image_path"] == f"{prefix}images/page-{p['page_no']:02d}.png"
                and storage.exists(p["image_path"]) for p in res["pages"]), res["pages"][0]
-    assert [p["text_position"] for p in res["pages"]][:3] == ["bottom", "bottom", "top"]   # 가짜 원고는 3의 배수 쪽만 top
+    # 글 덩어리: {paragraphs, x, y, color}. 줄을 이으면 원문. mock 자리(y 7)는 위쪽이라 text_position도 모두 top (작가 값 아님)
+    for p in res["pages"]:
+        assert 1 <= len(p["text_blocks"]) <= 2 and all(set(b) == {"paragraphs", "x", "y", "color"} for b in p["text_blocks"]), p
+        assert all(isinstance(b["x"], float) and isinstance(b["y"], float) and b["color"] in ("dark", "light") for b in p["text_blocks"])
+        assert re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para)) == re.sub(r"\s", "", p["text"])
+    assert [p["text_position"] for p in res["pages"]] == ["top"] * config.page_count
     assert {(s["role"], s["name"]) for s in res["character_sheets"]} == {("protagonist", "포포"), ("supporting", "엄마곰")}
     assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
     assert set(res["guide"]) == {"synopsis", "prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
@@ -469,6 +474,9 @@ def rewrite_page6(**kw):
                                                    for n in revised_pages["value"]])
     if kw["node"] == "polish_story":
         polish_systems.append(kw["system"])
+        if revised_pages["same_scene"]:   # 다듬은 글이 새 글로 남게 (mock 다듬기는 늘 "깡충"으로 되돌린다)
+            return PolishedStory(pages=[PolishedPage(order=int(n), text=f"{n}쪽. 포포는 깜짝 놀랐어요.")
+                                        for n in re.findall(r'"order": (\d+)', kw["system"])])
     return mock.fake_structured(**kw)
 
 
@@ -509,6 +517,10 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     draft3 = server._graph.get_state(server._cfg(tid8)).values["story_draft"]
     assert {pg.order: pg.text for pg in draft3.pages}[3] == "3쪽. 포포는 깜짝 놀랐어요."   # 작가는 3쪽 글을 고쳤다
     assert page_paths(third) == page_paths(second) and third["cost"]["image_count"] == 0, third["cost"]
+    # 그림은 그대로여도 글이 바뀐 3쪽은 덩어리·자리를 다시 한다. 나머지 쪽은 그대로
+    flat_text = lambda p: re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para))  # noqa: E731
+    assert "깜짝놀랐어요" in flat_text(next(p for p in third["pages"] if p["page_no"] == 3))
+    assert all(p["text_blocks"] == q["text_blocks"] for p, q in zip(third["pages"], second["pages"]) if p["page_no"] != 3)
 
     # 작가가 없는 쪽을 돌려주면 실패 (부모는 다시 시도할 수 있다). 앞선 버전은 그대로
     revised_pages.update(value=[99], same_scene=False)

@@ -245,13 +245,13 @@ class CharacterSheet(BaseModel):
 
 class StoryPage(BaseModel):
     order: int = Field(description="1부터")
-    text: str = Field(description="4~6세 눈높이, 2~4문장. 의성어·의태어는 **별표**로 감싼다 (책에서 굵게 표시)")
+    text: str = Field(description="4~6세 눈높이, 3~5줄(마침표마다 한 줄, 대사 안 문장도 센다). 의성어·의태어는 **별표**로 감싼다 (책에서 굵게 표시)")
     characters_in_scene: list[str] = Field(description="이 페이지 그림에 등장하는 캐릭터 이름들 (CharacterSheet.name과 동일하게)")
     image_prompt: str = Field(
         description="이 페이지 장면. 캐릭터 외형은 반복하지 말고 **정확한 자세·동작·위치·표정·구도**를 구체적으로. 본문의 미묘한 동작(예: 바퀴 하나만 담요 밖으로)을 그대로. 영어로"
     )
     text_position: Literal["top", "bottom"] = Field(
-        "bottom", description="글을 얹을 자리. 그림의 이쪽 25%를 비워 둔다. 기본 bottom, 바닥이 장면의 핵심이거나 넓은 하늘·천장이 있으면 top"
+        "bottom", description="글 덩어리(text_blocks)가 없는 화면(옛 그림 등)에서만 쓰는 대체 자리. 그림이 이쪽을 비우지는 않는다. 기본 bottom, 바닥이 장면의 핵심이거나 넓은 하늘·천장이 있으면 top"
     )
 
 
@@ -318,11 +318,36 @@ class ReadingGuide(BaseModel):
 # ──────────────────────────────────────────────────────────────
 # 산출물 / 상태
 # ──────────────────────────────────────────────────────────────
+class TextBlock(BaseModel):
+    """그림 위에 올리는 글 한 덩어리. x, y는 덩어리 왼쪽 위 모서리(그림 폭·높이 대비 %)."""
+    paragraphs: list[list[str]]   # 문단 > 줄
+    x: float
+    y: float
+    color: Literal["dark", "light"]
+
+
+class TextChunking(BaseModel):
+    """덩어리 나누기 답. 줄 번호로만: 덩어리 > 문단 > 줄 번호"""
+    blocks: list[list[list[int]]]
+
+
+class BlockSpot(BaseModel):
+    x: float   # 왼쪽 위 모서리, 그림 폭 대비 %
+    y: float   # 그림 높이 대비 %
+    color: Literal["dark", "light"]
+
+
+class TextPlacement(BaseModel):
+    """자리 찾기 답. 읽는 순서대로 덩어리마다 하나"""
+    blocks: list[BlockSpot]
+
+
 class PageImage(BaseModel):
     order: int
     path: Optional[str] = None   # 저장소 key (storage.py). 그림만 다시 그린 실행에서 안 바뀐 쪽은 이전 실행의 key
     status: Literal["pending", "generating", "completed", "failed"] = "pending"
     error: Optional[str] = None
+    text_blocks: Optional[list[TextBlock]] = None   # 그림 위 글 배치. 그림이 실패한 쪽은 None
 
 
 class Illustrations(BaseModel):
