@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from firstory import llm, mock, server, storage  # noqa: E402
 from firstory.config import config  # noqa: E402
-from firstory.nodes import interview as iv, safety  # noqa: E402
+from firstory.nodes import illustrate as il, interview as iv, safety  # noqa: E402
 from firstory.schemas import (  # noqa: E402
     InterviewTurnResult, ParentUpdate, SafetyJudgement, SafetyResult, StoryPage, StoryRevision,
 )
@@ -363,9 +363,14 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
         return {p["page_no"]: p["image_path"] for p in res["pages"]}
 
     # v1(생성 테스트의 tid, runs/1)에서 그림만 다시 3쪽 → v2(runs/2): 3쪽만 새로, 나머지 쪽·시트는 v1 key
+    # 부모 메모는 쪽 번호와 따로 와서 3쪽 그림 프롬프트에 들어간다 (#46)
     v1 = result(tid)
-    accepted(review(tid, **regen("images", 2, v1["checkpoint_id"], pages=[3])))
+    regen_prompts = []
+    il.set_image_override(lambda p, refs: regen_prompts.append(p) or mock.tiny_png(p, refs))
+    accepted(review(tid, **regen("images", 2, v1["checkpoint_id"], pages=[3], feedback="3쪽 공룡을 더 웃게 해 주세요")))
     assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert len(regen_prompts) == 1 and "3쪽 공룡을 더 웃게 해 주세요" in regen_prompts[0], regen_prompts
+    il.set_image_override(mock.tiny_png)
     v2 = result(tid)
     assert v2["run_no"] == 2 and v2["checkpoint_id"] != v1["checkpoint_id"]
     assert page_paths(v2)[3] == "stories/12/runs/2/images/page-03.png"

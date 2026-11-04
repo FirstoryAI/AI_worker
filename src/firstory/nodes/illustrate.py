@@ -157,7 +157,8 @@ def cover_prompt(story: StoryText, setting: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
-def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt: str, text_position: str = "bottom") -> str:
+def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt: str, text_position: str = "bottom",
+                request: Optional[str] = None) -> str:
     lines = [
         f"Illustrate this picture-book scene. {len(page_chars)} reference image(s) are attached, one per character, in this order:",
     ]
@@ -170,14 +171,18 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
         "Full-bleed illustration, no text, no speech bubbles, no borders.",
         _LAYOUT[text_position],
     ]
+    if request:   # 그림만 다시의 부모 메모. 이 쪽에 맞는 부분만 반영하고 인물·화풍은 그대로
+        lines.append("Parent's request for this redraw (written in Korean). Apply it where it fits this page; keep the characters, "
+                     f"style and layout above unchanged. Do not draw the request as text: {request}")
     return "\n".join(lines)
 
 
-def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None):
+def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None,
+         request: Optional[str] = None):
     """img_prefix: 이번 실행의 그림 key 앞부분 (…/images). 일부 쪽만 다시 그리면 나머지 쪽과 시트는
     prev의 key를 그대로 둔다 — 파일을 복사하지 않는다 (API 스펙 G4).
     only_pages가 None이면 시트·표지·모든 쪽, 집합이면 그 쪽만(빈 집합이면 쪽은 그대로). 표지는 전부 그릴 때와
-    제목이 바뀌었거나 이전 표지가 없을 때만 다시 그린다."""
+    제목이 바뀌었거나 이전 표지가 없을 때만 다시 그린다. request(부모 메모)는 다시 그리는 쪽 프롬프트에만 붙인다."""
     costs: list[CostEntry] = []
     ill = prev.model_copy(deep=True) if prev else Illustrations()
     by_name = {c.name: c for c in story.characters}
@@ -208,7 +213,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         try:
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
-            img, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, p.text_position), refs),
+            img, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, p.text_position, request), refs),
                                    p.image_prompt, f"{img_prefix} page {p.order}", costs)
             key = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img)
             return PageImage(order=p.order, path=key, status="completed"), int((time.time() - t0) * 1000), tin, tout
@@ -271,9 +276,18 @@ def _pages_from_feedback(fb: str) -> set[int] | None:
     return pages or None
 
 
+def _memo(fb: str) -> Optional[str]:
+    """쪽 번호만 쓴 피드백("3", "3, 5쪽")은 메모가 아니다."""
+    fb = fb.strip()
+    return fb if re.sub(r"[\d\s,]|쪽|페이지", "", fb) else None
+
+
 def illustrate_only(state: PipelineState) -> dict:
-    """재생성 scope=images: 그림만 다시 (feedback에 페이지 번호가 있으면 그 페이지만)."""
-    pages = _pages_from_feedback(state.get("review_feedback") or "")
+    """재생성 scope=images: 그림만 다시. 쪽은 regenerate_pages(API, []면 전부), 없으면 feedback의 쪽 번호(CLI·뷰어).
+    feedback(부모 메모)은 다시 그리는 쪽의 그림 프롬프트에 붙인다 (#46)."""
+    fb = state.get("review_feedback") or ""
+    chosen = state.get("regenerate_pages")
+    pages = (set(chosen) or None) if chosen is not None else _pages_from_feedback(fb)
     ill, costs = _run(state["story"], storage.join(state["output_prefix"], "images"), only_pages=pages,
-                      prev=state.get("illustrations"))
+                      prev=state.get("illustrations"), request=_memo(fb))
     return {"illustrations": ill, "cost": costs}
