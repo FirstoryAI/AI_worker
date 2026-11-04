@@ -411,10 +411,10 @@ def review(thread_id: str, body: ReviewRequest, response: Response) -> dict:
                                                     as_node="parent_review"))
             return {"state": "COMPLETED"}
         _check_prefix(body.output_prefix)
-        # 그림만 다시는 쪽 번호를 "3,5"로 (illustrate_only가 feedback에서 쪽 번호를 읽는다)
-        feedback = ",".join(map(str, body.pages)) if body.scope == "images" else body.feedback
+        # 그림만 다시는 쪽(pages, []면 전부)과 부모 메모(feedback)를 따로 넘긴다 (#46)
         branch = _graph.update_state(_at(thread_id, snap), review_update({
-            "action": "regenerate", "scope": body.scope, "feedback": feedback, "output_prefix": body.output_prefix,
+            "action": "regenerate", "scope": body.scope, "feedback": body.feedback, "pages": body.pages,
+            "output_prefix": body.output_prefix,
         }), as_node="parent_review")
         _start_run(thread_id, lock, body.run_id, body.run_no, None, _REGEN_FIRST_NODE[body.scope],
                    len(snap.values.get("cost", [])), branch["configurable"]["checkpoint_id"])

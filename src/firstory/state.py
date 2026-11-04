@@ -48,6 +48,7 @@ class PipelineState(TypedDict, total=False):
     review_action: Optional[Literal["approve", "regenerate"]]
     regenerate_scope: Optional[RegenerateScope]
     review_feedback: Optional[str]
+    regenerate_pages: Optional[list[int]]    # 그림만 다시(API)에서 다시 그릴 쪽. []면 전부, None이면 review_feedback에서 쪽 번호를 읽는다 (CLI·뷰어)
     # 산출물
     guide: Optional[ReadingGuide]
     illustrations: Optional[Illustrations]

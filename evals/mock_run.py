@@ -266,6 +266,38 @@ assert w.cover == "stories/c/runs/6/images/cover.webp" and all(k.endswith(".png"
 il.set_image_override(mock.tiny_png)
 print("webp ok")
 
+# ── 그림만 다시: 쪽 선택(regenerate_pages)과 부모 메모(review_feedback)를 따로 (#46) ──
+memo_prompts: list[str] = []
+
+
+def record(prompt, refs):
+    memo_prompts.append(prompt)
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(record)
+base = {"story": st, "illustrations": c1, "output_prefix": "stories/c/runs/7/"}
+memo = "2쪽 포포가 더 활짝 웃게 해 주세요"
+o = il.illustrate_only(base | {"regenerate_pages": [1], "review_feedback": memo})   # 메모의 "2쪽"이 아니라 고른 쪽만
+assert [c.node for c in o["cost"]] == ["illustrate:page1"], o["cost"]
+assert len(memo_prompts) == 1 and memo in memo_prompts[0] and "Parent's request" in memo_prompts[0]
+memo_prompts.clear()
+o = il.illustrate_only(base | {"regenerate_pages": [], "review_feedback": memo})       # []는 전부, 메모는 쪽마다
+assert sorted(c.node for c in o["cost"] if c.node.startswith("illustrate:page")) == ["illustrate:page1", "illustrate:page2"]
+assert all(memo in p for p in memo_prompts if "Scene" in p) and not any(memo in p for p in memo_prompts if "Front cover" in p)
+memo_prompts.clear()
+o = il.illustrate_only(base | {"regenerate_pages": [2], "review_feedback": None})      # 메모 없으면 프롬프트 그대로
+assert len(memo_prompts) == 1 and "Parent's request" not in memo_prompts[0]
+memo_prompts.clear()
+o = il.illustrate_only(base | {"review_feedback": "2"})                                # CLI·뷰어: 쪽 번호만이면 메모 아님
+assert [c.node for c in o["cost"]] == ["illustrate:page2"] and "Parent's request" not in memo_prompts[0]
+assert il._memo("3, 5쪽") is None and il._memo(" ") is None and il._memo(memo) == memo
+from firstory.nodes.story import review_update  # noqa: E402
+assert review_update({"action": "regenerate", "scope": "images", "pages": [], "feedback": memo})["regenerate_pages"] == []
+assert review_update({"action": "regenerate", "scope": "text", "pages": [3], "feedback": "x"})["regenerate_pages"] is None
+il.set_image_override(mock.tiny_png)
+print("image regen memo ok")
+
 # ── 인터뷰 상한(15)과 반복: 몇 턴 전 질문으로 돌아가도 끝내고, 15턴째에는 max_turns ──
 from firstory.schemas import InterviewTurnResult, ParentUpdate, StoryInputContext, Turn  # noqa: E402
 
