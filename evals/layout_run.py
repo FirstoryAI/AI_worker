@@ -28,6 +28,12 @@ wrapped = wrap_line(long)
 assert len(wrapped) >= 2 and " ".join(wrapped) == long
 assert all(text_width(l) <= W * MAX_LINE for l in wrapped)
 assert wrap_line("짧은 줄.") == ["짧은 줄."]
+emph = "라라는 **아주 아주 아주 아주 소중한 그림을 아주 오래오래 그리고 싶어서 정말 정말 정말 열심히 했던** 그 마음이 싫었어요 라고 말했어요."
+ew = wrap_line(emph)
+assert len(ew) >= 2 and all(l.count("**") % 2 == 0 for l in ew), ew                  # 줄마다 ** 짝이 맞음
+assert " ".join(ew).replace("**", "") == emph.replace("**", ""), ew                    # 글자는 그대로
+assert all(text_width(l) <= W * MAX_LINE for l in ew)
+assert ew[0].endswith("**") and ew[1].startswith("**"), ew                              # 갈라진 곳에서 닫고 다시 연다
 assert text_width("**토닥**") == text_width("토닥")                             # ** 는 폭에서 뺌
 
 # ── 덩어리 정리 ──

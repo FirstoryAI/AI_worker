@@ -69,13 +69,15 @@ def wrap_line(line: str) -> list[str]:
         return [line]
     out: list[str] = []
     cur = ""
+    emph = False                          # cur 끝에서 **강조**가 열려 있는지
     for word in line.split(" "):
         trial = f"{cur} {word}" if cur else word
         if cur and text_width(trial) > limit:
-            out.append(cur)
-            cur = word
+            out.append(cur + "**" if emph else cur)     # 강조 안에서 자르면 줄마다 표시를 닫고 다시 연다
+            cur = ("**" if emph else "") + word
         else:
             cur = trial
+        emph ^= word.count("**") % 2 == 1
     out.append(cur)
     return out
 
