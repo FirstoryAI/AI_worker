@@ -500,6 +500,22 @@ new_nodes = [c.node for c in v2["cost"][before:]]
 assert "layout:place:page1" in new_nodes and not any(n.startswith("layout:") and n.endswith(tuple(f"page{o}" for o in range(2, 20)))
                                                       for n in new_nodes), new_nodes
 assert not any(n.startswith("illustrate:page") for n in new_nodes)
+
+# 글 자리(text_position)만 바뀐 수정은 장면이 그대로라 그림을 하나도 다시 그리지 않는다
+cur1 = next(pg for pg in v2["story"].pages if pg.order == 1)
+flip = "bottom" if cur1.text_position == "top" else "top"
+
+
+def flip_only(**kw):
+    if kw["schema"] is StoryRevision:
+        return StoryRevision(reason="mock", pages=[first.model_copy(update={"text_position": flip})])
+    return recording_structured(**kw)
+
+
+llm.set_structured_override(flip_only)
+calls8.clear()
+r8 = graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "자리만"}), cfg8)
+assert not any("Scene" in p for p in calls8), "text_position만 바뀌었는데 그림을 다시 그렸다"
 il.set_image_override(mock.tiny_png)
 llm.set_structured_override(recording_structured)
 print("text regen relayouts reused image ok")
