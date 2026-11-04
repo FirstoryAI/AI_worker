@@ -45,19 +45,19 @@ def draw(story: StoryText, out: Path) -> int:
     return made
 
 
-def sheet(a_img: Path, b_img: Path, dest: Path):
-    names = ["cover"] + sorted({p.stem for p in b_img.glob("page-*")})
+def sheet(dirs: list[Path], labels: list[str], dest: Path):
+    names = ["cover"] + sorted({p.stem for d in dirs for p in d.glob("page-*")})
     W, G, H = 768, 12, 36
     rows = []
     for name in names:
-        pair = [next(iter(sorted(d.glob(f"{name}.*"))), None) for d in (a_img, b_img)]
-        size = Image.open(pair[1] or pair[0]).size if any(pair) else (W, W)
+        pair = [next(iter(sorted(d.glob(f"{name}.*"))), None) for d in dirs]
+        size = Image.open(next(f for f in pair if f)).size if any(pair) else (W, W)
         rows.append((name, pair, round(W * size[1] / size[0])))
-    im = Image.new("RGB", (2 * W + 3 * G, sum(h + H + G for *_, h in rows) + G), "white")
+    im = Image.new("RGB", (len(dirs) * (W + G) + G, sum(h + H + G for *_, h in rows) + G), "white")
     d = ImageDraw.Draw(im)
     y = G
     for name, pair, h in rows:
-        for c, (f, label) in enumerate(zip(pair, ("before", "after"))):
+        for c, (f, label) in enumerate(zip(pair, labels)):
             x = G + c * (W + G)
             d.text((x + 4, y + 10), f"{label}  {name}", fill="black")
             if f:
@@ -80,7 +80,7 @@ def main():
         with ThreadPoolExecutor(2) as ex:
             made = dict(zip(runs, ex.map(lambda k: draw(runs[k], outs[k]), runs)))
         dest = a_dir.parent / f"compare-style-{a_dir.name}.jpg"
-        sheet(outs["before"], outs["after"], dest)
+        sheet([outs["before"], outs["after"]], ["before", "after"], dest)
         print(f"{story.title}: images before={made['before']} after={made['after']} {time.time() - t0:.0f}s → {dest}")
 
 
