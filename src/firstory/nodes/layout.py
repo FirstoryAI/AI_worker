@@ -1,0 +1,279 @@
+"""
+쪽 글 배치 계산 (API 없음): 줄 나누기 → 덩어리 정리 → 크기 → 자리(여백·띠·복잡도·읽는 순서).
+설계: docs/superpowers/specs/2026-11-04-text-blocks-design.md 2·3·5절.
+"""
+from __future__ import annotations
+
+import io
+import math
+import re
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageFilter, ImageFont
+
+W, H = 1920, 1088                  # 그림 기준 크기(px)
+FONT_RATIO = 0.015                 # 글자 크기 = 그림 폭의 1.5%
+LINE_H = 1.55                      # 줄 높이 = 글자 크기 배수
+PARA_GAP = 0.6                     # 문단 사이 = 줄 수
+MAX_LINE = 0.38                    # 한 줄 최대 폭 = 그림 폭의 38%
+EDGE_Y, EDGE_X, FOLD, BAND = 7, 5, 4, 20   # 위·아래 여백, 좌우 여백, 접히는 선 여백, 띠 (모두 %)
+BUSY_LIMIT = 8.0                   # 복잡도(RGB 표준편차) 통과 기준
+BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대비)
+GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
+MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
+DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위
+
+FONT_PX = round(W * FONT_RATIO)    # 29
+LINE_PX = FONT_PX * LINE_H
+FONT_PATH = Path(__file__).parents[1] / "assets/fonts/MemomentKkukkukk.woff2"
+GRID = 8                           # 자리 찾기 격자(px)
+MOVE_COST = 0.01                   # 원래 자리와 멀어진 만큼 더하는 점수(px당)
+
+Block = list[list[str]]            # 덩어리 = 문단 > 줄
+
+_SENTENCE_END = re.compile(r'(?<!\.)\.(?!\.)["”’]?\s+')   # 마침표(말줄임표 제외) 뒤에서 자름
+_DQUOTES = '"“”'
+
+
+# ── 줄 ──
+def split_lines(text: str) -> list[str]:
+    """원래 줄바꿈과 마침표마다 줄을 나눈다. 글자는 그대로."""
+    out: list[str] = []
+    for raw in text.split("\n"):
+        raw = raw.strip()
+        pos = 0
+        for m in _SENTENCE_END.finditer(raw):
+            out.append(raw[pos:m.end()].strip())
+            pos = m.end()
+        if raw[pos:]:
+            out.append(raw[pos:].strip())
+    return out
+
+
+@lru_cache(maxsize=1)
+def _font() -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(FONT_PATH), FONT_PX)
+
+
+def text_width(line: str) -> float:
+    """1920 폭 기준 px. 강조 표시(**)는 빼고 잰다."""
+    return _font().getlength(line.replace("**", ""))
+
+
+def wrap_line(line: str) -> list[str]:
+    """한 줄이 38%를 넘으면 띄어쓰기에서 자른다."""
+    limit = W * MAX_LINE
+    if text_width(line) <= limit:
+        return [line]
+    out: list[str] = []
+    cur = ""
+    for word in line.split(" "):
+        trial = f"{cur} {word}" if cur else word
+        if cur and text_width(trial) > limit:
+            out.append(cur)
+            cur = word
+        else:
+            cur = trial
+    out.append(cur)
+    return out
+
+
+# ── 덩어리 ──
+def _valid_idx(n: int, idx) -> bool:
+    if not isinstance(idx, list) or not 1 <= len(idx) <= 2:
+        return False
+    flat: list = []
+    for chunk in idx:
+        if not isinstance(chunk, list) or not chunk:
+            return False
+        for para in chunk:
+            if not isinstance(para, list) or not para:
+                return False
+            flat.extend(para)
+    return all(type(i) is int for i in flat) and flat == list(range(n))
+
+
+def normalize_chunks(n_lines: int, idx: list[list[list[int]]], lines: list[str] | None = None) -> list[list[list[int]]]:
+    """줄 번호 나누기를 확인한다: 모든 줄을 순서대로 한 번씩, 덩어리 1~2개. 아니면 한 덩어리 한 문단.
+    lines 를 주면 따옴표가 열린 줄부터 닫히는 줄까지의 문단·덩어리 끊김을 붙인다."""
+    if not _valid_idx(n_lines, idx):
+        return [[list(range(n_lines))]]
+    # 줄마다 (덩어리, 문단) 이름표
+    label = [(ci, pi) for ci, chunk in enumerate(idx) for pi, para in enumerate(chunk) for _ in para]
+    if lines is not None and len(lines) == n_lines:
+        open_quote = False
+        for i in range(n_lines - 1):
+            if sum(lines[i].count(q) for q in _DQUOTES) % 2:
+                open_quote = not open_quote
+            if open_quote:                       # i 줄 끝에서 따옴표가 열려 있음 → 다음 줄을 같은 문단에
+                label[i + 1] = label[i]
+    out: list[list[list[int]]] = []
+    prev: tuple[int, int] | None = None
+    for i, lab in enumerate(label):
+        if prev is None or lab[0] != prev[0]:
+            out.append([[i]])
+        elif lab[1] != prev[1]:
+            out[-1].append([i])
+        else:
+            out[-1][-1].append(i)
+        prev = lab
+    return out
+
+
+def build_blocks(lines: list[str], idx: list[list[list[int]]]) -> list[Block]:
+    """덩어리 > 문단 > 줄. 38%를 넘는 줄은 띄어쓰기에서 한 번 더 자른다."""
+    return [[[w for i in para for w in wrap_line(lines[i])] for para in chunk] for chunk in idx]
+
+
+def merge(blocks: list[Block]) -> list[Block]:
+    """한 덩어리로 합친다. 문단은 그대로."""
+    return [[para for block in blocks for para in block]]
+
+
+def block_size(block: Block) -> tuple[float, float]:
+    """(폭 px, 높이 px), 1920×1088 기준."""
+    rows = [line for para in block for line in para]
+    n = len(rows)
+    width = max((text_width(l) for l in rows), default=0.0)
+    return width, (n + PARA_GAP * (len(block) - 1)) * FONT_PX * LINE_H
+
+
+# ── 복잡도 ──
+class Busy:
+    """그림의 영역별 복잡도(RGB 표준편차 평균). 1/4로 줄여 적분 영상으로 잰다."""
+
+    S = 4
+
+    def __init__(self, image: bytes):
+        img = Image.open(io.BytesIO(image)).convert("RGB")
+        img = img.resize((W // self.S, H // self.S)).filter(ImageFilter.GaussianBlur(0.75))   # 종이 결 빼기
+        a = np.asarray(img, dtype=np.float64)
+        self._sum = self._integral(a)
+        self._sq = self._integral(a * a)
+
+    @staticmethod
+    def _integral(a: np.ndarray) -> np.ndarray:
+        out = np.zeros((a.shape[0] + 1, a.shape[1] + 1, a.shape[2]))
+        out[1:, 1:] = a.cumsum(0).cumsum(1)
+        return out
+
+    def at(self, x: float, y: float, w: float, h: float) -> float:
+        """px 좌표(1920×1088 기준) 상자의 복잡도. 그림 밖은 잘라 낸다."""
+        s = self.S
+        h4, w4 = self._sum.shape[0] - 1, self._sum.shape[1] - 1
+        x0, x1 = max(0, math.floor(x / s)), min(w4, math.ceil((x + w) / s))
+        y0, y1 = max(0, math.floor(y / s)), min(h4, math.ceil((y + h) / s))
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+
+        def box(t: np.ndarray) -> np.ndarray:
+            return t[y1, x1] - t[y0, x1] - t[y1, x0] + t[y0, x0]
+
+        n = (x1 - x0) * (y1 - y0)
+        mean = box(self._sum) / n
+        var = np.maximum(box(self._sq) / n - mean * mean, 0.0)
+        return float(np.sqrt(var).mean())
+
+
+# ── 자리 ──
+def _page(x: float, bw: float) -> int:
+    """덩어리 가운데 x 가 있는 면: 왼쪽 0, 오른쪽 1"""
+    return 0 if x + bw / 2 < W / 2 else 1
+
+
+def _x_range(page: int, bw: float) -> tuple[float, float]:
+    """면 안에서 덩어리 왼쪽 끝이 놓일 수 있는 범위(px). 비면 lo > hi."""
+    edge, fold = W * EDGE_X / 100, W * FOLD / 100
+    lo, hi = (edge, W / 2 - fold) if page == 0 else (W / 2 + fold, W - edge)
+    return lo, hi - bw
+
+
+def _y_bands(bh: float) -> list[tuple[float, float]]:
+    """덩어리 위끝 y 가 놓일 수 있는 두 띠(px): 위끝이 위에서 7~20%, 아래끝이 아래에서 7~20%"""
+    top = (H * EDGE_Y / 100, H * BAND / 100)
+    bottom = (max(H * EDGE_Y / 100, H * (100 - BAND) / 100 - bh), H * (100 - EDGE_Y) / 100 - bh)
+    return [b for b in (top, bottom) if b[0] <= b[1]]
+
+
+def _to_px(spot: dict) -> tuple[float, float]:
+    """AI 가 %로 답하면 그대로, 픽셀로 답했으면(100 넘는 값) 그림 크기로 나눠 %로 본다"""
+    x, y = float(spot["x"]), float(spot["y"])
+    if x > 100 or y > 100:
+        return x, y
+    return x / 100 * W, y / 100 * H
+
+
+def _push(x: float, y: float, bw: float, bh: float) -> tuple[float, float]:
+    """여백 안으로 민다: 덩어리 가운데가 있는 면 안쪽으로"""
+    lo, hi = _x_range(_page(x, bw), bw)
+    x = min(max(x, lo), max(lo, hi))
+    ylo, yhi = H * EDGE_Y / 100, H * (100 - EDGE_Y) / 100 - bh
+    return x, min(max(y, ylo), max(ylo, yhi))
+
+
+def _in_band(y: float, bh: float) -> bool:
+    return any(lo - 1e-6 <= y <= hi + 1e-6 for lo, hi in _y_bands(bh))
+
+
+def _gap_ok(x: float, y: float, bw: float, bh: float, placed: list[tuple[float, float, float, float]]) -> bool:
+    """이미 놓은 덩어리와 2% 이상 띄었는지"""
+    g = W * GAP
+    return all(x + bw + g <= px or px + pw + g <= x or y + bh + g <= py or py + ph + g <= y
+               for px, py, pw, ph in placed)
+
+
+def _order_ok(x: float, y: float, bw: float, placed: list[tuple[float, float, float, float]]) -> bool:
+    """읽는 순서: 앞 덩어리보다 (면, y)가 뒤"""
+    return all((_page(x, bw), y) > (_page(px, pw), py) for px, py, pw, _ in placed)
+
+
+def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
+    pad = W * BUSY_PAD
+    return busy.at(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
+
+
+def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
+            placed: list[tuple[float, float, float, float]]) -> tuple[float, float] | None:
+    """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳"""
+    home = _page(near[0], bw)
+    for page in (home, 1 - home):
+        lo, hi = _x_range(page, bw)
+        best: tuple[float, tuple[float, float]] | None = None
+        for ylo, yhi in _y_bands(bh):
+            for y in np.arange(ylo, yhi + 1e-6, GRID):
+                for x in np.arange(lo, hi + 1e-6, GRID):
+                    x, y = float(x), float(y)
+                    if not (_order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)):
+                        continue
+                    std = _score(busy, x, y, bw, bh)
+                    if std > BUSY_LIMIT:
+                        continue
+                    score = std + MOVE_COST * math.hypot(x - near[0], y - near[1])
+                    if best is None or score < best[0]:
+                        best = (score, (x, y))
+        if best:
+            return best[1]
+    return None
+
+
+def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:
+    """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격을 확인해 안 되면 옮긴다.
+    덩어리마다 {"x": %, "y": %, "color"}. 하나라도 자리가 없으면 None."""
+    placed: list[tuple[float, float, float, float]] = []
+    out: list[dict] = []
+    for i, block in enumerate(blocks):
+        bw, bh = block_size(block)
+        spot = spots[i] if i < len(spots) else {"x": DEFAULT_SPOT[0], "y": DEFAULT_SPOT[1], "color": DEFAULT_SPOT[2]}
+        x, y = _push(*_to_px(spot), bw, bh)
+        ok = (_in_band(y, bh) and _order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)
+              and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
+        if not ok:
+            found = _search(busy, (x, y), bw, bh, placed)
+            if found is None:
+                return None
+            x, y = found
+        placed.append((x, y, bw, bh))
+        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": spot.get("color", DEFAULT_SPOT[2])})
+    return out
