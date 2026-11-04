@@ -266,6 +266,35 @@ assert w.cover == "stories/c/runs/6/images/cover.webp" and all(k.endswith(".png"
 il.set_image_override(mock.tiny_png)
 print("webp ok")
 
+# ── 쪽·표지에 첨부하는 시트는 긴 변 1024px로 줄인다. 저장된 시트는 그대로 (#67) ──
+import io as _io  # noqa: E402
+from PIL import Image as _Image  # noqa: E402
+
+
+def _png(w, h):
+    buf = _io.BytesIO(); _Image.new("RGB", (w, h), (240, 200, 210)).save(buf, "PNG"); return buf.getvalue()
+
+
+ref_sizes: list[tuple[int, int]] = []
+
+
+def big_sheets(prompt, refs):
+    if not refs:                       # 시트(generate)는 쪽 그림 크기로 만든다
+        return _png(1920, 1088)
+    ref_sizes.extend(_Image.open(_io.BytesIO(r)).size for r in refs)
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(big_sheets)
+r1024 = il.illustrate({"story": st, "output_prefix": "stories/c/runs/8/"})["illustrations"]
+assert ref_sizes and all(max(sz) <= config.ref_max_side for sz in ref_sizes), ref_sizes       # 쪽·표지 첨부는 1024 이하
+assert max(ref_sizes) == (1024, 580), ref_sizes                                                # 비율 유지
+assert _Image.open(_io.BytesIO(storage.read_bytes(r1024.character_sheets["포포"]))).size == (1920, 1088)   # 저장 시트는 원본
+small = mock.tiny_png("", [])
+assert il._ref(small) is small and il._ref(b"not an image") == b"not an image"               # 작거나 못 읽으면 그대로
+il.set_image_override(mock.tiny_png)
+print("ref sheet 1024 ok")
+
 # ── 그림만 다시: 쪽 선택(regenerate_pages)과 부모 메모(review_feedback)를 따로 (#46) ──
 memo_prompts: list[str] = []
 
