@@ -40,7 +40,7 @@ class Situation(BaseModel):
     category: SituationCategory
     custom_category: Optional[str] = None
     timing: Literal["past", "upcoming"]
-    description: str = Field(max_length=60, description="상황에 대한 짧은 설명")
+    description: str = Field(max_length=300, description="상황에 대한 설명 (300자까지)")
 
 
 class Child(BaseModel):
