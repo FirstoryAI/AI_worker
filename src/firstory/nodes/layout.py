@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import math
 import re
 from functools import lru_cache
@@ -12,6 +13,12 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageFilter, ImageFont
+
+from ..config import config
+from ..llm import prompt, structured, structured_image
+from ..schemas import CostEntry, TextChunking, TextPlacement
+
+log = logging.getLogger("firstory.layout")
 
 W, H = 1920, 1088                  # 그림 기준 크기(px)
 FONT_RATIO = 0.015                 # 글자 크기 = 그림 폭의 1.5%
@@ -279,3 +286,80 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | N
         placed.append((x, y, bw, bh))
         out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": spot.get("color", DEFAULT_SPOT[2])})
     return out
+
+
+# ── AI 호출 ──
+def chunk_page(text: str) -> tuple[list[str], list[Block], list[CostEntry]]:
+    """쪽 글 → (줄, 덩어리, 비용). 줄이 하나면 AI를 부르지 않는다.
+    AI 답이 틀리거나 호출이 실패해도 한 덩어리 한 문단으로 간다. 글은 늘 원문 줄 그대로."""
+    lines = split_lines(text)
+    if not lines:
+        return [], [], []
+    if len(lines) == 1:
+        return lines, build_blocks(lines, [[[0]]]), []
+    costs: list[CostEntry] = []
+    idx = [[list(range(len(lines)))]]
+    try:
+        answer, cost = structured(
+            node="layout:chunk",
+            model=config.model_light,
+            schema=TextChunking,
+            system=prompt("text_chunks", lines="\n".join(f"{i}: {l}" for i, l in enumerate(lines))),
+            user="이 쪽의 글을 덩어리로 나누세요.",
+            reasoning="low",
+        )
+        costs.append(cost)
+        idx = normalize_chunks(len(lines), answer.blocks, lines)
+    except Exception as e:  # 글 내용은 로그에 남기지 않는다
+        log.warning("덩어리 나누기 실패 → 한 덩어리: %s", type(e).__name__)
+    return lines, build_blocks(lines, idx), costs
+
+
+def _sanitize_spots(spots, n: int) -> list[dict]:
+    """AI 자리 답을 % dict 목록으로. 개수가 다르거나 숫자가 아니면 [] (호출한 쪽이 기본 자리로 간다).
+    100을 넘는 값은 픽셀로 답한 것이라 축마다 그림 크기로 나눠 %로 바꾼다."""
+    if not isinstance(spots, (list, tuple)) or len(spots) != n:
+        return []
+    out: list[dict] = []
+    for s in spots:
+        try:
+            x, y = float(s.x), float(s.y)
+        except (AttributeError, TypeError, ValueError):
+            return []
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return []
+        if x > 100:
+            x = x / W * 100
+        if y > 100:
+            y = y / H * 100
+        color = getattr(s, "color", None)
+        out.append({"x": x, "y": y, "color": color if color in ("dark", "light") else "dark"})
+    return out
+
+
+def place_page(image: bytes, blocks: list[Block]) -> tuple[list[dict], list[CostEntry]]:
+    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서).
+    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다."""
+    if not blocks:
+        return [], []
+    sizes = []
+    for i, b in enumerate(blocks, 1):
+        w, h = block_size(b)
+        sizes.append(f"{i}번 덩어리: 가로 약 {w / W * 100:.0f}%, 세로 약 {h / H * 100:.0f}%")
+    try:
+        answer, cost = structured_image(
+            node="layout:place",
+            model=config.model_light,
+            schema=TextPlacement,
+            system=prompt("text_place", sizes="\n".join(sizes)),
+            user=f"덩어리 {len(blocks)}개의 자리를 읽는 순서대로 답하세요.",
+            image=image,
+            reasoning="low",
+        )
+    except Exception as e:  # 글·그림 내용은 로그에 남기지 않는다
+        log.warning("자리 찾기 호출 실패 → 기본 자리: %s", type(e).__name__)
+        return [], []
+    spots = _sanitize_spots(getattr(answer, "blocks", None), len(blocks))
+    if not spots:
+        log.warning("자리 찾기 답이 맞지 않음 → 기본 자리")
+    return spots, [cost]

@@ -14,8 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
     BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, GAP, H, MAX_LINE, W,
-    Busy, block_size, build_blocks, merge, normalize_chunks, settle, split_lines, text_width, wrap_line,
+    Busy, block_size, build_blocks, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
 )
+from firstory import llm, mock  # noqa: E402
+from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
 
 # ── 줄 나누기 ──
 assert split_lines('라라가 골랐어요. "어제 그 말 들으니 속상했어. 나는 같이 그리고 싶었어."') == [
@@ -170,5 +172,125 @@ assert settle(full, [blk, blk2], [{"x": 6, "y": 8, "color": "dark"}, {"x": 55, "
 left_full = Busy(png(stripes((0, 0, 50, 100))))
 out = settle(left_full, [blk], [{"x": 8, "y": 8, "color": "dark"}])
 assert out and out[0]["x"] / 100 * W >= W / 2, out
+
+# ── 덩어리 나누기 호출 (LLM 가짜) ──
+calls: list[dict] = []
+
+
+def fake_with(answer):
+    """answer(kw) → 스키마 객체. 부른 인자를 calls 에 쌓는다."""
+    def fn(**kw):
+        calls.append(kw)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer(kw) if callable(answer) else answer
+    return fn
+
+
+text = "미나가 라라를 보았어요.\n라라는 꽃을 그렸어요.\n미나는 웃었어요. 둘은 함께 그렸어요."
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0, 1]], [[2, 3]]])))
+ls, cks, costs = chunk_page(text)
+assert ls == ["미나가 라라를 보았어요.", "라라는 꽃을 그렸어요.", "미나는 웃었어요.", "둘은 함께 그렸어요."], ls
+assert cks == [[["미나가 라라를 보았어요.", "라라는 꽃을 그렸어요."]], [["미나는 웃었어요.", "둘은 함께 그렸어요."]]], cks
+assert [c.node for c in costs] == ["layout:chunk"] and len(calls) == 1
+assert calls[0]["schema"] is TextChunking and "0: 미나가 라라를 보았어요." in calls[0]["system"] and "{{" not in calls[0]["system"]
+assert "image" not in calls[0] or calls[0]["image"] is None
+
+# 모든 줄을 한 번씩 쓰지 않은 답 → 한 덩어리 한 문단
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0, 1]], [[2]]])))
+_, cks, _ = chunk_page(text)
+assert cks == [[ls]], cks
+# 따옴표 사이는 붙인다 (lines 를 넘겨 normalize 를 부른다)
+q = '라라가 말했어요.\n"어제는 혼자 하고 싶었어.\n라라가 싫어서 간 건 아니야."\n미나가 웃었어요.'
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0], [1]], [[2], [3]]])))
+ql, cks, _ = chunk_page(q)
+assert cks == [[[ql[0]], [ql[1], ql[2]], [ql[3]]]] or cks == [[[ql[0]], [ql[1], ql[2]]], [[ql[3]]]], cks
+assert [l for c in cks for p in c for l in p] == ql
+# 38% 넘는 긴 줄은 build_blocks 가 자른다
+longq = '"어제는 내 그림을 혼자 끝내고 싶었어. 라라가 싫어서 간 건 아니야."'
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0, 1]]])))
+_, cks, _ = chunk_page(longq + "\n좋아요.")
+assert all(text_width(l) <= W * MAX_LINE for c in cks for p in c for l in p)
+
+# 한 줄이면 LLM 을 부르지 않는다
+calls.clear()
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0]]])))
+ls, cks, costs = chunk_page("포포는 깡충 뛰었어요.")
+assert calls == [] and ls == ["포포는 깡충 뛰었어요."] and cks == [[["포포는 깡충 뛰었어요."]]] and costs == []
+assert chunk_page("") == ([], [], [])
+# 부르다 예외가 나도 한 덩어리로 간다
+llm.set_structured_override(fake_with(RuntimeError("boom")))
+ls, cks, costs = chunk_page(text)
+assert cks == [[ls]] and costs == []
+
+# ── 자리 찾기 호출 ──
+img = png(stripes(None))
+blk_a = [["첫째 줄이에요.", "둘째 줄이에요."]]
+blk_b = [["셋째 줄이에요."]]
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark"), BlockSpot(x=55.5, y=70, color="light")])))
+spots, costs = place_page(img, [blk_a, blk_b])
+assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}, {"x": 55.5, "y": 70.0, "color": "light"}], spots
+assert [c.node for c in costs] == ["layout:place"]
+assert calls[0]["schema"] is TextPlacement and calls[0]["image"] == img and "{{" not in calls[0]["system"]
+assert "1번 덩어리" in calls[0]["system"] and "2번 덩어리" in calls[0]["system"]
+w1, h1 = block_size(blk_a)
+assert f"가로 약 {w1 / W * 100:.0f}%" in calls[0]["system"] and f"세로 약 {h1 / H * 100:.0f}%" in calls[0]["system"]
+
+
+def placed(*spots):
+    llm.set_structured_override(fake_with(TextPlacement.model_construct(blocks=[BlockSpot.model_construct(x=a, y=b, color=c) for a, b, c in spots])))
+    return place_page(img, [blk_a])[0]
+
+
+# place tolerates bad answers
+assert placed((1037, 800, "dark")) == [{"x": 1037 / W * 100, "y": 800 / H * 100, "color": "dark"}]   # 픽셀 → %
+assert placed((1037, 8, "dark")) == [{"x": 1037 / W * 100, "y": 8.0, "color": "dark"}]               # 축마다 따로
+assert placed((6, 800, "dark")) == [{"x": 6.0, "y": 800 / H * 100, "color": "dark"}]
+assert placed((6, 8, "gray")) == [{"x": 6.0, "y": 8.0, "color": "dark"}]                              # 색 이상 → dark
+assert placed((float("nan"), 8, "dark")) == [] and placed((6, float("inf"), "dark")) == []
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+assert place_page(img, [blk_a, blk_b])[0] == []                                                      # 개수 다름
+llm.set_structured_override(fake_with(TextPlacement(blocks=[])))
+assert place_page(img, [blk_a])[0] == []
+llm.set_structured_override(fake_with(RuntimeError("글자 내용이 들어 있어도 로그엔 안 남는다")))
+assert place_page(img, [blk_a]) == ([], [])                                                          # 예외 → []
+llm.set_structured_override(fake_with(lambda kw: type("Bad", (), {"blocks": [type("S", (), {"x": "abc", "y": None, "color": "dark"})()]})()))
+assert place_page(img, [blk_a])[0] == []                                                             # 숫자 아님
+assert place_page(img, []) == ([], [])                                                               # 덩어리 없으면 부르지 않음
+
+# mock 모드 배선: 진짜 fake_structured 가 두 스키마를 모두 답한다
+llm.set_structured_override(mock.fake_structured)
+ls, cks, _ = chunk_page(text)
+assert cks == [[ls]], cks
+assert place_page(img, [blk_a, blk_b])[0] == [{"x": 5.0, "y": 7.0, "color": "dark"}] * 2
+llm.set_structured_override(None)
+
+# structured_image 가 Responses API 에 input_image(data URL, detail high)를 싣는다 (진짜 호출 경로, 클라이언트만 가짜)
+seen: dict = {}
+
+
+class _Res:
+    output_parsed = TextPlacement(blocks=[BlockSpot(x=1, y=2, color="light")])
+    usage = None
+
+
+class _Responses:
+    def parse(self, **kw):
+        seen.update(kw)
+        return _Res()
+
+
+class _Client:
+    responses = _Responses()
+
+
+llm._client = _Client()
+obj, cost = llm.structured_image(node="n", model="m", schema=TextPlacement, system="S", user="U", image=img, reasoning="low")
+assert obj.blocks[0].x == 1 and cost.node == "n" and seen["reasoning"] == {"effort": "low"} and seen["text_format"] is TextPlacement
+part = seen["input"][1]["content"]
+assert part[0] == {"type": "input_text", "text": "U"} and part[1]["type"] == "input_image" and part[1]["detail"] == "high"
+assert part[1]["image_url"].startswith("data:image/png;base64,") and seen["input"][0] == {"role": "system", "content": "S"}
+llm._client = None
 
 print("layout ok")
