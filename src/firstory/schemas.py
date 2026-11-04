@@ -245,7 +245,7 @@ class CharacterSheet(BaseModel):
 
 class StoryPage(BaseModel):
     order: int = Field(description="1부터")
-    text: str = Field(description="4~6세 눈높이, 2~4문장. 의성어·의태어는 **별표**로 감싼다 (책에서 굵게 표시)")
+    text: str = Field(description="4~6세 눈높이, 3~5줄(마침표마다 한 줄, 대사 안 문장도 센다). 의성어·의태어는 **별표**로 감싼다 (책에서 굵게 표시)")
     characters_in_scene: list[str] = Field(description="이 페이지 그림에 등장하는 캐릭터 이름들 (CharacterSheet.name과 동일하게)")
     image_prompt: str = Field(
         description="이 페이지 장면. 캐릭터 외형은 반복하지 말고 **정확한 자세·동작·위치·표정·구도**를 구체적으로. 본문의 미묘한 동작(예: 바퀴 하나만 담요 밖으로)을 그대로. 영어로"
