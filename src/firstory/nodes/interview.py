@@ -45,6 +45,11 @@ def _norm(x: str) -> str:
     return re.sub(r"[\s\W]+", "", x)
 
 
+def _answers(turns: list[Turn]) -> list[str]:
+    """마무리 질문과 건너뛰기를 뺀 부모 답 (공백·문장부호 무시)."""
+    return [_norm(t.answer) for t in turns if t.question != READY_QUESTION and t.answer != "[skip]"]
+
+
 def _same(a: str, b: str) -> bool:
     """공백·문장부호 무시하고 거의 같은 질문인지."""
     na, nb = _norm(a), _norm(b)
@@ -89,6 +94,16 @@ def interview_step(state: PipelineState) -> dict:
     # 안전장치: 이미 한 질문을 또 하면 더 물을 게 없다는 뜻 → undecided 확정.
     # 직전 것만 보지 않는다. 질문이 많아지면 몇 턴 전 질문으로 돌아가는 반복이 생긴다
     if r.next_question and any(_same(r.next_question, t.question) for t in turns):
+        r.status, r.next_question = "sufficient", None
+        if not ctx.parent.message_direction:
+            ctx.parent.message_direction = "undecided"
+        if not ctx.parent.concern:
+            ctx.parent.concern = turns[-1].answer
+
+    # 안전장치: 질문에 같은 답이 두 번 이어지면 더 할 말이 없다는 뜻 → undecided 확정 (#20).
+    # 질문을 말만 바꿔 되풀이하면 _same이 못 잡는다. 마무리 질문에 새 이야기를 한 직후에는 보지 않는다
+    answers = _answers(turns)
+    if turns and turns[-1].question != READY_QUESTION and len(answers) >= 2 and answers[-1] and answers[-1] == answers[-2]:
         r.status, r.next_question = "sufficient", None
         if not ctx.parent.message_direction:
             ctx.parent.message_direction = "undecided"
@@ -157,8 +172,10 @@ def interview_answer(state: PipelineState) -> dict:
     answer = (answer or "").strip()
 
     out: dict = {"auto_answers": auto}
-    if q == READY_QUESTION and (answer.lower() in _SKIP or _norm(answer) in _GO):   # 이미 충분하다고 본 뒤라 건너뛰기도 sufficient
-        turns.append(Turn(question=q, answer=answer if _norm(answer) in _GO else "[skip]",
+    # 이미 충분하다고 본 뒤라 건너뛰기도 sufficient. 앞에서 한 답을 또 쓰면 새 이야기가 아니다 (#20)
+    said = _answers(turns)
+    if q == READY_QUESTION and (answer.lower() in _SKIP or _norm(answer) in _GO or (said and _norm(answer) == said[-1])):
+        turns.append(Turn(question=q, answer="[skip]" if answer.lower() in _SKIP else answer,
                           reason=state.get("pending_reason", "")))
         out.update(interview_turns=turns, interview_done_by="sufficient")
         return out
