@@ -134,12 +134,12 @@ def sheet_prompt(c: CharacterSheet, style: str) -> str:
 
 
 _LAYOUT = {
-    "bottom": "Layout: keep the bottom 30% of the image as a calm, empty area for the story text to be placed later — "
+    "bottom": "Layout: keep the bottom 25% of the image as a calm, empty area for the story text to be placed later — "
               "only a soft, plain continuation of the floor or ground with very little detail. "
-              "Place all characters, faces and important objects in the upper 70%. Nothing important may touch the bottom 30%.",
-    "top": "Layout: keep the top 30% of the image as a calm, empty area for the story text to be placed later — "
+              "Place all characters, faces and important objects in the upper 75%. Nothing important may touch the bottom 25%.",
+    "top": "Layout: keep the top 25% of the image as a calm, empty area for the story text to be placed later — "
            "only a soft, plain continuation of the wall, ceiling or sky with very little detail. "
-           "Place all characters, faces and important objects in the lower 70%. Nothing important may touch the top 30%.",
+           "Place all characters, faces and important objects in the lower 75%. Nothing important may touch the top 25%.",
 }
 
 
