@@ -279,7 +279,7 @@ il.set_image_override(record)
 base = {"story": st, "illustrations": c1, "output_prefix": "stories/c/runs/7/"}
 memo = "2쪽 포포가 더 활짝 웃게 해 주세요"
 o = il.illustrate_only(base | {"regenerate_pages": [1], "review_feedback": memo})   # 메모의 "2쪽"이 아니라 고른 쪽만
-assert [c.node for c in o["cost"]] == ["illustrate:page1"], o["cost"]
+assert [c.node for c in o["cost"] if c.node.startswith("illustrate:")] == ["illustrate:page1"], o["cost"]
 assert len(memo_prompts) == 1 and memo in memo_prompts[0] and "Parent's request" in memo_prompts[0]
 memo_prompts.clear()
 o = il.illustrate_only(base | {"regenerate_pages": [], "review_feedback": memo})       # []는 전부, 메모는 쪽마다
@@ -290,7 +290,7 @@ o = il.illustrate_only(base | {"regenerate_pages": [2], "review_feedback": None}
 assert len(memo_prompts) == 1 and "Parent's request" not in memo_prompts[0]
 memo_prompts.clear()
 o = il.illustrate_only(base | {"review_feedback": "2"})                                # CLI·뷰어: 쪽 번호만이면 메모 아님
-assert [c.node for c in o["cost"]] == ["illustrate:page2"] and "Parent's request" not in memo_prompts[0]
+assert [c.node for c in o["cost"] if c.node.startswith("illustrate:")] == ["illustrate:page2"] and "Parent's request" not in memo_prompts[0]
 assert il._memo("3, 5쪽") is None and il._memo(" ") is None and il._memo(memo) == memo
 from firstory.nodes.story import review_update  # noqa: E402
 assert review_update({"action": "regenerate", "scope": "images", "pages": [], "feedback": memo})["regenerate_pages"] == []
@@ -396,5 +396,220 @@ o = iv.interview_answer({"context": ctx0, "interview_turns": two, "pending_quest
 assert o["interview_turns"][-1].answer == "[skip]"
 llm.set_structured_override(recording_structured)
 print("repeated answer ok")
+
+# ── 8) 글 덩어리 배치 (text_blocks): 쪽 그림마다 덩어리·자리를 정해 PageImage에 싣는다 ──
+import io  # noqa: E402
+import re  # noqa: E402
+import threading  # noqa: E402
+from collections import Counter  # noqa: E402
+
+from PIL import Image, ImageDraw  # noqa: E402
+
+from firstory.nodes import layout  # noqa: E402
+from firstory.schemas import PolishedPage, PolishedStory, StoryRevision, TextChunking  # noqa: E402
+
+
+def joined(s: str) -> str:
+    return re.sub(r"\s", "", s)
+
+
+def lines_of(pi) -> str:
+    return joined("".join(line for b in pi.text_blocks for para in b.paragraphs for line in para))
+
+
+def striped_png(clear=None) -> bytes:
+    """전체가 줄무늬(복잡)인 그림. clear=(x0,y0,x1,y1)(%)는 흰 바탕으로 비워 둔다."""
+    img = Image.new("RGB", (layout.W, layout.H), "white")
+    d = ImageDraw.Draw(img)
+    for x in range(0, layout.W, 24):
+        d.rectangle([x, 0, x + 11, layout.H], fill=(40, 40, 40))
+    if clear:
+        x0, y0, x1, y1 = clear
+        d.rectangle([x0 / 100 * layout.W, y0 / 100 * layout.H, x1 / 100 * layout.W, y1 / 100 * layout.H], fill="white")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+# 8-1) 처음 만들기: 그림이 있는 모든 쪽에 덩어리 1~2개, 줄을 이으면 원문
+for pg in r2["story"].pages:
+    pi = next(x for x in r2["illustrations"].pages if x.order == pg.order)
+    assert pi.text_blocks and 1 <= len(pi.text_blocks) <= 2, pi
+    assert lines_of(pi) == joined(pg.text), (lines_of(pi), pg.text)
+    assert all(b.color in ("dark", "light") and 0 <= b.x <= 100 and 0 <= b.y <= 100 for b in pi.text_blocks)
+n2 = [c.node for c in r2["cost"]]
+assert all(f"layout:place:page{o}" in n2 for o in ALL_PAGES) and "layout:chunk" not in n2 and "layout:place" not in n2, n2
+assert "layout:chunk:page1" in n2   # 줄이 둘이라 덩어리 나누기를 부른다
+
+# 8-2) 1×1 가짜 그림(단색)에서도 mock 자리(x 5, y 7)가 settle을 통과한다
+busy_flat = layout.Busy(mock.tiny_png("", []))
+assert layout.settle(busy_flat, [[["가나다.", "라마바."]]], [{"x": 5, "y": 7, "color": "dark"}]) == [{"x": 5.0, "y": 7.0, "color": "dark"}]
+
+# 8-3) 그림이 실패한 쪽은 text_blocks가 없다
+st5 = StoryText(title="T", characters=[CharacterSheet(name="포포", role="protagonist", visual_description="rabbit")], style_guide="s",
+                pages=[StoryPage(order=i, text=f"{i}쪽 첫 줄이에요. 둘째 줄이에요.", characters_in_scene=["포포"], image_prompt=f"scene-{i}")
+                       for i in range(1, 6)])
+
+
+def fail5(prompt, refs):
+    if "Scene" in prompt and "scene-5" in prompt:
+        raise RuntimeError("5쪽 실패 흉내")
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(fail5)
+f5 = il.illustrate({"story": st5, "output_prefix": "stories/t/runs/1/"})["illustrations"]
+assert [p.status for p in f5.pages] == ["completed"] * 4 + ["failed"]
+assert f5.pages[4].text_blocks is None and all(p.text_blocks for p in f5.pages[:4])
+print("failed page has no blocks ok")
+
+# 8-4) 글 다시 만들기: 작가가 1쪽 글만 고치고 장면은 그대로 → 그림 key 그대로, text_blocks는 새 글
+cfg8 = {"configurable": {"thread_id": new_thread_id()}}
+llm.set_structured_override(recording_structured)
+il.set_image_override(mock.tiny_png)
+r8 = graph.invoke({"context": data, "auto_answers": ["a1", "a2"], "auto_confirm": True, "auto_approve": False, "skip_images": False,
+                   }, cfg8)
+assert r8["__interrupt__"][0].value["type"] == "review"
+v1 = graph.get_state(cfg8).values
+first = next(pg for pg in v1["story"].pages if pg.order == 1)
+
+
+def text_only_1(**kw):
+    if kw["schema"] is StoryRevision:   # 장면(image_prompt·characters_in_scene·text_position)은 첫 원고와 같게
+        return StoryRevision(reason="mock", pages=[first.model_copy(update={"text": "1페이지. 포포는 천천히 걸었어요. 바람이 불었어요."})])
+    if kw["schema"] is PolishedStory:   # 다듬기는 다시 쓴 쪽(1쪽)만 받는다
+        return PolishedStory(pages=[PolishedPage(order=1, text="1쪽. 포포는 천천히 걸었어요. 바람이 불었어요.")])
+    return recording_structured(**kw)
+
+
+llm.set_structured_override(text_only_1)
+calls8: list[str] = []
+il.set_image_override(lambda p, refs: calls8.append(p) or mock.tiny_png(p, refs))
+before = len(v1["cost"])
+r8 = graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "1쪽 글만"}), cfg8)
+v2 = graph.get_state(cfg8).values
+pages1, pages2 = ({pi.order: pi for pi in v["illustrations"].pages} for v in (v1, v2))
+assert not any("Scene" in p for p in calls8), "장면이 같은데 그림을 다시 그렸다"
+assert pages2[1].path == pages1[1].path                                        # 그림 key 그대로
+new_text = next(pg.text for pg in v2["story"].pages if pg.order == 1)
+old_text = first.text
+assert "천천히" in new_text and new_text != old_text and lines_of(pages2[1]) == joined(new_text), (new_text, pages2[1].text_blocks)   # 다듬기 뒤 최종 글
+assert lines_of(pages1[1]) != lines_of(pages2[1])
+assert all(pages2[o].text_blocks == pages1[o].text_blocks for o in pages1 if o != 1)   # 글 그대로인 쪽은 다시 안 함
+new_nodes = [c.node for c in v2["cost"][before:]]
+assert "layout:place:page1" in new_nodes and not any(n.startswith("layout:") and n.endswith(tuple(f"page{o}" for o in range(2, 20)))
+                                                      for n in new_nodes), new_nodes
+assert not any(n.startswith("illustrate:page") for n in new_nodes)
+il.set_image_override(mock.tiny_png)
+llm.set_structured_override(recording_structured)
+print("text regen relayouts reused image ok")
+
+# 8-5) 자리를 못 찾으면: 덩어리 합치기 → 다시 그리기(실행당 2쪽까지) → 기본 자리
+def two_blocks(**kw):   # 첫 줄 / 나머지 두 덩어리로 나누고 둘 다 같은 자리(5,7)를 달라고 한다 → 겹쳐서 settle이 찾기를 해야 한다
+    if kw["schema"] is TextChunking:
+        n = len(re.findall(r"^\d+: ", kw["system"], re.M))
+        return TextChunking(blocks=[[[0]], [list(range(1, n))]] if n > 1 else [[[0]]])
+    return mock.fake_structured(**kw)
+
+
+places: list[int] = []   # place_page가 받은 덩어리 수
+orig_place = layout.place_page
+
+
+def spy_place(image, blocks):
+    places.append(len(blocks))
+    return orig_place(image, blocks)
+
+
+il.place_page = spy_place
+llm.set_structured_override(two_blocks)
+page_calls = Counter()
+lock = threading.Lock()
+
+
+def all_busy(prompt, refs):
+    if refs and "Scene" in prompt:
+        with lock:
+            page_calls[re.search(r"scene-\d", prompt).group(0)] += 1
+        return striped_png()
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(all_busy)
+st8 = st5.model_copy(update={"pages": [pg.model_copy(update={"text": f"{pg.order}쪽 첫 줄이에요. 둘째 줄이에요. 셋째 줄이에요."}) for pg in st5.pages]})
+b8 = il.illustrate({"story": st8, "output_prefix": "stories/t/runs/2/"})
+assert sum(page_calls.values()) == 5 + layout.MAX_REDRAWS, page_calls              # 다시 그리기는 실행당 2쪽까지
+assert sorted(page_calls.values()) == [1, 1, 1, 2, 2], page_calls
+for pi in b8["illustrations"].pages:
+    assert pi.status == "completed" and len(pi.text_blocks) == 1, pi                 # 합쳐진 한 덩어리
+    tb = pi.text_blocks[0]
+    assert (tb.x, tb.y, tb.color) == (5.0, 7.0, "dark") and len(tb.paragraphs) == 2   # 기본 자리, 문단은 그대로
+assert 2 in places and 1 in places                                                  # 두 덩어리로 찾고, 합쳐서도 찾았다
+assert all(p.path.endswith(f"page-{p.order:02d}.png") for p in b8["illustrations"].pages)
+# 8-6) 다시 그리기 프롬프트: 덩어리 크기·자리(where)가 들어가고, 첫 그리기에는 자리 지시가 없다
+sizes1 = [layout.block_size(b) for b in layout.build_blocks(["가나다."], [[[0]]])]
+assert "left top" in il.layout_prompt(sizes1, ["left top"]) and "left top" not in il.layout_prompt(sizes1)
+print("redraw cap / default spot ok:", dict(page_calls))
+
+# 8-7) 두 덩어리는 자리가 없고 합친 한 덩어리는 있으면 합친 걸로 간다 — 다시 그리지 않는다 (settle을 그렇게 흉내 낸다)
+one_page = st8.model_copy(update={"pages": st8.pages[:1]})
+orig_settle = layout.settle
+il.settle = lambda busy, blocks, spots: None if len(blocks) > 1 else orig_settle(busy, blocks, spots)
+page_calls.clear()
+places.clear()
+il.set_image_override(lambda p, refs: (page_calls.update(["x"]) or mock.tiny_png(p, refs)) if refs and "Scene" in p else mock.tiny_png(p, refs))
+m = il.illustrate({"story": one_page, "output_prefix": "stories/t/runs/3/"})["illustrations"].pages[0]
+il.settle = orig_settle
+assert places == [2, 1] and page_calls["x"] == 1, (places, page_calls)           # 합쳐서 찾았고 다시 그리지 않았다
+assert len(m.text_blocks) == 1 and len(m.text_blocks[0].paragraphs) == 2          # 문단은 그대로
+assert lines_of(m) == joined(one_page.pages[0].text)
+
+# 8-8) 다시 그린 그림이 괜찮으면 같은 key에 덮어쓰고 그 그림에서 자리를 찾는다. 다시 그리기 프롬프트에는 자리 지시가 있다
+one_line = one_page.model_copy(update={"pages": [one_page.pages[0].model_copy(update={"text": "한 줄뿐인 글이에요."})]})
+sent: list[str] = []
+flat = striped_png((0, 0, 100, 100))   # 전부 흰 바탕
+
+
+def second_is_calm(prompt, refs):
+    if refs and "Scene" in prompt:
+        sent.append(prompt)
+        return striped_png() if len(sent) == 1 else flat
+    return mock.tiny_png(prompt, refs)
+
+
+places.clear()
+il.set_image_override(second_is_calm)
+m = il.illustrate({"story": one_line, "output_prefix": "stories/t/runs/4/"})["illustrations"].pages[0]
+assert len(sent) == 2 and places == [1, 1], (len(sent), places)
+assert "left top" not in sent[0] and "left top" in sent[1]
+assert storage.read_bytes(m.path) == flat and m.path == "stories/t/runs/4/images/page-01.png"   # 같은 key에 덮어씀
+il.place_page = orig_place
+il.set_image_override(mock.tiny_png)
+llm.set_structured_override(recording_structured)
+# 8-9) 쪽 줄 수가 5를 넘으면 경고만 (쪽 번호와 줄 수, 글은 안 남김). 읽지 못하는 그림이어도 기본 자리 text_blocks는 준다
+import logging  # noqa: E402
+
+secret = "비밀문장이에요. " * 6
+long_page = one_line.model_copy(update={"pages": [one_line.pages[0].model_copy(update={"text": secret})]})
+logged: list[str] = []
+
+
+class Grab(logging.Handler):
+    def emit(self, record):
+        logged.append(record.getMessage())
+
+
+h = Grab()
+logging.getLogger("firstory.illustrate").addHandler(h)
+il.set_image_override(lambda p, refs: b"RIFF\x00\x00\x00\x00WEBPVP8 " if refs and "Scene" in p else mock.tiny_png(p, refs))   # PIL이 못 읽는 그림
+m = il.illustrate({"story": long_page, "output_prefix": "stories/t/runs/5/"})["illustrations"].pages[0]
+logging.getLogger("firstory.illustrate").removeHandler(h)
+assert any("1" in x and "6" in x and "5줄 초과" in x for x in logged), logged
+assert not any("비밀문장" in x for x in logged), logged
+assert m.status == "completed" and len(m.text_blocks) == 1 and (m.text_blocks[0].x, m.text_blocks[0].y) == (5.0, 7.0), m
+assert lines_of(m) == joined(secret)
+il.set_image_override(mock.tiny_png)
+
+print("text blocks ok")
 
 print("\nALL OK")
