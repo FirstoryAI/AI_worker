@@ -303,7 +303,7 @@ from firstory.schemas import InterviewTurnResult, ParentUpdate, StoryInputContex
 
 assert config.max_interview_turns == 15
 ctx0 = StoryInputContext.model_validate(data)
-asked = [Turn(question=f"질문 {i}번째는 무엇인가요?", answer="답") for i in range(1, 4)]
+asked = [Turn(question=f"질문 {i}번째는 무엇인가요?", answer=f"답 {i}") for i in range(1, 4)]   # 같은 답이면 #20 안전장치가 먼저 끝낸다
 
 
 def asks(question):
@@ -321,10 +321,10 @@ assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None,
 llm.set_structured_override(asks("새로운 질문인가요?"))
 o = iv.interview_step({"context": ctx0, "interview_turns": asked})
 assert "interview_done_by" not in o and o["pending_question"] == "새로운 질문인가요?"
-many = [Turn(question=f"서로 다른 질문 {chr(0xAC00 + i * 97)}?", answer="답") for i in range(14)]
+many = [Turn(question=f"서로 다른 질문 {chr(0xAC00 + i * 97)}?", answer=f"답 {i}") for i in range(14)]
 o = iv.interview_step({"context": ctx0, "interview_turns": many})
 assert "interview_done_by" not in o and o["pending_question"] == "새로운 질문인가요?"   # 14개 답한 뒤에도 15번째 질문
-o = iv.interview_step({"context": ctx0, "interview_turns": many + [Turn(question="열다섯째?", answer="답")]})
+o = iv.interview_step({"context": ctx0, "interview_turns": many + [Turn(question="열다섯째?", answer="답 15")]})
 assert o["interview_done_by"] == "max_turns", o
 
 # ── 마무리 질문 (#48) ──
@@ -334,7 +334,7 @@ done.parent.concern, done.parent.message_direction, done.parent.response = "고�
 assert done.is_sufficient()
 o = iv.interview_step({"context": done, "interview_turns": many})   # 15번째 질문으로 마무리 질문
 assert o["pending_question"] == iv.READY_QUESTION and o["pending_choices"] == [iv.READY_MORE, iv.READY_GO], o
-o = iv.interview_step({"context": done, "interview_turns": many + [Turn(question="열다섯째?", answer="답")]})
+o = iv.interview_step({"context": done, "interview_turns": many + [Turn(question="열다섯째?", answer="답 15")]})
 assert o["interview_done_by"] == "sufficient" and o["pending_question"] is None, o   # 남은 질문이 없으면 묻지 않고 끝
 more = asked + [Turn(question=iv.READY_QUESTION, answer=iv.READY_MORE)]
 o = iv.interview_step({"context": done, "interview_turns": more})   # '네'인데 AI가 구체화할 질문을 못 고르면 열어 묻는다
@@ -375,5 +375,26 @@ iv.interview_finish({"context": done, "interview_turns": asked + [
 assert "동생이 생겨서" in finish_prompts[-1] and iv.READY_GO not in finish_prompts[-1]   # '만들러 갈게요'는 요약에 안 넘김
 llm.set_structured_override(recording_structured)
 print("interview limit / ready ok")
+
+# ── 같은 답이 두 번 이어지면 더 묻지 않는다 (#20). 질문을 말만 바꿔 되풀이해도 끝낸다 ──
+llm.set_structured_override(asks("그때 가장 마음에 걸렸던 건 어떤 쪽이었나요?"))
+same = "문 앞에서 한참 서 있었어요"
+two = [Turn(question="아이에게 무엇을 전하고 싶으세요?", answer=same), Turn(question="그때 가장 걱정된 건요?", answer=same + "!")]
+o = iv.interview_step({"context": ctx0, "interview_turns": two})
+assert o["pending_question"] == iv.READY_QUESTION and "interview_done_by" not in o, o        # 마무리 질문으로
+assert o["context"].parent.message_direction == "undecided" and o["context"].parent.concern == same + "!"
+o = iv.interview_step({"context": ctx0, "interview_turns": [two[0], Turn(question="그때 가장 걱정된 건요?", answer="다른 답")]})
+assert o["pending_question"] == "그때 가장 마음에 걸렸던 건 어떤 쪽이었나요?", o                  # 다른 답이면 그대로 묻는다
+after_ready = two + [Turn(question=iv.READY_QUESTION, answer="사실 동생이 생겼어요")]
+o = iv.interview_step({"context": ctx0, "interview_turns": after_ready})                     # 마무리 질문에 새 이야기 직후는 보지 않는다
+assert o["pending_question"] == "그때 가장 마음에 걸렸던 건 어떤 쪽이었나요?", o
+skipped = [two[0], Turn(question="q", answer="[skip]"), Turn(question="r", answer=same)]
+assert iv.interview_step({"context": ctx0, "interview_turns": skipped})["pending_question"] == iv.READY_QUESTION   # 건너뛴 것은 빼고 본다
+o = iv.interview_answer({"context": ctx0, "interview_turns": two, "pending_question": iv.READY_QUESTION, "auto_answers": [same]})
+assert o["interview_done_by"] == "sufficient" and o["interview_turns"][-1].answer == same, o   # 마무리 질문에 같은 답 = 새 이야기 없음
+o = iv.interview_answer({"context": ctx0, "interview_turns": two, "pending_question": iv.READY_QUESTION, "auto_answers": ["skip"]})
+assert o["interview_turns"][-1].answer == "[skip]"
+llm.set_structured_override(recording_structured)
+print("repeated answer ok")
 
 print("\nALL OK")
