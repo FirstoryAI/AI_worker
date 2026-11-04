@@ -19,7 +19,7 @@ from openai import BadRequestError
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText, TextBlock
-from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, chunk_page, merge, place_page, settle, split_lines
+from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, chunk_page, merge, place_page, settle, split_lines
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -195,7 +195,8 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
 
 
 def _squash(text: str) -> str:
-    return re.sub(r"\s", "", text)
+    """공백과 강조 표시(**)를 뺀다 — 줄을 나눌 때 강조가 닫혔다 다시 열려 생긴 ****도 같게 본다."""
+    return re.sub(r"\s|\*\*", "", text)
 
 
 def _stale(p, pi: PageImage) -> bool:
@@ -218,13 +219,24 @@ def _side(spot: Optional[dict], block: Block, i: int) -> str:
 
 
 def _chunk(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
-    lines, blocks, cc = chunk_page(text)
-    for c in cc:
-        c.node = f"layout:chunk:page{order}"
-    costs.extend(cc)
-    if len(lines) > LINE_WARN:   # 쪽 번호와 줄 수만. 글은 남기지 않는다
-        log.warning("쪽 %d: 글이 %d줄 (%d줄 초과)", order, len(lines), LINE_WARN)
-    return blocks
+    """쪽 글 → 덩어리. 글 자리 계산은 생성을 막지 않는다: 어디서 실패하든 쪽의 줄을 한 덩어리로,
+    그것도 안 되면 빈 목록(_arrange가 기본 자리로 처리)을 돌려준다. 글 내용은 로그에 남기지 않는다."""
+    try:
+        lines, blocks, cc = chunk_page(text)
+        for c in cc:
+            c.node = f"layout:chunk:page{order}"
+        costs.extend(cc)
+        if len(lines) > LINE_WARN:   # 쪽 번호와 줄 수만. 글은 남기지 않는다
+            log.warning("쪽 %d: 글이 %d줄 (%d줄 초과)", order, len(lines), LINE_WARN)
+        return blocks
+    except Exception as e:  # noqa: BLE001
+        log.warning("쪽 %d: 덩어리 나누기 계산 실패 → 한 덩어리: %s", order, type(e).__name__)
+    try:
+        lines = split_lines(text)
+        return build_blocks(lines, [[list(range(len(lines)))]]) if lines else []
+    except Exception as e:  # noqa: BLE001
+        log.warning("쪽 %d: 줄 나누기도 실패 → 기본 자리: %s", order, type(e).__name__)
+        return []
 
 
 def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: list[CostEntry],
@@ -292,6 +304,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
     # 2) 페이지 병렬 — 장면에 나오는 캐릭터 시트만 참조로
     targets = [p for p in story.pages if only_pages is None or p.order in only_pages]
     by_order = {pi.order: pi for pi in ill.pages}
+    prev_pages = dict(by_order)   # 이번 실행 시작 때의 쪽들 (by_order는 결과가 나오며 바뀐다)
 
     redraws = 0
     redraw_lock = threading.Lock()
@@ -310,7 +323,11 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         try:
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
-            blocks = _chunk(p.order, p.text, costs)   # 덩어리를 먼저 나눠야 그림에 필요한 빈 곳 크기를 안다
+            old_pi = prev_pages.get(p.order)   # 그림만 다시: 글이 그대로면 덩어리 나누기는 이전 그대로 (AI를 다시 부르지 않는다)
+            if old_pi and old_pi.status == "completed" and old_pi.path and old_pi.text_blocks and not _stale(p, old_pi):
+                blocks = [[list(para) for para in tb.paragraphs] for tb in old_pi.text_blocks]
+            else:
+                blocks = _chunk(p.order, p.text, costs)   # 덩어리를 먼저 나눠야 그림에 필요한 빈 곳 크기를 안다
             img, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, [block_size(b) for b in blocks], request), refs),
                                    p.image_prompt, f"{img_prefix} page {p.order}", costs)
             state = {"key": storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img),
@@ -341,13 +358,17 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
     def relayout(p):
         """그림은 그대로 두고 (이전 key) 글이 바뀐 쪽의 덩어리와 자리만 다시. 다시 그리지 않는다."""
         pi = by_order[p.order]
-        blocks = _chunk(p.order, p.text, costs)
         try:
-            image = storage.read_bytes(pi.path)
-        except Exception as e:  # noqa: BLE001
-            log.warning("쪽 %d: 저장된 그림을 읽지 못함: %s", p.order, type(e).__name__)
-            image = None
-        return pi.model_copy(update={"text_blocks": _arrange(p.order, image, blocks, costs)})
+            blocks = _chunk(p.order, p.text, costs)
+            try:
+                image = storage.read_bytes(pi.path)
+            except Exception as e:  # noqa: BLE001
+                log.warning("쪽 %d: 저장된 그림을 읽지 못함: %s", p.order, type(e).__name__)
+                image = None
+            return pi.model_copy(update={"text_blocks": _arrange(p.order, image, blocks, costs)})
+        except Exception as e:  # noqa: BLE001 — 글 자리 계산이 전체 생성을 막지 않는다. 쪽은 이전 그대로 (글이 여전히 다르면 다음 실행에 다시 한다)
+            log.warning("쪽 %d: 글 자리 다시 계산 실패 → 이전 그대로: %s", p.order, type(e).__name__)
+            return pi
 
     def cover():
         t0 = time.time()

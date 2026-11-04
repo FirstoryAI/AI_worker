@@ -61,7 +61,7 @@ def split_lines(text: str) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _font() -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(FONT_PATH), FONT_PX)
+    return ImageFont.truetype(str(FONT_PATH), FONT_PX, layout_engine=ImageFont.Layout.BASIC)   # Raqm이 있는 맥과 없는 리눅스가 같은 폭을 재도록
 
 
 def text_width(line: str) -> float:

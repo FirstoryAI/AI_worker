@@ -626,6 +626,78 @@ assert m.status == "completed" and len(m.text_blocks) == 1 and (m.text_blocks[0]
 assert lines_of(m) == joined(secret)
 il.set_image_override(mock.tiny_png)
 
+# 8-10) 글 자리 계산이 터져도 쪽 그림과 생성은 이어 간다 (F1): 덩어리 나누기가 터지면 한 덩어리, 줄 나누기까지 터지면 빈 덩어리
+il.set_image_override(mock.tiny_png)
+llm.set_structured_override(recording_structured)
+good = il.illustrate({"story": st5, "output_prefix": "stories/t/runs/6/"})["illustrations"]
+assert all(p.status == "completed" and p.text_blocks for p in good.pages)
+
+
+def boom(*a, **k):
+    raise RuntimeError("글꼴 계산 실패 흉내")
+
+
+orig_chunk_page, orig_split = il.chunk_page, il.split_lines
+il.chunk_page = boom
+try:
+    broken = il.illustrate({"story": st5, "output_prefix": "stories/t/runs/7/"})["illustrations"]
+    for pg, pi in zip(st5.pages, broken.pages):
+        assert pi.status == "completed" and pi.path and pi.text_blocks and len(pi.text_blocks) == 1, pi   # 한 덩어리
+        assert lines_of(pi) == joined(pg.text) and 0 <= pi.text_blocks[0].x <= 100, pi
+    # 글만 바뀐 쪽 다시 자리 잡기(relayout)도 터져도 전체가 끝난다
+    edited = st5.model_copy(update={"pages": [st5.pages[0].model_copy(update={"text": "바뀐 글이에요. 둘째 줄이에요."})] + st5.pages[1:]})
+    re1 = il.illustrate({"story": edited, "output_prefix": "stories/t/runs/8/", "illustrations": good, "redraw_pages": set()})["illustrations"]
+    assert all(p.status == "completed" for p in re1.pages) and re1.pages[0].path == good.pages[0].path
+    assert lines_of(re1.pages[0]) == joined("바뀐 글이에요. 둘째 줄이에요."), re1.pages[0]
+    il.split_lines = boom   # 줄 나누기까지 터지면 빈 덩어리 — 그림은 그대로 완성
+    empty = il.illustrate({"story": st5, "output_prefix": "stories/t/runs/9/"})["illustrations"]
+    assert all(p.status == "completed" and p.path and p.text_blocks == [] for p in empty.pages), empty.pages
+finally:
+    il.chunk_page, il.split_lines = orig_chunk_page, orig_split
+# relayout 자체가 터지면 그 쪽은 이전 그대로 두고 끝낸다
+orig_arrange = il._arrange
+il._arrange = boom
+try:
+    kept = il.illustrate({"story": edited, "output_prefix": "stories/t/runs/10/", "illustrations": good, "redraw_pages": set()})["illustrations"]
+    assert kept.pages[0] == good.pages[0] and all(p.status == "completed" for p in kept.pages)
+finally:
+    il._arrange = orig_arrange
+print("layout failure keeps generating ok")
+
+# 8-11) 그림만 다시 그릴 때는 덩어리 나누기를 다시 하지 않는다 (F2): layout:chunk 호출 0번, 덩어리는 이전 그대로
+chunk_calls: list[str] = []
+il.chunk_page = lambda text: chunk_calls.append(text) or orig_chunk_page(text)
+try:
+    again = il.illustrate({"story": st5, "output_prefix": "stories/t/runs/11/", "illustrations": good, "redraw_pages": {2, 3}})
+finally:
+    il.chunk_page = orig_chunk_page
+assert not chunk_calls and not any(c.node.startswith("layout:chunk") for c in again["cost"]), (chunk_calls, [c.node for c in again["cost"]])
+a2 = {p.order: p for p in again["illustrations"].pages}
+g2 = {p.order: p for p in good.pages}
+for o in (2, 3):
+    assert a2[o].path != g2[o].path and a2[o].status == "completed"
+    assert [b.paragraphs for b in a2[o].text_blocks] == [b.paragraphs for b in g2[o].text_blocks]   # 덩어리 그대로
+assert any(c.node.startswith("layout:place:page2") for c in again["cost"])   # 자리는 새 그림에서 다시 찾는다
+# 실패했던 쪽을 다시 그릴 때는 덩어리를 새로 나눈다
+bad = good.model_copy(update={"pages": [good.pages[0].model_copy(update={"status": "failed", "path": None, "text_blocks": None})] + good.pages[1:]})
+chunk_calls.clear()
+il.chunk_page = lambda text: chunk_calls.append(text) or orig_chunk_page(text)
+try:
+    il.illustrate({"story": st5, "output_prefix": "stories/t/runs/12/", "illustrations": bad, "redraw_pages": set()})
+finally:
+    il.chunk_page = orig_chunk_page
+assert len(chunk_calls) == 1, chunk_calls
+print("images regen skips chunking ok")
+
+# 8-12) 강조(**)가 줄바꿈에서 닫혔다 다시 열려도 글이 그대로면 stale이 아니다 (F3). 진짜 글이 바뀌면 stale
+emph_text = "**" + " ".join(["쿵쿵쿵쿵"] * 30) + "** 소리가 났어요."
+emph_story = one_line.model_copy(update={"pages": [one_line.pages[0].model_copy(update={"text": emph_text})]})
+em = il.illustrate({"story": emph_story, "output_prefix": "stories/t/runs/13/"})["illustrations"].pages[0]
+assert "****" in "".join(line for b in em.text_blocks for para in b.paragraphs for line in para), em.text_blocks   # 줄바꿈에서 강조가 닫혔다 열림
+assert not il._stale(emph_story.pages[0], em)
+assert il._stale(emph_story.pages[0].model_copy(update={"text": emph_text + " 쿵"}), em)
+print("emphasis wrap not stale ok")
+
 print("text blocks ok")
 
 print("\nALL OK")
