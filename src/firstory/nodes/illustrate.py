@@ -144,19 +144,22 @@ PAD_W, PAD_H = 4, 5   # 덩어리 크기에 더하는 여유 (그림 폭·높이
 def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] = None) -> str:
     """그림에 글 자리를 남기는 지시. sizes: 덩어리마다 (폭 px, 높이 px) — layout.block_size, 1920×1088 기준.
     where: 다시 그릴 때 덩어리마다 "left top" 같은 자리. 첫 그리기에는 쓰지 않는다."""
-    spots = []
+    # 빈 곳을 "area n: 가로 n%"처럼 자리로 적으면 그림 모델이 빈 판·상자를 그려 넣는다 → 구도로만 말한다
+    spans = []
     for i, (w, h) in enumerate(sizes, 1):
-        spot = f"area {i}: about {round(w / W * 100 + PAD_W)}% of the image width and {round(h / H * 100 + PAD_H)}% of the image height"
+        span = f"one open stretch roughly {round(w / W * 100 + PAD_W)}% of the image wide and {round(h / H * 100 + PAD_H)}% tall"
         if where and i <= len(where):
-            spot += f", in the {where[i - 1]} of the image"
-        spots.append(spot)
-    n = len(sizes)
+            span += f" toward the {where[i - 1]}"
+        spans.append(span)
     return (
         "Layout: this is an open picture-book spread, folded down the middle (x=50%). "
-        f"Leave {n} wide, calm, empty area{'s' if n != 1 else ''} for the story text to be placed later "
-        "(a plain wall, sky, floor or blanket with very little detail), " + "; ".join(spots) + ". "
-        "Each area sits toward the top or the bottom of the image, not in the middle, and stays inside one side of the fold. "
-        "Keep faces and ears of the characters and other important objects outside these areas, "
+        "Story text will be printed over the picture later, so compose the scene with generous open space: "
+        "the plain wall, sky, floor or blanket simply continues there, uninterrupted — " + "; ".join(spans) + ", "
+        "toward the top or the bottom of a page (not the middle), each within one side of the fold. "
+        "This open space must look like a natural part of the scene, with the same color, texture and light as its surroundings. "
+        "Never draw any box, panel, frame, card, sheet of paper, sign, label, speech bubble, blank rectangle or lighter patch "
+        "to mark where text goes. "
+        "Keep the characters' faces and ears and other important objects out of that open space, "
         "and never put a face on the fold line in the middle of the image."
     )
 
