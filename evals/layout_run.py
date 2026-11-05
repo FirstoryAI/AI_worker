@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
     BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, GAP, H, MAX_LINE, W,
-    Busy, block_size, build_blocks, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
+    Busy, block_size, build_blocks, calmest, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
 )
 from firstory import llm, mock  # noqa: E402
 from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
@@ -173,6 +173,41 @@ left_full = Busy(png(stripes((0, 0, 50, 100))))
 out = settle(left_full, [blk], [{"x": 8, "y": 8, "color": "dark"}])
 assert out and out[0]["x"] / 100 * W >= W / 2, out
 
+
+# 7) 어디도 기준을 못 넘으면 settle은 None, calmest는 가장 덜 복잡한 곳 (오른쪽 아래만 옅은 줄무늬)
+def stripes_two(soft_box: tuple[float, float, float, float], soft=(200, 200, 200), bg="white") -> Image.Image:
+    img = Image.new("RGB", (W, H), bg)
+    d = ImageDraw.Draw(img)
+    sx, sy = W / 100, H / 100
+    for x in range(0, W, 24):
+        d.rectangle([x, 0, x + 11, H], fill=(40, 40, 40))
+    x0, y0, x1, y1 = soft_box
+    d.rectangle([int(x0 * sx), int(y0 * sy), int(x1 * sx), int(y1 * sy)], fill=bg)
+    for x in range(int(x0 * sx), int(x1 * sx), 24):
+        d.rectangle([x, int(y0 * sy), x + 11, int(y1 * sy)], fill=soft)
+    return img
+
+
+soft_br = Busy(png(stripes_two((52, 55, 100, 100))))
+assert settle(soft_br, [blk], [{"x": 6, "y": 8, "color": "dark"}]) is None
+out = calmest(soft_br, [blk])
+assert out and len(out) == 1, out
+x, y = px(out[0])
+assert x >= W * 0.52 and y >= H * 0.55, out                                    # 옅은 곳(오른쪽 아래)
+assert soft_br.at(x, y, bw, bh) < soft_br.at(0.05 * W, 0.07 * H, bw, bh)       # 기본 자리보다 조용함
+check_band = (100 - BAND) / 100 * H - 1 <= y + bh <= (100 - EDGE_Y) / 100 * H + 1
+assert check_band and x + bw <= W * (1 - EDGE_X / 100) + 1, out                 # 띠·여백은 지킴
+assert out[0]["color"] == "dark"                                               # 밝은 바탕 → 진한 글자
+
+# 7-1) 두 덩어리도 읽는 순서·간격을 지키고, 어두운 바탕이면 흰 글자
+dark_bg = Busy(png(stripes_two((0, 0, 100, 100), soft=(70, 70, 90), bg=(50, 50, 60))))
+out = calmest(dark_bg, [blk, blk2])
+assert out and len(out) == 2, out
+assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"]), out
+assert all(o["color"] == "light" for o in out), out
+(ax, ay), (bx, by) = px(out[0]), px(out[1])
+assert max(max(ax - (bx + bw2), bx - (ax + bw)), max(ay - (by + bh2), by - (ay + bh))) >= gap_px - 1, out
+
 # ── 덩어리 나누기 호출 (LLM 가짜) ──
 calls: list[dict] = []
 
@@ -294,3 +329,28 @@ assert part[1]["image_url"].startswith("data:image/png;base64,") and seen["input
 llm._client = None
 
 print("layout ok")
+
+# 7-2) calmest는 거리보다 복잡도: 왼쪽 위(조금 복잡)보다 멀리 있는 왼쪽 아래(조금 더 조용)를 고른다
+import numpy as np  # noqa: E402
+import firstory.nodes.layout as _L  # noqa: E402
+
+
+def two_soft() -> Image.Image:
+    img = stripes_two((0, 0, 50, 45), soft=(215, 215, 215))
+    d = ImageDraw.Draw(img)
+    sx, sy = W / 100, H / 100
+    d.rectangle([0, int(55 * sy), int(50 * sx), H], fill="white")
+    for x in range(0, int(50 * sx), 24):
+        d.rectangle([x, int(55 * sy), x + 11, H], fill=(222, 222, 222))
+    return img
+
+
+soft2 = Busy(png(two_soft()))
+out = calmest(soft2, [blk])
+x, y = px(out[0])
+assert y > H / 2, out                                                            # 아래 띠
+grid = [(float(gx), float(gy)) for page in (0, 1) for (ylo, yhi) in _L._y_bands(bh)
+        for gy in np.arange(ylo, yhi + 1e-6, _L.GRID) for gx in np.arange(*_L._x_range(page, bw)[:1], _L._x_range(page, bw)[1] + 1e-6, _L.GRID)]
+best = min(_L._score(soft2, gx, gy, bw, bh) for gx, gy in grid)
+assert _L._score(soft2, x, y, bw, bh) <= best + 0.05, (out, best)              # 두 면을 통틀어 가장 조용함
+print("calmest ok")
