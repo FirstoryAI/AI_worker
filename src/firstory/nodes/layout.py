@@ -30,13 +30,15 @@ BUSY_LIMIT = 8.0                   # 복잡도(RGB 표준편차) 통과 기준
 BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대비)
 GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
 MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
-DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위
+DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림을 못 읽거나 놓을 곳이 아예 없을 때만)
+LIGHT_BELOW = 140                  # 가장 조용한 곳에 둘 때: 바탕 밝기(0~255 평균)가 이보다 어두우면 흰 글자
 
 FONT_PX = round(W * FONT_RATIO)    # 29
 LINE_PX = FONT_PX * LINE_H
 FONT_PATH = Path(__file__).parents[1] / "assets/fonts/MemomentKkukkukk.woff2"
 GRID = 8                           # 자리 찾기 격자(px)
 MOVE_COST = 0.01                   # 원래 자리와 멀어진 만큼 더하는 점수(px당)
+TIE_COST = 1e-5                    # calmest: 거리는 복잡도가 같을 때만 가르는 정도
 
 Block = list[list[str]]            # 덩어리 = 문단 > 줄
 
@@ -168,22 +170,31 @@ class Busy:
         out[1:, 1:] = a.cumsum(0).cumsum(1)
         return out
 
-    def at(self, x: float, y: float, w: float, h: float) -> float:
-        """px 좌표(1920×1088 기준) 상자의 복잡도. 그림 밖은 잘라 낸다."""
+    def _stats(self, x: float, y: float, w: float, h: float) -> tuple[np.ndarray, np.ndarray] | None:
+        """px 좌표(1920×1088 기준) 상자의 채널별 (평균, 분산). 그림 밖은 잘라 낸다. 상자가 비면 None."""
         s = self.S
         h4, w4 = self._sum.shape[0] - 1, self._sum.shape[1] - 1
         x0, x1 = max(0, math.floor(x / s)), min(w4, math.ceil((x + w) / s))
         y0, y1 = max(0, math.floor(y / s)), min(h4, math.ceil((y + h) / s))
         if x1 <= x0 or y1 <= y0:
-            return 0.0
+            return None
 
         def box(t: np.ndarray) -> np.ndarray:
             return t[y1, x1] - t[y0, x1] - t[y1, x0] + t[y0, x0]
 
         n = (x1 - x0) * (y1 - y0)
         mean = box(self._sum) / n
-        var = np.maximum(box(self._sq) / n - mean * mean, 0.0)
-        return float(np.sqrt(var).mean())
+        return mean, np.maximum(box(self._sq) / n - mean * mean, 0.0)
+
+    def at(self, x: float, y: float, w: float, h: float) -> float:
+        """상자의 복잡도 (채널별 표준편차 평균)"""
+        st = self._stats(x, y, w, h)
+        return 0.0 if st is None else float(np.sqrt(st[1]).mean())
+
+    def brightness(self, x: float, y: float, w: float, h: float) -> float:
+        """상자의 밝기 (0~255, 채널 평균). 상자가 비면 흰 바탕으로 본다."""
+        st = self._stats(x, y, w, h)
+        return 255.0 if st is None else float(st[0].mean())
 
 
 # ── 자리 ──
@@ -243,13 +254,13 @@ def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
     return busy.at(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
 
 
-def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
-            placed: list[tuple[float, float, float, float]]) -> tuple[float, float] | None:
-    """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳"""
-    home = _page(near[0], bw)
-    for page in (home, 1 - home):
+def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: float, bh: float,
+             placed: list[tuple[float, float, float, float]], limit: float,
+             move_cost: float = MOVE_COST) -> tuple[float, float] | None:
+    """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳"""
+    best: tuple[float, tuple[float, float]] | None = None
+    for page in pages:
         lo, hi = _x_range(page, bw)
-        best: tuple[float, tuple[float, float]] | None = None
         for ylo, yhi in _y_bands(bh):
             for y in np.arange(ylo, yhi + 1e-6, GRID):
                 for x in np.arange(lo, hi + 1e-6, GRID):
@@ -257,14 +268,43 @@ def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
                     if not (_order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)):
                         continue
                     std = _score(busy, x, y, bw, bh)
-                    if std > BUSY_LIMIT:
+                    if std > limit:
                         continue
-                    score = std + MOVE_COST * math.hypot(x - near[0], y - near[1])
+                    score = std + move_cost * math.hypot(x - near[0], y - near[1])
                     if best is None or score < best[0]:
                         best = (score, (x, y))
-        if best:
-            return best[1]
+    return best[1] if best else None
+
+
+def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
+            placed: list[tuple[float, float, float, float]]) -> tuple[float, float] | None:
+    """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳"""
+    home = _page(near[0], bw)
+    for page in (home, 1 - home):
+        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT)
+        if found:
+            return found
     return None
+
+
+def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
+    """settle도 다시 그리기도 자리를 못 찾았을 때: 복잡도 기준은 빼고 여백·띠·읽는 순서·간격만 지켜
+    두 면을 통틀어 가장 덜 복잡한 곳. 그림을 안 보는 기본 자리보다 늘 낫거나 같다.
+    글자색은 그 자리 밝기로 (AI가 고른 색은 다른 자리 것이라 쓰지 않는다). 하나라도 놓을 곳이 없으면 None."""
+    near = (DEFAULT_SPOT[0] / 100 * W, DEFAULT_SPOT[1] / 100 * H)   # 복잡도가 (거의) 같을 때만 왼쪽 위 쪽으로
+    placed: list[tuple[float, float, float, float]] = []
+    out: list[dict] = []
+    for block in blocks:
+        bw, bh = block_size(block)
+        found = _best_on(busy, (0, 1), near, bw, bh, placed, math.inf, TIE_COST)
+        if found is None:
+            return None
+        x, y = found
+        placed.append((x, y, bw, bh))
+        pad = W * BUSY_PAD
+        light = busy.brightness(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad) < LIGHT_BELOW
+        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": "light" if light else "dark"})
+    return out
 
 
 def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:

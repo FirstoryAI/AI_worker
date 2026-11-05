@@ -585,10 +585,15 @@ st8 = st5.model_copy(update={"pages": [pg.model_copy(update={"text": f"{pg.order
 b8 = il.illustrate({"story": st8, "output_prefix": "stories/t/runs/2/"})
 assert sum(page_calls.values()) == 5 + layout.MAX_REDRAWS, page_calls              # 다시 그리기는 실행당 2쪽까지
 assert sorted(page_calls.values()) == [1, 1, 1, 2, 2], page_calls
+calm_busy = layout.Busy(striped_png())
 for pi in b8["illustrations"].pages:
     assert pi.status == "completed" and len(pi.text_blocks) == 1, pi                 # 합쳐진 한 덩어리
     tb = pi.text_blocks[0]
-    assert (tb.x, tb.y, tb.color) == (5.0, 7.0, "dark") and len(tb.paragraphs) == 2   # 기본 자리, 문단은 그대로
+    assert len(tb.paragraphs) == 2, tb                                              # 문단은 그대로
+    want = layout.calmest(calm_busy, [tb.paragraphs])[0]
+    assert (tb.x, tb.y, tb.color) == (want["x"], want["y"], want["color"]), (tb, want)   # 기본 자리 말고 가장 조용한 곳 (#71)
+    assert calm_busy.at(tb.x / 100 * layout.W, tb.y / 100 * layout.H, *layout.block_size(tb.paragraphs)) \
+        <= calm_busy.at(0.05 * layout.W, 0.07 * layout.H, *layout.block_size(tb.paragraphs)) + 1e-9
 assert 2 in places and 1 in places                                                  # 두 덩어리로 찾고, 합쳐서도 찾았다
 assert all(p.path.endswith(f"page-{p.order:02d}.png") for p in b8["illustrations"].pages)
 # 8-6) 다시 그리기 프롬프트: 덩어리 크기·자리(where)가 들어가고, 첫 그리기에는 자리 지시가 없다

@@ -21,7 +21,7 @@ from PIL import Image
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText, TextBlock
-from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, chunk_page, merge, place_page, settle, split_lines
+from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, calmest, chunk_page, merge, place_page, settle, split_lines
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -247,8 +247,10 @@ def _chunk(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
 def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: list[CostEntry],
              redraw: Optional[Callable[[list[Block], list[str]], Optional[bytes]]] = None) -> list[TextBlock]:
     """그림 위 글 자리. 자리 찾기 → 안 되면 한 덩어리로 합쳐 다시 → 안 되면 redraw(덩어리, where)로 다시 그린 그림에서 다시
-    → 그래도 안 되면 왼쪽 면 위 기본 자리. 늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도)."""
+    → 그래도 안 되면 마지막 그림에서 가장 조용한 곳(calmest) → 그림을 못 읽으면 왼쪽 면 위 기본 자리.
+    늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도)."""
     got: Optional[list[dict]] = None
+    cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
     try:
         def fit(img: bytes, busy: Busy, bl: list[Block]):
             spots, pcosts = place_page(img, bl)
@@ -257,7 +259,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
             costs.extend(pcosts)
             return settle(busy, bl, spots), spots
 
-        busy = Busy(image)
+        busy = cur = Busy(image)
         got, spots = fit(image, busy, blocks)
         merged = False
         if got is None and len(blocks) > 1:
@@ -268,10 +270,23 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
                 f"{_side(spots[i] if i < len(spots) else None, b, i)} top" for i, b in enumerate(blocks)]
             again = redraw(blocks, where)
             if again is not None:
-                got, spots = fit(again, Busy(again), blocks)
+                cur = None   # 쪽 그림이 바뀌었다 — 새 그림을 못 읽으면 처음 그림으로 자리를 정하지 않는다
+                cur = Busy(again)
+                got, spots = fit(again, cur, blocks)
     except Exception as e:  # noqa: BLE001 — 글·그림 내용은 로그에 남기지 않는다
         log.warning("쪽 %d: 글 자리 계산 실패: %s", order, type(e).__name__)
         got = None
+    if got is None and cur is not None:   # 기준을 넘는 곳뿐이면 그중 가장 조용한 곳 (#71)
+        try:
+            got = calmest(cur, blocks)
+            if got is None and len(blocks) > 1:
+                blocks = merge(blocks)
+                got = calmest(cur, blocks)
+            if got is not None:
+                log.warning("쪽 %d: 조용한 글 자리가 없어 가장 덜 복잡한 곳에 둠", order)
+        except Exception as e:  # noqa: BLE001
+            log.warning("쪽 %d: 가장 조용한 곳 찾기 실패: %s", order, type(e).__name__)
+            got = None
     if got is None:
         log.warning("쪽 %d: 글 자리를 못 찾아 기본 자리에 둠", order)
         blocks = merge(blocks) if len(blocks) > 1 else blocks
