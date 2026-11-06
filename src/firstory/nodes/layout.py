@@ -31,7 +31,8 @@ BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대�
 GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
 MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
 DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림을 못 읽거나 놓을 곳이 아예 없을 때만)
-LIGHT_BELOW = 150                  # 글자 자리 바탕 밝기(0~255 평균)가 이보다 어두우면 흰 글자. 화면 글자색 #4a4a4a와 흰색의 대비가 비슷해지는 곳
+DARK_TEXT = (0x4A, 0x4A, 0x4A)     # 화면의 진한 글자색 (프론트 StoryTextBlocks)
+WHITE_BIAS = 0.9                   # 흰 글자 대비가 진한 글자 대비의 이 배 이상이면 흰 글자 (비슷하면 흰 글자가 더 잘 읽힌다)
 
 FONT_PX = round(W * FONT_RATIO)    # 29
 LINE_PX = FONT_PX * LINE_H
@@ -205,6 +206,11 @@ class Busy:
         st = self._stats(x, y, w, h)
         return 0.0 if st is None else float(np.sqrt(st[1]).mean())
 
+    def mean_rgb(self, x: float, y: float, w: float, h: float) -> tuple[float, float, float]:
+        """상자의 채널별 평균 (0~255). 상자가 비면 흰 바탕으로 본다."""
+        st = self._stats(x, y, w, h)
+        return (255.0, 255.0, 255.0) if st is None else tuple(float(v) for v in st[0][:3])
+
     def brightness(self, x: float, y: float, w: float, h: float) -> float:
         """상자의 밝기 (0~255, 채널 평균). 상자가 비면 흰 바탕으로 본다."""
         st = self._stats(x, y, w, h)
@@ -302,10 +308,22 @@ def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
 
 
 def text_color(busy: Busy, x: float, y: float, bw: float, bh: float) -> str:
-    """덩어리 자리(둘레 포함) 바탕이 어두우면 light(흰 글자), 아니면 dark. AI가 고른 색은 쓰지 않는다 —
+    """덩어리 자리(둘레 포함) 바탕과의 대비(WCAG)가 흰 글자 쪽이 비슷하거나 크면 light, 아니면 dark. AI가 고른 색은 쓰지 않는다 —
     어두운 밤 장면에도 dark를 고르고, 자리를 옮기면 다른 자리 색이 된다 (#77)."""
     pad = W * BUSY_PAD
-    return "light" if busy.brightness(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad) < LIGHT_BELOW else "dark"
+    bg = luminance(busy.mean_rgb(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad))
+    on_white = (1.0 + 0.05) / (bg + 0.05)
+    on_dark = (bg + 0.05) / (luminance(DARK_TEXT) + 0.05)
+    return "light" if on_white >= on_dark * WHITE_BIAS else "dark"
+
+
+def luminance(rgb: tuple[float, float, float]) -> float:
+    """WCAG 상대 휘도 (0~1). 채널 평균 밝기는 파랑·보라 바탕을 실제보다 밝게 본다 (#77)."""
+    def lin(c: float) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
 def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
