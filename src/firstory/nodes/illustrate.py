@@ -21,7 +21,7 @@ from PIL import Image
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText, TextBlock
-from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, calmest, chunk_page, merge, place_page, settle, split_lines
+from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, calmest, chunk_page, merge, place_page, settle, split_lines, wrap_line
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -214,8 +214,11 @@ def _stale(p, pi: PageImage) -> bool:
         return False
     if not pi.text_blocks:
         return True
-    old = "".join(line for b in pi.text_blocks for para in b.paragraphs for line in para)
-    return _squash(old) != _squash(" ".join(split_lines(p.text)))
+    old_lines = [line for b in pi.text_blocks for para in b.paragraphs for line in para]
+    if _squash("".join(old_lines)) != _squash(" ".join(split_lines(p.text))):
+        return True
+    # 글은 같아도 줄 나누기 규칙이 바뀌었으면(대사 한 줄, #77) 덩어리·자리만 다시 한다
+    return old_lines != [w for line in split_lines(p.text) for w in wrap_line(line)]
 
 
 def _side(spot: Optional[dict], block: Block, i: int) -> str:

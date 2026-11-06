@@ -360,3 +360,20 @@ grid = [(float(gx), float(gy)) for page in (0, 1) for (ylo, yhi) in _L._y_bands(
 best = min(_L._score(soft2, gx, gy, bw, bh) for gx, gy in grid)
 assert _L._score(soft2, x, y, bw, bh) <= best + 0.05, (out, best)              # 두 면을 통틀어 가장 조용함
 print("calmest ok")
+
+# ── 이전 배치가 지금 글과 맞나 (_stale) — 대사를 쪼갠 옛 배치는 다시 한다 (#77) ──
+from types import SimpleNamespace  # noqa: E402
+
+from firstory.nodes.illustrate import _stale  # noqa: E402
+from firstory.schemas import PageImage, TextBlock  # noqa: E402
+
+page = SimpleNamespace(text='나루가 웃었어요.\n"속상했어. 같이 놀고 싶어."')
+split_old = PageImage(order=7, path="k", status="completed", text_blocks=[
+    TextBlock(paragraphs=[["나루가 웃었어요.", '"속상했어.', '같이 놀고 싶어."']], x=5, y=7, color="dark")])
+one_line = PageImage(order=7, path="k", status="completed", text_blocks=[
+    TextBlock(paragraphs=[["나루가 웃었어요."]], x=5, y=7, color="dark"),
+    TextBlock(paragraphs=[['"속상했어. 같이 놀고 싶어."']], x=55, y=80, color="dark")])
+assert _stale(page, split_old)            # 글은 같아도 대사가 쪼개져 있으면 배치만 다시
+assert not _stale(page, one_line)         # 덩어리·문단이 나뉘어도 줄이 같으면 그대로
+assert not _stale(page, PageImage(order=7, status="failed"))
+print("stale ok")
