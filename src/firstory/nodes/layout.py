@@ -47,18 +47,32 @@ _DQUOTES = '"“”'
 
 
 # ── 줄 ──
+def _quote_open(s: str) -> bool:
+    """s 끝에서 큰따옴표가 열려 있나 (따옴표 개수가 홀수)."""
+    return sum(s.count(q) for q in _DQUOTES) % 2 == 1
+
+
 def split_lines(text: str) -> list[str]:
-    """원래 줄바꿈과 마침표마다 줄을 나눈다. 글자는 그대로."""
-    out: list[str] = []
+    """원래 줄바꿈과 마침표마다 줄을 나눈다. 글자는 그대로.
+    대사 하나는 한 줄이다 (#77): 따옴표 안의 마침표·줄바꿈에서는 자르지 않는다. 화면 폭을 넘으면 wrap_line이 자른다."""
+    raws: list[str] = []
     for raw in text.split("\n"):
         raw = raw.strip()
+        if raws and _quote_open(raws[-1]):   # 앞 줄에서 열린 대사가 이 줄로 이어진다
+            raws[-1] = f"{raws[-1]} {raw}".strip()
+        else:
+            raws.append(raw)
+    out: list[str] = []
+    for raw in raws:
         pos = 0
         for m in _SENTENCE_END.finditer(raw):
+            if _quote_open(raw[:m.end()]):       # 대사 안의 마침표
+                continue
             out.append(raw[pos:m.end()].strip())
             pos = m.end()
         if raw[pos:]:
             out.append(raw[pos:].strip())
-    return out
+    return [line for line in out if line]
 
 
 @lru_cache(maxsize=1)

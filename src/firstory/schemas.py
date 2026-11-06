@@ -146,7 +146,7 @@ class Protagonist(BaseModel):
 class SupportingCharacter(BaseModel):
     name: str
     species: str = Field(description="주인공과 한눈에 구분되는 다른 동물. 사람은 안 됨")
-    role: str = Field(description="주인공과의 관계 (설계 메모용. 본문에서는 가족 호칭 대신 이름으로 부른다). 예: 같은 반 친구, 함께 사는 어른, 선생님")
+    role: str = Field(description="주인공과의 관계. 부모 입력에 아이 곁의 사람이 엄마·아빠·할머니처럼 나오면 그 호칭 (본문에서도 그 호칭으로 부른다). 예: 엄마, 같은 반 친구, 함께 사는 어른, 선생님")
     traits: list[str]
 
 
@@ -245,10 +245,10 @@ class CharacterSheet(BaseModel):
 
 class StoryPage(BaseModel):
     order: int = Field(description="1부터")
-    text: str = Field(description="4~6세 눈높이, 3~5줄(마침표마다 한 줄, 대사 안 문장도 센다). 의성어·의태어는 **별표**로 감싼다 (책에서 굵게 표시)")
-    characters_in_scene: list[str] = Field(description="이 페이지 그림에 등장하는 캐릭터 이름들 (CharacterSheet.name과 동일하게)")
+    text: str = Field(description="4~6세 눈높이, 3~5줄(지문은 마침표마다 한 줄, 대사 하나는 한 줄). 의성어·의태어는 **별표**로 감싼다 (책에서 굵게 표시)")
+    characters_in_scene: list[str] = Field(description="이 쪽 장면에 함께 있는 캐릭터 이름 모두 (CharacterSheet.name과 동일하게). 본문에서 그 자리에 있는 인물은 빼지 않는다")
     image_prompt: str = Field(
-        description="이 페이지 장면. 캐릭터 외형은 반복하지 말고 **정확한 자세·동작·위치·표정·구도**를 구체적으로. 본문의 미묘한 동작(예: 바퀴 하나만 담요 밖으로)을 그대로. 영어로"
+        description="이 페이지 장면. 캐릭터 외형은 반복하지 말고 **정확한 자세·동작·위치·표정·구도**를 구체적으로. 본문의 미묘한 동작(예: 바퀴 하나만 담요 밖으로)을 그대로. 시간대와 빛(저녁·밤이면 꼭), 본문 마음 그대로의 표정, 중요한 물건의 색을 쪽마다 쓴다. 영어로"
     )
     text_position: Literal["top", "bottom"] = Field(
         "bottom", description="글 덩어리(text_blocks)가 없는 화면(옛 그림 등)에서만 쓰는 대체 자리. 그림이 이쪽을 비우지는 않는다. 기본 bottom, 바닥이 장면의 핵심이거나 넓은 하늘·천장이 있으면 top"
@@ -257,7 +257,7 @@ class StoryPage(BaseModel):
 
 class StoryText(BaseModel):
     title: str
-    characters: list[CharacterSheet] = Field(description="주인공 1 + 조연 0~1. 설계의 인물 그대로")
+    characters: list[CharacterSheet] = Field(description="주인공 1 + 조연 0~1 + 두 쪽 이상 그림에 나오는 다른 인물 0~1 (아기 동생, 선생님 등). 최대 3명")
     style_guide: str = Field(description="그림책 화풍 (예: soft watercolor, warm pastel, rounded outlines). 영어로")
     pages: list[StoryPage]
 

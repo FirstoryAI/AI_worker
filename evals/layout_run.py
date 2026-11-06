@@ -20,8 +20,14 @@ from firstory import llm, mock  # noqa: E402
 from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
 
 # ── 줄 나누기 ──
+# 대사 하나는 한 줄 (#77): 따옴표 안의 마침표·줄바꿈에서는 자르지 않는다
 assert split_lines('라라가 골랐어요. "어제 그 말 들으니 속상했어. 나는 같이 그리고 싶었어."') == [
-    '라라가 골랐어요.', '"어제 그 말 들으니 속상했어.', '나는 같이 그리고 싶었어."']
+    '라라가 골랐어요.', '"어제 그 말 들으니 속상했어. 나는 같이 그리고 싶었어."']
+assert split_lines('나루가 블록을 잡았어요.\n"속상했어. 같이 이렇게 놀고 싶어."\n미소가 고개를 끄덕였어요.') == [
+    '나루가 블록을 잡았어요.', '"속상했어. 같이 이렇게 놀고 싶어."', '미소가 고개를 끄덕였어요.']
+assert split_lines('"어제는 혼자 하고 싶었어.\n라라가 싫어서 간 건 아니야." 미나가 웃었어요.') == [
+    '"어제는 혼자 하고 싶었어. 라라가 싫어서 간 건 아니야."', '미나가 웃었어요.']
+assert split_lines('“좋아. 같이 하자.” 둘은 웃었어요.') == ['“좋아. 같이 하자.”', '둘은 웃었어요.']
 assert split_lines('"알겠어…" 미나가 말했어요.') == ['"알겠어…" 미나가 말했어요.']
 assert split_lines("하루가 **토닥토닥** 했어요.\n잘 자.") == ["하루가 **토닥토닥** 했어요.", "잘 자."]
 assert split_lines("그래...  좋아.") == ["그래...  좋아."]                      # 말줄임표는 끊지 않음
@@ -237,9 +243,9 @@ _, cks, _ = chunk_page(text)
 assert cks == [[ls]], cks
 # 따옴표 사이는 붙인다 (lines 를 넘겨 normalize 를 부른다)
 q = '라라가 말했어요.\n"어제는 혼자 하고 싶었어.\n라라가 싫어서 간 건 아니야."\n미나가 웃었어요.'
-llm.set_structured_override(fake_with(TextChunking(blocks=[[[0], [1]], [[2], [3]]])))
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0], [1]], [[2]]])))
 ql, cks, _ = chunk_page(q)
-assert cks == [[[ql[0]], [ql[1], ql[2]], [ql[3]]]] or cks == [[[ql[0]], [ql[1], ql[2]]], [[ql[3]]]], cks
+assert ql == ['라라가 말했어요.', '"어제는 혼자 하고 싶었어. 라라가 싫어서 간 건 아니야."', '미나가 웃었어요.'], ql   # 대사는 한 줄 (#77)
 assert [l for c in cks for p in c for l in p] == ql
 # 38% 넘는 긴 줄은 build_blocks 가 자른다
 longq = '"어제는 내 그림을 혼자 끝내고 싶었어. 라라가 싫어서 간 건 아니야."'

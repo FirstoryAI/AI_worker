@@ -152,15 +152,16 @@ def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] =
             span += f" toward the {where[i - 1]}"
         spans.append(span)
     return (
-        "Layout: this is an open picture-book spread, folded down the middle (x=50%). "
+        "Layout: one continuous wide picture. Do not draw any vertical line, seam, crease, fold or gutter down the middle; "
+        "the scene runs straight across the center. "
         "Story text will be printed over the picture later, so compose the scene with generous open space: "
         "the plain wall, sky, floor or blanket simply continues there, uninterrupted — " + "; ".join(spans) + ", "
-        "toward the top or the bottom of a page (not the middle), each within one side of the fold. "
+        "toward the top or the bottom of the picture (not the middle height), each within the left half or the right half (not across the vertical center). "
         "This open space must look like a natural part of the scene, with the same color, texture and light as its surroundings. "
         "Never draw any box, panel, frame, card, sheet of paper, sign, label, speech bubble, blank rectangle or lighter patch "
         "to mark where text goes. "
         "Keep the characters' faces and ears and other important objects out of that open space, "
-        "and never put a face on the fold line in the middle of the image."
+        "and never put a face at the vertical center of the image."
     )
 
 
@@ -189,6 +190,8 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
         "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not swap, do not add other characters.",
         f"Scene (follow the described poses and positions precisely): {image_prompt}",
         f"Style: {story.style_guide}",
+        "Time of day and light follow the Scene, not the Style: in an evening or night scene the windows are dark and lamps are on.",
+        "Facial expressions follow the Scene exactly: do not turn crying, sad or angry faces into smiles.",
         "Full-bleed illustration, no text, no speech bubbles, no borders.",
     ]
     if sizes:
