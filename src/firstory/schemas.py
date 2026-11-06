@@ -293,6 +293,8 @@ class GuidePrompt(BaseModel):
     after_page: int = Field(description="이 페이지를 읽은 뒤 등장")
     text: str = Field(description="동화 글 안에 이어 붙이는 화자의 말. 장면을 짚고 캐릭터 속마음·다음 일을 묻는다")
     purpose: PromptPurpose
+    scene_note: Optional[str] = Field(
+        None, description="부모용 장면 설명. 이 쪽에서 일어난 일과 이 질문으로 아이가 해 볼 수 있는 것, 해요체 1~2문장. 항상 쓴다")
     parent_hint: Optional[str] = Field(None, description="부모용 질문 활용법. 무엇을 들어 보려는지, 아이가 답하면 어떻게 받을지. 항상 쓴다")
 
 
