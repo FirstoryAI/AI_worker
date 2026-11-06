@@ -402,6 +402,25 @@ llm.set_structured_override(lambda **kw: finish_prompts.append(kw["system"]) or 
 iv.interview_finish({"context": done, "interview_turns": asked + [
     Turn(question=iv.READY_QUESTION, answer="사실 동생이 생겨서 더 예민해요"), Turn(question=iv.READY_QUESTION, answer=iv.READY_GO)]})
 assert "동생이 생겨서" in finish_prompts[-1] and iv.READY_GO not in finish_prompts[-1]   # '만들러 갈게요'는 요약에 안 넘김
+
+# ── 필수 칸이 차도 구체화 질문, 상한은 마무리 질문 전 4번·뒤 2번 (#73) ──
+deep_prompts = []
+deep_q = "그럴 때 아이에게 어떤 말을 해 주고 싶으세요?"
+llm.set_structured_override(lambda **kw: deep_prompts.append(kw["system"]) or asks(deep_q)(**kw))
+four = asked + [Turn(question="넷째로 여쭤볼게요, 아이는 어땠나요?", answer="답 4")]
+o = iv.interview_step({"context": done, "interview_turns": asked})          # 칸은 찼지만 답 3번 → AI가 더 묻는다
+assert o["pending_question"] == deep_q and o["pending_choices"] == ["예"] and "interview_done_by" not in o, o
+assert "부모가 지금까지 답한 질문 수 (마무리 확인 빼고): 3" in deep_prompts[-1]
+o = iv.interview_step({"context": done, "interview_turns": four})           # 답 4번 → 마무리 질문
+assert o["pending_question"] == iv.READY_QUESTION and o["pending_choices"] == [iv.READY_MORE, iv.READY_GO], o
+assert iv.interview_step({"context": ctx0, "interview_turns": four})["pending_question"] == deep_q   # 칸이 비었으면 상한 없음
+yes = four + [Turn(question=iv.READY_QUESTION, answer=iv.READY_MORE)]
+assert iv.interview_step({"context": done, "interview_turns": yes})["pending_question"] == deep_q            # '네' 뒤 첫 질문
+one = yes + [Turn(question="그때 아이 표정은 어땠어요?", answer="울먹였어요")]
+assert iv.interview_step({"context": done, "interview_turns": one})["pending_question"] == deep_q            # 1번 답한 뒤 한 번 더
+two_more = one + [Turn(question="아이가 뭐라고 했나요?", answer="엄마 가지 마")]
+assert iv.interview_step({"context": done, "interview_turns": two_more})["pending_question"] == iv.READY_QUESTION   # 2번이면 다시 마무리
+assert "부모가 지금까지 답한 질문 수 (마무리 확인 빼고): 6" in deep_prompts[-1]
 llm.set_structured_override(recording_structured)
 print("interview limit / ready ok")
 

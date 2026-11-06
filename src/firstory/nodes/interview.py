@@ -6,6 +6,8 @@
 - "모르겠다" 정리 질문 최대 2회, 최대 config.max_interview_turns턴(15), user_skip
 - 충분해지면 바로 끝내지 않고 마무리 질문(READY_QUESTION)으로 더 이야기할지 묻는다 (#48)
 - 더 이야기하겠다고 하면 AI가 채운 칸을 더 구체화하는 질문을 고른다 (#53)
+- 필수 칸이 차도 AI가 '동화 한 편이 그려질 만큼 구체적인가'를 보고 더 묻는다. 길어지지 않게
+  첫 마무리 질문 전에는 부모 답 config.max_depth_answers번, 마무리 질문 뒤에는 config.max_more_answers번까지 (#73)
 
 세 노드로 나눈 이유: interrupt()는 재개 시 노드를 처음부터 다시 실행한다.
 LLM 호출과 interrupt를 같은 노드에 두면 답변 받을 때마다 LLM이 다시 돈다.
@@ -50,6 +52,14 @@ def _answers(turns: list[Turn]) -> list[str]:
     return [_norm(t.answer) for t in turns if t.question != READY_QUESTION and t.answer != "[skip]"]
 
 
+def _deep_enough(turns: list[Turn]) -> bool:
+    """필수 칸이 찬 뒤 구체화 질문을 그만할 때인지 (#73). 마지막 마무리 질문 뒤의 답만 센다."""
+    last = max((i for i, t in enumerate(turns) if t.question == READY_QUESTION), default=None)
+    if last is None:
+        return len(_answers(turns)) >= config.max_depth_answers
+    return len(_answers(turns[last + 1:])) >= config.max_more_answers
+
+
 def _same(a: str, b: str) -> bool:
     """공백·문장부호 무시하고 거의 같은 질문인지."""
     na, nb = _norm(a), _norm(b)
@@ -75,6 +85,7 @@ def interview_step(state: PipelineState) -> dict:
             persona=_persona,
             context=ctx,
             missing_fields=ctx.missing_fields() or "(없음)",
+            answered=len(_answers(turns)),
             remaining=remaining,
             clarify_remaining=max(0, config.max_clarify_turns - clarify),
             turns=[t.model_dump() for t in turns] or "(아직 없음)",
@@ -109,6 +120,10 @@ def interview_step(state: PipelineState) -> dict:
             ctx.parent.message_direction = "undecided"
         if not ctx.parent.concern:
             ctx.parent.concern = turns[-1].answer
+
+    # 안전장치: 필수 칸이 다 찼으면 구체화 질문은 상한까지만 (#73)
+    if r.next_question and ctx.is_sufficient() and _deep_enough(turns):
+        r.status, r.next_question = "sufficient", None
 
     # 정리 질문 한도 초과 → undecided 확정
     if clarify >= config.max_clarify_turns and not ctx.parent.message_direction:
