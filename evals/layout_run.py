@@ -126,7 +126,7 @@ assert isinstance(out[0]["x"], float) and out[0]["x"] == round(out[0]["x"], 1)
 
 # 2) AI 자리가 띠 밖(가운데 높이) → 띠로 옮김
 out = settle(busy, [blk], [{"x": 55, "y": 45, "color": "light"}])
-assert out and out[0]["color"] == "light"
+assert out and out[0]["color"] == "dark"          # 글자색은 AI 답이 아니라 바탕 밝기 (흰 바탕 → dark, #77)
 check_one(out[0], bw, bh)
 assert out[0]["y"] != 45
 
@@ -147,11 +147,11 @@ out = settle(busy, [blk, blk2], [s1, {"x": 8, "y": 70, "color": "light"}])
 assert out and len(out) == 2 and out[0] == {"x": 55.0, "y": 8.0, "color": "dark"}, out
 check_one(out[1], bw2, bh2)
 assert (page(out[1], bw2), out[1]["y"]) > (page(out[0], bw), out[0]["y"]), out       # 오른쪽 면, 1 보다 아래
-assert out[1]["color"] == "light"
+assert out[1]["color"] == "dark"
 
 # 3-1) 순서를 지키는 두 자리(왼쪽 면 위 → 오른쪽 면 아래)는 그대로 둔다
 out = settle(busy, [blk, blk2], [{"x": 8, "y": 70, "color": "dark"}, {"x": 55, "y": 75, "color": "light"}])
-assert out == [{"x": 8.0, "y": 70.0, "color": "dark"}, {"x": 55.0, "y": 75.0, "color": "light"}], out
+assert out == [{"x": 8.0, "y": 70.0, "color": "dark"}, {"x": 55.0, "y": 75.0, "color": "dark"}], out
 for o, (b_w, b_h) in zip(out, [(bw, bh), (bw2, bh2)]):
     check_one(o, b_w, b_h)
 assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"])
@@ -211,6 +211,9 @@ out = calmest(dark_bg, [blk, blk2])
 assert out and len(out) == 2, out
 assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"]), out
 assert all(o["color"] == "light" for o in out), out
+# AI가 dark라고 답해도 어두운 바탕이면 흰 글자 (#77)
+dark_out = settle(dark_bg, [blk], [{"x": 55, "y": 8, "color": "dark"}])
+assert dark_out and dark_out[0]["color"] == "light", dark_out
 (ax, ay), (bx, by) = px(out[0]), px(out[1])
 assert max(max(ax - (bx + bw2), bx - (ax + bw)), max(ay - (by + bh2), by - (ay + bh))) >= gap_px - 1, out
 

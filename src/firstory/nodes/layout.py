@@ -31,7 +31,7 @@ BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대�
 GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
 MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
 DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림을 못 읽거나 놓을 곳이 아예 없을 때만)
-LIGHT_BELOW = 140                  # 가장 조용한 곳에 둘 때: 바탕 밝기(0~255 평균)가 이보다 어두우면 흰 글자
+LIGHT_BELOW = 150                  # 글자 자리 바탕 밝기(0~255 평균)가 이보다 어두우면 흰 글자. 화면 글자색 #4a4a4a와 흰색의 대비가 비슷해지는 곳
 
 FONT_PX = round(W * FONT_RATIO)    # 29
 LINE_PX = FONT_PX * LINE_H
@@ -301,10 +301,17 @@ def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
     return None
 
 
+def text_color(busy: Busy, x: float, y: float, bw: float, bh: float) -> str:
+    """덩어리 자리(둘레 포함) 바탕이 어두우면 light(흰 글자), 아니면 dark. AI가 고른 색은 쓰지 않는다 —
+    어두운 밤 장면에도 dark를 고르고, 자리를 옮기면 다른 자리 색이 된다 (#77)."""
+    pad = W * BUSY_PAD
+    return "light" if busy.brightness(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad) < LIGHT_BELOW else "dark"
+
+
 def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
     """settle도 다시 그리기도 자리를 못 찾았을 때: 복잡도 기준은 빼고 여백·띠·읽는 순서·간격만 지켜
     두 면을 통틀어 가장 덜 복잡한 곳. 그림을 안 보는 기본 자리보다 늘 낫거나 같다.
-    글자색은 그 자리 밝기로 (AI가 고른 색은 다른 자리 것이라 쓰지 않는다). 하나라도 놓을 곳이 없으면 None."""
+    글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
     near = (DEFAULT_SPOT[0] / 100 * W, DEFAULT_SPOT[1] / 100 * H)   # 복잡도가 (거의) 같을 때만 왼쪽 위 쪽으로
     placed: list[tuple[float, float, float, float]] = []
     out: list[dict] = []
@@ -315,15 +322,13 @@ def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
             return None
         x, y = found
         placed.append((x, y, bw, bh))
-        pad = W * BUSY_PAD
-        light = busy.brightness(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad) < LIGHT_BELOW
-        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": "light" if light else "dark"})
+        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": text_color(busy, x, y, bw, bh)})
     return out
 
 
 def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:
     """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격을 확인해 안 되면 옮긴다.
-    덩어리마다 {"x": %, "y": %, "color"}. 하나라도 자리가 없으면 None."""
+    덩어리마다 {"x": %, "y": %, "color"}. 글자색은 AI 답이 아니라 마지막 자리의 밝기로 (text_color). 하나라도 자리가 없으면 None."""
     placed: list[tuple[float, float, float, float]] = []
     out: list[dict] = []
     for i, block in enumerate(blocks):
@@ -338,7 +343,7 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | N
                 return None
             x, y = found
         placed.append((x, y, bw, bh))
-        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": spot.get("color", DEFAULT_SPOT[2])})
+        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": text_color(busy, x, y, bw, bh)})
     return out
 
 
