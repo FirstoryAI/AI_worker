@@ -20,8 +20,14 @@ from firstory import llm, mock  # noqa: E402
 from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
 
 # ── 줄 나누기 ──
+# 대사 하나는 한 줄 (#77): 따옴표 안의 마침표·줄바꿈에서는 자르지 않는다
 assert split_lines('라라가 골랐어요. "어제 그 말 들으니 속상했어. 나는 같이 그리고 싶었어."') == [
-    '라라가 골랐어요.', '"어제 그 말 들으니 속상했어.', '나는 같이 그리고 싶었어."']
+    '라라가 골랐어요.', '"어제 그 말 들으니 속상했어. 나는 같이 그리고 싶었어."']
+assert split_lines('나루가 블록을 잡았어요.\n"속상했어. 같이 이렇게 놀고 싶어."\n미소가 고개를 끄덕였어요.') == [
+    '나루가 블록을 잡았어요.', '"속상했어. 같이 이렇게 놀고 싶어."', '미소가 고개를 끄덕였어요.']
+assert split_lines('"어제는 혼자 하고 싶었어.\n라라가 싫어서 간 건 아니야." 미나가 웃었어요.') == [
+    '"어제는 혼자 하고 싶었어. 라라가 싫어서 간 건 아니야."', '미나가 웃었어요.']
+assert split_lines('“좋아. 같이 하자.” 둘은 웃었어요.') == ['“좋아. 같이 하자.”', '둘은 웃었어요.']
 assert split_lines('"알겠어…" 미나가 말했어요.') == ['"알겠어…" 미나가 말했어요.']
 assert split_lines("하루가 **토닥토닥** 했어요.\n잘 자.") == ["하루가 **토닥토닥** 했어요.", "잘 자."]
 assert split_lines("그래...  좋아.") == ["그래...  좋아."]                      # 말줄임표는 끊지 않음
@@ -120,7 +126,7 @@ assert isinstance(out[0]["x"], float) and out[0]["x"] == round(out[0]["x"], 1)
 
 # 2) AI 자리가 띠 밖(가운데 높이) → 띠로 옮김
 out = settle(busy, [blk], [{"x": 55, "y": 45, "color": "light"}])
-assert out and out[0]["color"] == "light"
+assert out and out[0]["color"] == "dark"          # 글자색은 AI 답이 아니라 바탕 밝기 (흰 바탕 → dark, #77)
 check_one(out[0], bw, bh)
 assert out[0]["y"] != 45
 
@@ -141,11 +147,11 @@ out = settle(busy, [blk, blk2], [s1, {"x": 8, "y": 70, "color": "light"}])
 assert out and len(out) == 2 and out[0] == {"x": 55.0, "y": 8.0, "color": "dark"}, out
 check_one(out[1], bw2, bh2)
 assert (page(out[1], bw2), out[1]["y"]) > (page(out[0], bw), out[0]["y"]), out       # 오른쪽 면, 1 보다 아래
-assert out[1]["color"] == "light"
+assert out[1]["color"] == "dark"
 
 # 3-1) 순서를 지키는 두 자리(왼쪽 면 위 → 오른쪽 면 아래)는 그대로 둔다
 out = settle(busy, [blk, blk2], [{"x": 8, "y": 70, "color": "dark"}, {"x": 55, "y": 75, "color": "light"}])
-assert out == [{"x": 8.0, "y": 70.0, "color": "dark"}, {"x": 55.0, "y": 75.0, "color": "light"}], out
+assert out == [{"x": 8.0, "y": 70.0, "color": "dark"}, {"x": 55.0, "y": 75.0, "color": "dark"}], out
 for o, (b_w, b_h) in zip(out, [(bw, bh), (bw2, bh2)]):
     check_one(o, b_w, b_h)
 assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"])
@@ -205,6 +211,9 @@ out = calmest(dark_bg, [blk, blk2])
 assert out and len(out) == 2, out
 assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"]), out
 assert all(o["color"] == "light" for o in out), out
+# AI가 dark라고 답해도 어두운 바탕이면 흰 글자 (#77)
+dark_out = settle(dark_bg, [blk], [{"x": 55, "y": 8, "color": "dark"}])
+assert dark_out and dark_out[0]["color"] == "light", dark_out
 (ax, ay), (bx, by) = px(out[0]), px(out[1])
 assert max(max(ax - (bx + bw2), bx - (ax + bw)), max(ay - (by + bh2), by - (ay + bh))) >= gap_px - 1, out
 
@@ -237,9 +246,9 @@ _, cks, _ = chunk_page(text)
 assert cks == [[ls]], cks
 # 따옴표 사이는 붙인다 (lines 를 넘겨 normalize 를 부른다)
 q = '라라가 말했어요.\n"어제는 혼자 하고 싶었어.\n라라가 싫어서 간 건 아니야."\n미나가 웃었어요.'
-llm.set_structured_override(fake_with(TextChunking(blocks=[[[0], [1]], [[2], [3]]])))
+llm.set_structured_override(fake_with(TextChunking(blocks=[[[0], [1]], [[2]]])))
 ql, cks, _ = chunk_page(q)
-assert cks == [[[ql[0]], [ql[1], ql[2]], [ql[3]]]] or cks == [[[ql[0]], [ql[1], ql[2]]], [[ql[3]]]], cks
+assert ql == ['라라가 말했어요.', '"어제는 혼자 하고 싶었어. 라라가 싫어서 간 건 아니야."', '미나가 웃었어요.'], ql   # 대사는 한 줄 (#77)
 assert [l for c in cks for p in c for l in p] == ql
 # 38% 넘는 긴 줄은 build_blocks 가 자른다
 longq = '"어제는 내 그림을 혼자 끝내고 싶었어. 라라가 싫어서 간 건 아니야."'
@@ -354,3 +363,20 @@ grid = [(float(gx), float(gy)) for page in (0, 1) for (ylo, yhi) in _L._y_bands(
 best = min(_L._score(soft2, gx, gy, bw, bh) for gx, gy in grid)
 assert _L._score(soft2, x, y, bw, bh) <= best + 0.05, (out, best)              # 두 면을 통틀어 가장 조용함
 print("calmest ok")
+
+# ── 이전 배치가 지금 글과 맞나 (_stale) — 대사를 쪼갠 옛 배치는 다시 한다 (#77) ──
+from types import SimpleNamespace  # noqa: E402
+
+from firstory.nodes.illustrate import _stale  # noqa: E402
+from firstory.schemas import PageImage, TextBlock  # noqa: E402
+
+page = SimpleNamespace(text='나루가 웃었어요.\n"속상했어. 같이 놀고 싶어."')
+split_old = PageImage(order=7, path="k", status="completed", text_blocks=[
+    TextBlock(paragraphs=[["나루가 웃었어요.", '"속상했어.', '같이 놀고 싶어."']], x=5, y=7, color="dark")])
+one_line = PageImage(order=7, path="k", status="completed", text_blocks=[
+    TextBlock(paragraphs=[["나루가 웃었어요."]], x=5, y=7, color="dark"),
+    TextBlock(paragraphs=[['"속상했어. 같이 놀고 싶어."']], x=55, y=80, color="dark")])
+assert _stale(page, split_old)            # 글은 같아도 대사가 쪼개져 있으면 배치만 다시
+assert not _stale(page, one_line)         # 덩어리·문단이 나뉘어도 줄이 같으면 그대로
+assert not _stale(page, PageImage(order=7, status="failed"))
+print("stale ok")
