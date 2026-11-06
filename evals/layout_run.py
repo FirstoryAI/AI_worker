@@ -214,6 +214,11 @@ assert all(o["color"] == "light" for o in out), out
 # AI가 dark라고 답해도 어두운 바탕이면 흰 글자 (#77)
 dark_out = settle(dark_bg, [blk], [{"x": 55, "y": 8, "color": "dark"}])
 assert dark_out and dark_out[0]["color"] == "light", dark_out
+# 라벤더 벽: 채널 평균은 150을 넘지만 대비는 흰 글자가 낫다 → light. 밝은 회색은 dark (#77)
+from firstory.nodes.layout import text_color  # noqa: E402
+lavender = Busy(png(Image.new("RGB", (W, H), (149, 142, 168))))
+assert text_color(lavender, 200, 80, bw, bh) == "light"
+assert text_color(Busy(png(Image.new("RGB", (W, H), (190, 190, 190)))), 200, 80, bw, bh) == "dark"
 (ax, ay), (bx, by) = px(out[0]), px(out[1])
 assert max(max(ax - (bx + bw2), bx - (ax + bw)), max(ay - (by + bh2), by - (ay + bh))) >= gap_px - 1, out
 
