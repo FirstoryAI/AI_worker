@@ -51,13 +51,20 @@ def _usage(res) -> tuple[int, int]:
     return (getattr(u, "input_tokens", 0) or 0, getattr(u, "output_tokens", 0) or 0) if u else (0, 0)
 
 
-def _gen(prompt_text: str) -> tuple[bytes, int, int]:
-    """→ (png, input_tokens, output_tokens). 이미지 비용은 토큰으로 매겨진다."""
+def _format_args() -> dict:
+    return ({"output_format": config.image_format, "output_compression": config.image_compression}
+            if config.image_format != "png" else {})
+
+
+def _gen(prompt_text: str, size: Optional[str] = None) -> tuple[bytes, int, int]:
+    """→ (그림 bytes, input_tokens, output_tokens). 이미지 비용은 토큰으로 매겨진다.
+    시트라 config.sheet_size·config.image_format으로 받는다 (#80). 저장 key 확장자는 _ext로 정한다."""
     if _override:
         return _override(prompt_text, []), 0, 0
     try:
         res = client().images.generate(
-            model=config.image_model, prompt=prompt_text, size=config.image_size, quality=config.image_quality, n=1
+            model=config.image_model, prompt=prompt_text, size=size or config.sheet_size, quality=config.image_quality, n=1,
+            **_format_args(),
         )
     except BadRequestError as e:
         raise _policy(e) from e
@@ -65,11 +72,11 @@ def _gen(prompt_text: str) -> tuple[bytes, int, int]:
 
 
 def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] = None) -> tuple[bytes, int, int]:
-    """refs: [(파일명, png bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2는 참조 이미지 여러 장 지원).
+    """refs: [(이름, 그림 bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2는 참조 이미지 여러 장 지원).
     쪽·표지라 config.image_format으로 받는다 (#32). 저장 key 확장자는 _ext로 실제 바이트를 보고 정한다."""
     if _override:
         return _override(prompt_text, [b for _, b in refs]), 0, 0
-    images = [(name, data, "image/png") for name, data in refs]
+    images = _attach(refs)
     try:
         res = client().images.edit(
             model=config.image_model,
@@ -79,8 +86,7 @@ def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] =
             quality=config.image_quality,
             n=1,
             **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
-            **({"output_format": config.image_format, "output_compression": config.image_compression}
-               if config.image_format != "png" else {}),
+            **_format_args(),
         )
     except BadRequestError as e:
         raise _policy(e) from e
@@ -113,6 +119,18 @@ def _draw(draw: Callable[[str], tuple[bytes, int, int]], scene: str, what: str, 
         except PolicyBlocked:
             log.warning("순화한 뒤에도 콘텐츠 정책 위반: %s", what)
             raise
+
+
+_MIME = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg"}
+
+
+def _attach(refs: list[tuple[str, bytes]]) -> list[tuple[str, bytes, str]]:
+    """첨부 파일 이름·MIME을 실제 바이트 형식에 맞춘다. 줄이지 않은 시트는 WebP 그대로 간다 (#80)."""
+    out = []
+    for name, data in refs:
+        ext = _ext(data)
+        out.append((f"{name.rsplit('.', 1)[0]}.{ext}", data, _MIME[ext]))
+    return out
 
 
 def _ext(data: bytes) -> str:
@@ -301,7 +319,8 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
 
 
 def _ref(data: bytes) -> bytes:
-    """첨부용 시트: 긴 변을 config.ref_max_side로 줄인 PNG. 저장된 시트는 그대로 두고, 작거나 읽지 못하면 원본 (#67)."""
+    """첨부용 시트: 긴 변을 config.ref_max_side로 줄인 PNG. 저장된 시트는 그대로 두고, 작거나 읽지 못하면 원본 (#67).
+    원본은 WebP일 수 있다. 첨부 MIME은 _attach가 실제 형식으로 붙인다 (#80)."""
     try:
         im = Image.open(io.BytesIO(data))
         if max(im.size) <= config.ref_max_side:
@@ -331,9 +350,9 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         if only_pages is not None and c.name in ill.character_sheets:
             return c.name, ill.character_sheets[c.name], None
         t0 = time.time()
-        png, tin, tout = _draw(lambda desc: _gen(sheet_prompt(c.model_copy(update={"visual_description": desc}), story.style_guide)),
+        img, tin, tout = _draw(lambda desc: _gen(sheet_prompt(c.model_copy(update={"visual_description": desc}), story.style_guide)),
                                c.visual_description, f"{img_prefix} sheet {c.role}", costs)
-        key = storage.write_bytes(storage.join(img_prefix, f"sheet-{c.role}-{_safe(c.name)}.png"), png)
+        key = storage.write_bytes(storage.join(img_prefix, f"sheet-{c.role}-{_safe(c.name)}.{_ext(img)}"), img)
         return c.name, key, CostEntry(node=f"illustrate:sheet:{c.name}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
 
     with ThreadPoolExecutor(max_workers=max(1, config.image_concurrency)) as ex:

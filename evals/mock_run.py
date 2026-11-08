@@ -254,17 +254,51 @@ assert blocked["illustrations"].cover                                           
 il.set_image_override(mock.tiny_png)
 print("policy retry ok")
 
-# ── 쪽·표지는 받은 형식대로 key 확장자를 정한다 (#32). 시트는 그대로 PNG ──
-def webp_pages(prompt, refs):
-    return b"RIFF\x00\x00\x00\x00WEBPVP8 " if refs else mock.tiny_png(prompt, refs)   # 참조가 있으면 쪽·표지(edit)
+# ── 시트·쪽·표지는 받은 형식대로 key 확장자를 정한다 (#32, #80) ──
+WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 "
 
 
-il.set_image_override(webp_pages)
+def webp_all(prompt, refs):
+    return WEBP
+
+
+il.set_image_override(webp_all)
 w = il.illustrate({"story": st, "output_prefix": "stories/c/runs/6/"})["illustrations"]
 assert [p.path for p in w.pages] == ["stories/c/runs/6/images/page-01.webp", "stories/c/runs/6/images/page-02.webp"]
-assert w.cover == "stories/c/runs/6/images/cover.webp" and all(k.endswith(".png") for k in w.character_sheets.values())
+assert w.cover == "stories/c/runs/6/images/cover.webp"
+assert w.character_sheets and all(k.startswith("stories/c/runs/6/images/sheet-") and k.endswith(".webp")
+                                  for k in w.character_sheets.values()), w.character_sheets
 il.set_image_override(mock.tiny_png)
 print("webp ok")
+
+# ── 실제 호출 인자: 시트는 SHEET_SIZE·IMAGE_FORMAT, 첨부 MIME은 실제 형식 (#80) ──
+import base64 as _b64  # noqa: E402
+from types import SimpleNamespace as _NS  # noqa: E402
+
+calls: list[tuple[str, dict]] = []
+
+
+class _FakeImages:
+    def generate(self, **kw):
+        calls.append(("generate", kw)); return _NS(data=[_NS(b64_json=_b64.b64encode(WEBP).decode())], usage=None)
+
+    def edit(self, **kw):
+        calls.append(("edit", kw)); return _NS(data=[_NS(b64_json=_b64.b64encode(WEBP).decode())], usage=None)
+
+
+_real_client = il.client
+il.client = lambda: _NS(images=_FakeImages())
+il.set_image_override(None)
+png_sheet = mock.tiny_png("", [])
+assert il._gen("sheet")[0] == WEBP
+assert il._edit("page", [("포포.png", WEBP), ("엄마곰.png", png_sheet)])[0] == WEBP
+il.client = _real_client
+il.set_image_override(mock.tiny_png)
+(_, g), (_, e) = calls
+assert g["size"] == config.sheet_size == "1024x1024", g
+assert g.get("output_format") == config.image_format == "webp", g
+assert e["image"] == [("포포.webp", WEBP, "image/webp"), ("엄마곰.png", png_sheet, "image/png")], e["image"]
+print("sheet size/format ok")
 
 # ── 쪽·표지에 첨부하는 시트는 긴 변 1024px로 줄인다. 저장된 시트는 그대로 (#67) ──
 import io as _io  # noqa: E402
@@ -279,7 +313,7 @@ ref_sizes: list[tuple[int, int]] = []
 
 
 def big_sheets(prompt, refs):
-    if not refs:                       # 시트(generate)는 쪽 그림 크기로 만든다
+    if not refs:                       # 예전 시트(generate)처럼 쪽 그림 크기로 만든다
         return _png(1920, 1088)
     ref_sizes.extend(_Image.open(_io.BytesIO(r)).size for r in refs)
     return mock.tiny_png(prompt, refs)
@@ -290,6 +324,8 @@ r1024 = il.illustrate({"story": st, "output_prefix": "stories/c/runs/8/"})["illu
 assert ref_sizes and all(max(sz) <= config.ref_max_side for sz in ref_sizes), ref_sizes       # 쪽·표지 첨부는 1024 이하
 assert max(ref_sizes) == (1024, 580), ref_sizes                                                # 비율 유지
 assert _Image.open(_io.BytesIO(storage.read_bytes(r1024.character_sheets["포포"]))).size == (1920, 1088)   # 저장 시트는 원본
+square = _png(1024, 1024)            # 지금 시트(SHEET_SIZE) 크기는 줄이지 않고 그대로 첨부 (#80)
+assert il._ref(square) is square
 small = mock.tiny_png("", [])
 assert il._ref(small) is small and il._ref(b"not an image") == b"not an image"               # 작거나 못 읽으면 그대로
 il.set_image_override(mock.tiny_png)
