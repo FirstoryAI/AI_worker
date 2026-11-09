@@ -119,6 +119,8 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     q2 = ok(answer(tid, {"answer": "안아 줬어요"}))
     assert q2["type"] == "question" and q2["turn"] == 2, q2
+    assert q2["safety"] == {"level": "OK", "category": None, "reason": None}, q2   # 답마다 위기 신호 판단을 같이 준다 (#83). 시작에는 없다
+    assert "safety" not in q1
     assert q2["context_update"] == {"parent": {"response": "안아줌", "concern": "뭐라고 말할지 모르겠음"}}, q2
     # 빈 카드·겹치는 카드를 빼고 4개까지
     assert q2["choices"] == ["마음을 먼저 다독이고 싶어요", "친구 입장도 생각해 보게 하고 싶어요", "잘 모르겠어요", "둘 다요"], q2
@@ -132,7 +134,8 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     again = ok(answer(tid, {"answer": "친구랑 다시 놀고 싶어 해요"}))
     assert again["turn"] == 5 and again["question"] == iv.READY_QUESTION, again
     done = ok(answer(tid, {"answer": iv.READY_GO}))
-    assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context"} and done["type"] == "confirm", done
+    assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context", "safety"} and done["type"] == "confirm", done
+    assert done["safety"] == {"level": "OK", "category": None, "reason": None}, done
     assert done["end_reason"] == "sufficient"
     assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
     assert done["situation_summary"] == "어린이집에서 친구가 블록을 먼저 가져가서 아이가 울었어요."
@@ -150,6 +153,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert ok(start(tid2))["turn"] == 1
     skipped = ok(answer(tid2, {"skip": True}))
     assert skipped["type"] == "confirm" and skipped["end_reason"] == "user_skip", skipped
+    assert skipped["safety"] is None, skipped   # 건너뛰기는 글이 없어 검사하지 않는다
     assert skipped["context"]["parent"]["message_direction"] == "undecided"
     # 전하고 싶은 말을 직접 쓰고 건너뛰면 방향을 정한 것 — undecided로 두지 않는다 (#31)
     tid2b = str(uuid.uuid4())
@@ -186,7 +190,79 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert server._graph.get_state(server._cfg(tid3)).next == ("interview_step",)
     retried = ok(answer(tid3, {"answer": "안아 줬어요"}))
     assert retried["type"] == "question" and retried["turn"] == 2, retried
+    assert retried["safety"] == {"level": "OK", "category": None, "reason": None}, retried   # 이어서 할 때 받아 둔 답을 다시 검사한다
     assert len(server._graph.get_state(server._cfg(tid3)).values["interview_turns"]) == 1
+    mock.enable()
+
+    # ── 위기 신호 검사와 다음 질문 만들기를 동시에 (#83) ──
+    def turns_of(t):
+        return server._graph.get_state(server._cfg(t)).values.get("interview_turns", [])
+
+    # REVISE·CRISIS: 답을 받기 전으로 되돌리고 같은 질문. 고쳐 쓴 답은 새 답으로 받는다
+    for mark in ("[[REVISE]]", "[[CRISIS]]"):
+        t = str(uuid.uuid4())
+        first = ok(start(t))
+        held = ok(answer(t, {"answer": f"{mark} 혼내 줬어요"}))
+        assert held["safety"]["level"] == mark.strip("[]") and held["safety"]["reason"], held
+        assert {k: held[k] for k in ("type", "turn", "question", "choices", "context_update")} == first, held
+        assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+        fixed = ok(answer(t, {"answer": "안아 줬어요"}))
+        assert fixed["turn"] == 2 and fixed["safety"]["level"] == "OK", fixed
+        assert [x.answer for x in turns_of(t)] == ["안아 줬어요"]
+    # 두 번째 차례에서 되돌려도 첫 답은 남는다
+    t = str(uuid.uuid4())
+    ok(start(t))
+    second = ok(answer(t, {"answer": "안아 줬어요"}))
+    held = ok(answer(t, {"answer": "[[REVISE]] 혼내 줄래요"}))
+    assert held["turn"] == 2 and held["question"] == second["question"] and held["choices"] == second["choices"], held
+    assert [x.answer for x in turns_of(t)] == ["안아 줬어요"]
+    # SENSITIVE는 되돌리지 않는다 (Spring이 분위기 선택으로 보낸다)
+    t = str(uuid.uuid4())
+    ok(start(t))
+    sens = ok(answer(t, {"answer": "[[SENSITIVE]] 할머니가 아프세요"}))
+    assert sens["turn"] == 2 and sens["safety"]["level"] == "SENSITIVE", sens
+
+    # 검사가 실패하면 되돌린 뒤 오류 → 같은 답을 다시 보내면 처음부터 깨끗하게
+    def safety_fails_once(**kw):
+        if kw["node"] == "safety_check" and fail_once.pop("safety", False):
+            raise RuntimeError("OpenAI 장애 흉내 (위기 신호)")
+        return mock.fake_structured(**kw)
+
+    t = str(uuid.uuid4())
+    ok(start(t))
+    fail_once["safety"] = True
+    llm.set_structured_override(safety_fails_once)
+    err(answer(t, {"answer": "안아 줬어요"}), 500, "INTERNAL_ERROR")
+    assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+    again = ok(answer(t, {"answer": "안아 줬어요"}))
+    assert again["turn"] == 2 and again["safety"]["level"] == "OK" and len(turns_of(t)) == 1, again
+
+    # 인터뷰가 실패해 중간에 멈춘 뒤 다시 온 답이 REVISE면 그때 되돌린다
+    t = str(uuid.uuid4())
+    first = ok(start(t))
+    fail_once["interview"] = True
+    llm.set_structured_override(flaky)
+    err(answer(t, {"answer": "[[REVISE]] 혼내 줬어요"}), 500, "INTERNAL_ERROR")
+    assert server._graph.get_state(server._cfg(t)).next == ("interview_step",)
+    held = ok(answer(t, {"answer": "[[REVISE]] 혼내 줬어요"}))
+    assert held["turn"] == 1 and held["question"] == first["question"] and held["safety"]["level"] == "REVISE", held
+    assert turns_of(t) == []
+    assert ok(answer(t, {"answer": "안아 줬어요"}))["turn"] == 2
+
+    # 정말 동시에 도는지: 둘 다 0.4초 걸리면 합쳐 0.8초가 아니라 0.4초 남짓
+    def slow(**kw):
+        if kw["node"] in ("interview", "safety_check"):
+            time.sleep(0.4)
+        return mock.fake_structured(**kw)
+
+    t = str(uuid.uuid4())
+    ok(start(t))
+    llm.set_structured_override(slow)
+    t0 = time.time()
+    ok(answer(t, {"answer": "안아 줬어요"}))
+    took = time.time() - t0
+    assert took < 0.7, took
+    mock.enable()
 
     # AI가 질문 없이 ask만 주면 기본 질문을 묻고, 그 질문과 상관없는 카드는 버린다
     def no_question(**kw):

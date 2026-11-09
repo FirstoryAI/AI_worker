@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from typing import Literal, Optional
 from uuid import UUID
@@ -218,19 +220,70 @@ class InterviewAnswerRequest(BaseModel):
         return self
 
 
+# 인터뷰 답변의 위기 신호 검사는 다음 질문 만들기와 동시에 돌린다 (#83). 판정이 이 level이면 답을 받기 전으로 되돌린다
+_safety_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="interview-safety")
+_REWIND_LEVELS = {"REVISE", "CRISIS"}
+
+
+def _check_answer(question: str, answer: str) -> tuple[Future, float]:
+    """위기 신호 검사를 다른 스레드에서 시작한다. (결과 Future, 시작 시각)"""
+    return _safety_pool.submit(safety.judge, "interview_answer", [answer], question), time.time()
+
+
+def _rewind(thread_id: str, turns_before: int) -> dict:
+    """인터뷰를 답을 받기 전 자리(질문에서 멈춤, 차례 turns_before개)로 되돌리고 그 질문을 돌려준다.
+    한 번 재개한 체크포인트를 다시 Command(resume)하면 처음 답이 다시 쓰이므로, 그 체크포인트에서
+    interview_step을 막 지난 것처럼 새 갈래를 만든다 (이전 버전에서 다시 만들기와 같은 방식)."""
+    for h in _graph.get_state_history(_cfg(thread_id)):   # 최근 것부터
+        if h.next == ("interview_answer",) and len(h.values.get("interview_turns", [])) == turns_before:
+            _graph.update_state(_at(thread_id, h), {"pending_question": h.values["pending_question"]},
+                                as_node="interview_step")
+            return {"type": "question", "turn": turns_before + 1, "question": h.values["pending_question"],
+                    "choices": h.values.get("pending_choices") or [], "context_update": None}
+    raise ApiError(500, "INTERNAL_ERROR", "답을 받기 전 자리를 찾지 못했습니다")
+
+
 @app.post("/v1/threads/{thread_id}/interview/answer")
 def interview_answer(thread_id: str, body: InterviewAnswerRequest) -> dict:
+    """답이 있으면 위기 신호 검사와 다음 질문 만들기를 동시에 하고 응답에 safety를 담는다 (건너뛰기는 null).
+    REVISE·CRISIS면 답을 받기 전으로 되돌리고 같은 질문을 돌려준다. 검사가 실패하면 되돌린 뒤 오류."""
     with _thread_lock(thread_id):
         cfg = _cfg(thread_id)
         snap = _graph.get_state(cfg)
         if not snap.values:
             raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
         before = snap.values["context"]
-        if snap.next in _INTERVIEW_HALFWAY:   # 지난번 답변은 이미 받았다. 실패한 노드부터 잇는다
-            return _interview_reply(before, _graph.invoke(None, cfg))
+        turns = snap.values.get("interview_turns", [])
+        if snap.next in _INTERVIEW_HALFWAY:   # 지난번 답변은 이미 받았다. 실패한 노드부터 잇고, 받아 둔 답은 다시 검사
+            last = turns[-1] if turns else None
+            check = _check_answer(last.question, last.answer) if last and last.answer != "[skip]" else None
+            return _answer_reply(thread_id, before, len(turns) - 1, check, lambda: _graph.invoke(None, cfg))
         if snap.next != ("interview_answer",):
             raise ApiError(409, "INVALID_STATE", "인터뷰 질문에서 멈춰 있지 않습니다")
-        return _interview_reply(before, _graph.invoke(Command(resume="skip" if body.skip else body.answer), cfg))
+        check = None if body.skip else _check_answer(snap.values["pending_question"], body.answer)
+        resume = Command(resume="skip" if body.skip else body.answer)
+        return _answer_reply(thread_id, before, len(turns), check, lambda: _graph.invoke(resume, cfg))
+
+
+def _answer_reply(thread_id: str, before: StoryInputContext, turns_before: int,
+                  check: Optional[tuple[Future, float]], run) -> dict:
+    t0 = time.time()
+    result = run()   # 실패하면 그래프는 그 노드 앞에 멈춰 있다. 같은 답이 다시 오면 위에서 잇고 다시 검사한다
+    t_interview = time.time() - t0
+    if check is None:
+        return {**_interview_reply(before, result), "safety": None}
+    future, started = check
+    try:
+        verdict: SafetyResult = future.result()[0]
+    except Exception:
+        log.exception("인터뷰 답변 위기 신호 검사 실패 → 답을 받기 전으로 되돌림 (thread %s)", thread_id)
+        _rewind(thread_id, turns_before)
+        raise ApiError(500, "INTERNAL_ERROR", "위기 신호 검사에 실패했습니다. 같은 답을 다시 보내 주세요")
+    log.info("interview/answer %s: 인터뷰 %.1fs, 위기 신호 %s (검사 시작부터 %.1fs)",
+             thread_id, t_interview, verdict.level, time.time() - started)
+    if verdict.level in _REWIND_LEVELS:
+        return {**_rewind(thread_id, turns_before), "safety": verdict.model_dump(mode="json")}
+    return {**_interview_reply(before, result), "safety": verdict.model_dump(mode="json")}
 
 
 # ── 생성 (스펙 7-4 ~ 7-6) ────────────────────────────────────────────────

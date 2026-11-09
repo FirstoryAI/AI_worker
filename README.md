@@ -54,7 +54,7 @@ curl -H 'X-Internal-Token: local-test-token' localhost:8000/health   # {"status"
 
 `--http h11`: Spring(Java HttpClient)이 `Upgrade: h2c` 헤더를 붙여 보내는데, uvicorn 기본 파서(httptools)는 이때 본문을 버려 422가 난다. h11 파서는 헤더를 무시하고 본문을 받는다.
 
-위기 신호(G2)는 `src/firstory/nodes/safety.py` 하나가 판단한다. `/v1/safety/check`(폼, 인터뷰 답변, 다시 만들기 메모)와 완성 본문(`safety_output` 노드, `/result`의 `safety`)이 같은 프롬프트(`prompts/safety_check.md`)를 쓴다. 판단만 하고, 횟수를 세고 막는 건 Spring이 한다.
+위기 신호(G2)는 `src/firstory/nodes/safety.py` 하나가 판단한다. `/v1/safety/check`(폼, 다시 만들기 메모), 인터뷰 답변(`interview/answer`가 다음 질문 만들기와 동시에 판단하고 응답의 `safety`로 준다. REVISE·CRISIS면 답을 받기 전으로 되돌린다)과 완성 본문(`safety_output` 노드, `/result`의 `safety`)이 같은 프롬프트(`prompts/safety_check.md`)를 쓴다. 판단만 하고, 횟수를 세고 막는 건 Spring이 한다.
 
 `FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). 위기 신호는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
 
