@@ -1,6 +1,6 @@
 """
 🔒 Role A — 인터뷰어. 백엔드 사전조사 ②.
-- 매 턴: 추출 + 질문 동시 (호출 1회)
+- 매 턴: 추출 + 질문 동시 (호출 1회, reasoning none. 프롬프트는 고정 규칙이 앞, 바뀌는 상황이 뒤라 앞부분이 캐시된다)
 - missing_fields 는 코드가 계산해서 프롬프트에 넣는다
 - 종료 판단은 AI 말 + 코드 이중 확인
 - "모르겠다" 정리 질문 최대 2회, 최대 config.max_interview_turns턴(15), user_skip
@@ -92,7 +92,7 @@ def interview_step(state: PipelineState) -> dict:
             deepen=_DEEPEN if wants_more else "",
         ),
         user="다음 행동을 결정하세요.",
-        reasoning="low",
+        reasoning="none",   # 답마다 기다리는 시간. low와 질문 품질을 실제 인터뷰 42차례로 비교해 고름 (#82)
     )
 
     # 추출 결과 병합
