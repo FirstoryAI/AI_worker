@@ -1,6 +1,6 @@
 """
 🔒 Role A — 인터뷰어. 백엔드 사전조사 ②.
-- 매 턴: 추출 + 질문 동시 (호출 1회, reasoning none. 프롬프트는 고정 규칙이 앞, 바뀌는 상황이 뒤라 앞부분이 캐시된다)
+- 매 턴: 추출 + 질문 동시 (호출 1회, config.model_interview, reasoning none. 프롬프트는 고정 규칙이 앞, 바뀌는 상황이 뒤라 앞부분이 캐시된다)
 - missing_fields 는 코드가 계산해서 프롬프트에 넣는다
 - 종료 판단은 AI 말 + 코드 이중 확인
 - "모르겠다" 정리 질문 최대 2회, 최대 config.max_interview_turns턴(15), user_skip
@@ -16,6 +16,10 @@ LLM 호출과 interrupt를 같은 노드에 두면 답변 받을 때마다 LLM�
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Optional
+
 from langgraph.types import interrupt
 
 from .. import storage
@@ -25,6 +29,12 @@ from ..schemas import InterviewSummary, InterviewTurnResult, StoryInputContext, 
 from ..state import PipelineState
 
 _persona = prompt("_persona")
+# 사용자와 함께 만든 정답 대화 10편 (#82). 지금 상황과 비슷한 2편을 프롬프트에 예시로 넣는다
+_EXAMPLES = json.loads((Path(__file__).resolve().parents[1] / "prompts" / "interview_examples.json")
+                       .read_text(encoding="utf-8"))["examples"]
+_CATEGORY_KO = {"friend_conflict": "친구와 갈등", "new_environment": "새로운 환경", "separation": "이별·죽음",
+                "safety": "안전", "rules": "규칙·훈육", "family_change": "가족 변화", "fear": "두려움", "other": "그 밖의 일"}
+_TIMING_KO = {"past": "이미 있었던 일", "upcoming": "앞으로 겪을 일·먼저 알려 주고 싶은 일"}
 _UNSURE = ("모르", "글쎄", "어떻게 말해야", "뭐라고 해야", "둘 다")
 _SKIP = ("skip", "/skip", "이만 만들어주세요", "그만")
 
@@ -69,6 +79,32 @@ def _same(a: str, b: str) -> bool:
     return shorter in longer or len(set(na) & set(nb)) / max(len(set(na)), len(set(nb))) > 0.9
 
 
+def pick_examples(ctx: StoryInputContext, exclude_id: Optional[int] = None) -> list[dict]:
+    """지금 상황과 가장 비슷한 정답 대화 1편(분류 > 시점) + 다른 분류에서 1편. exclude_id는 시험할 때 그 대화를 뺀다."""
+    pool = [e for e in _EXAMPLES if e["id"] != exclude_id]
+    score = lambda e: (2 * (e["category"] == ctx.situation.category) + (e["timing"] == ctx.situation.timing), -e["id"])
+    first = max(pool, key=score)
+    rest = [e for e in pool if e["category"] != first["category"]]
+    return [first, max(rest, key=score)] if rest else [first]
+
+
+def format_examples(examples: list[dict]) -> str:
+    out = []
+    for e in examples:
+        lines = [f"### 예시: {e['title']} ({_CATEGORY_KO.get(e['category'], e['category'])}, {_TIMING_KO[e['timing']]})",
+                 f"부모가 적은 상황: {e['situation']}"]
+        if e.get("reaction"):
+            lines.append(f"아이 반응: {e['reaction']}")
+        for t in e["turns"]:
+            lines.append(f"AI: {t['q']}")
+            if t["cards"]:
+                lines.append("  카드: " + " / ".join(t["cards"]))
+            lines.append(f"부모: {t['a']}")
+        lines.append("AI: (충분해서 마무리)" + (f" — {e['note']}" if e.get("note") else ""))
+        out.append("\n".join(lines))
+    return "\n\n".join(out)
+
+
 def interview_step(state: PipelineState) -> dict:
     ctx = state["context"].model_copy(deep=True)
     turns = state.get("interview_turns", [])
@@ -78,7 +114,7 @@ def interview_step(state: PipelineState) -> dict:
 
     r, cost = structured(
         node="interview",
-        model=config.model_light,
+        model=config.model_interview,
         schema=InterviewTurnResult,
         system=prompt(
             "interview",
@@ -90,6 +126,7 @@ def interview_step(state: PipelineState) -> dict:
             clarify_remaining=max(0, config.max_clarify_turns - clarify),
             turns=[t.model_dump() for t in turns] or "(아직 없음)",
             deepen=_DEEPEN if wants_more else "",
+            examples=format_examples(pick_examples(ctx)),
         ),
         user="다음 행동을 결정하세요.",
         reasoning="none",   # 답마다 기다리는 시간. low와 질문 품질을 실제 인터뷰 42차례로 비교해 고름 (#82)
