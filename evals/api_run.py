@@ -461,7 +461,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert all(path == f"stories/12/runs/1/images/page-{n:02d}.png" for n, path in page_paths(v2).items() if n != 3)
     assert v2["character_sheets"] == v1["character_sheets"] and v2["cost"]["image_count"] == 1, v2["cost"]
     assert v2["cover_path"] == v1["cover_path"]   # 일부 쪽만 그림만 다시: 표지는 그대로
-    assert v2["front_cover_path"] == v1["front_cover_path"] and v2["back_cover_path"] == v1["back_cover_path"]   # 마지막 쪽이 아니라 앞·뒤표지도
+    assert v2["front_cover_path"] == v1["front_cover_path"] and v2["back_cover_path"] == v1["back_cover_path"]   # 일부 쪽만 그림만 다시: 앞·뒤표지도 그대로
 
     # v1로 되돌려 글 다시 → v3(runs/3)는 v1에서 갈라진다. v2 체크포인트도 그대로 남는다
     # mock 작가는 1쪽만 고쳐 그 쪽 장면이 바뀐다 → 1쪽만 runs/3에 새로 그리고 나머지 쪽·시트는 v1 key

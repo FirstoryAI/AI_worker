@@ -223,13 +223,17 @@ def front_cover_prompt(story: StoryText, with_square: bool, scene: Optional[str]
     return "\n".join(lines)
 
 
-def back_cover_prompt(story: StoryText, scene: Optional[str] = None) -> str:
-    """뒤표지 (쪽과 같은 가로 그림, 글자 없음). 마지막 쪽 장면(scene, 순화했으면 그 문장)을 바탕으로 이야기를 마무리한다 (#88)."""
-    lines = [f"Back cover of a children's picture book. {len(story.characters)} reference image(s) are attached, one per character, in this order:",
-             *_reference_lines(story),
-             "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add other characters.",
-             f"Last scene of the story (for mood): {scene if scene is not None else story.pages[-1].image_prompt if story.pages else ''}",
-             "A calm closing illustration that wraps up the story, with gentle space around the characters.",
+def back_cover_prompt(story: StoryText) -> str:
+    """뒤표지 (쪽과 같은 가로 그림, 글자 없음). 실제 그림책 뒤표지처럼 빈 바탕에 주인공 혼자 작게 그린 마무리 한 컷.
+    마지막 쪽 장면을 다시 그리지 않는다 (10쪽과 겹친다). 참고 그림은 주인공 시트 한 장 (#88)."""
+    hero = story.protagonist()
+    lines = [f"Back cover of a children's picture book. 1 reference image is attached:",
+             f"  Reference 1 = {hero.name} ({hero.role}): {hero.visual_description}",
+             "Draw the character EXACTLY as in the reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add any other character.",
+             "A small spot illustration: only this character, alone, in a happy relaxed pose saying goodbye (a small wave or a gentle smile), "
+             "drawn small in the center and taking up about one third of the image height.",
+             "Plain soft paper background in a light color that matches the style, with lots of empty space around the character. "
+             "No scene, no room, no furniture, no landscape; at most a tiny shadow or a few small decorative marks near the feet.",
              f"Style: {story.style_guide}",
              "No text, no title, no letters, no borders."]
     return "\n".join(lines)
@@ -471,7 +475,6 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
 
     sheet_refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in story.characters]
     setting = story.pages[0].image_prompt if story.pages else ""
-    last_scene = story.pages[-1].image_prompt if story.pages else ""
 
     def draw_cover(node: str, name: str, make_prompt: Callable[[str], str], scene: str,
                    refs: list[tuple[str, bytes]], size: str) -> tuple[Optional[str], CostEntry]:
@@ -502,14 +505,14 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         return draw_cover("illustrate:front_cover", "front-cover", lambda scene: front_cover_prompt(story, square is not None, scene),
                           setting, refs, config.image_size)
 
-    def back_cover():
-        return draw_cover("illustrate:back_cover", "back-cover",
-                          lambda scene: back_cover_prompt(story, scene), last_scene, sheet_refs, config.image_size)
+    def back_cover():   # 주인공 혼자 작게 (참고 그림은 주인공 시트만)
+        hero = story.protagonist().name
+        return draw_cover("illustrate:back_cover", "back-cover", lambda _: back_cover_prompt(story), "",
+                          [(f"{_safe(hero)}.png", ref_bytes[hero])], config.image_size)
 
     redraw_cover = only_pages is None or not ill.cover or ill.cover_title != story.title
     redraw_front = redraw_cover or not ill.front_cover
-    last_order = story.pages[-1].order if story.pages else None
-    redraw_back = only_pages is None or last_order in only_pages or not ill.back_cover
+    redraw_back = only_pages is None or not ill.back_cover   # 주인공 혼자 그린 그림이라 쪽과 상관없다 (#90)
     with ThreadPoolExecutor(max_workers=max(1, config.image_concurrency)) as ex:
         cover_job = ex.submit(cover) if redraw_cover else None
         back_job = ex.submit(back_cover) if redraw_back else None
