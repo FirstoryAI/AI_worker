@@ -201,8 +201,9 @@ def _reference_lines(story: StoryText, first: int = 1) -> list[str]:
     return [f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}" for i, c in enumerate(story.characters, first)]
 
 
-def front_cover_prompt(story: StoryText, with_square: bool) -> str:
-    """앞표지 (쪽과 같은 가로 그림, 제목 포함). with_square면 첫 참고 그림이 같은 책의 정사각형 표지다 (#88)."""
+def front_cover_prompt(story: StoryText, with_square: bool, scene: Optional[str] = None) -> str:
+    """앞표지 (쪽과 같은 가로 그림, 제목 포함). with_square면 첫 참고 그림이 같은 책의 정사각형 표지다 (#88).
+    scene은 정사각형이 없을 때 쓰는 장면(정책에 막혀 순화했으면 그 문장)."""
     n = len(story.characters) + (1 if with_square else 0)
     lines = [f"Wide front cover of a children's picture book. {n} reference image(s) are attached, in this order:"]
     if with_square:
@@ -213,7 +214,7 @@ def front_cover_prompt(story: StoryText, with_square: bool) -> str:
     else:
         lines += [*_reference_lines(story),
                   "The protagonist is the clear focus, warm and inviting, in a simple setting that hints at the story.",
-                  f"Story setting (for mood only): {story.pages[0].image_prompt if story.pages else ''}"]
+                  f"Story setting (for mood only): {scene if scene is not None else story.pages[0].image_prompt if story.pages else ''}"]
     lines += [
         "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add other characters.",
         f"Style: {story.style_guide}",
@@ -498,7 +499,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             except Exception as e:  # noqa: BLE001
                 log.warning("앞표지: 정사각형 표지를 읽지 못함: %s", type(e).__name__)
         refs = ([("square-cover.png", square)] if square else []) + sheet_refs
-        return draw_cover("illustrate:front_cover", "front-cover", lambda _: front_cover_prompt(story, square is not None),
+        return draw_cover("illustrate:front_cover", "front-cover", lambda scene: front_cover_prompt(story, square is not None, scene),
                           setting, refs, config.image_size)
 
     def back_cover():

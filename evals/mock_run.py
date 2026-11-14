@@ -316,6 +316,28 @@ assert p2.status == "failed" and "safety system" in p2.error                    
 assert sum(c.node == "illustrate:soften" for c in blocked["cost"]) == 2
 assert blocked["illustrations"].cover                                                      # 다른 그림은 그대로
 il.set_image_override(mock.tiny_png)
+
+# 앞표지가 정책에 막히면 순화한 장면으로 다시 그린다 (정사각형이 없어 장면 줄을 쓰는 경우, #88 리뷰)
+front_prompts: list[str] = []
+
+
+def front_policy(prompt, refs):
+    if prompt.startswith("Front cover"):
+        raise RuntimeError("정사각형 실패 흉내")
+    if prompt.startswith("Wide front cover"):
+        front_prompts.append(prompt)
+        if "scene-x" in prompt and "gentle" not in prompt:
+            raise il.PolicyBlocked("safety system 흉내")
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(front_policy)
+st3 = st.model_copy(update={"pages": [StoryPage(order=1, text="t", characters_in_scene=["포포"], image_prompt="scene-x"),
+                                      StoryPage(order=2, text="t", characters_in_scene=["포포"], image_prompt="p")]})
+fp = il.illustrate({"story": st3, "output_prefix": "stories/c/runs/12/"})["illustrations"]
+assert fp.front_cover == "stories/c/runs/12/images/front-cover.png", front_prompts
+assert any("gentle scene-x" in x for x in front_prompts), front_prompts
+il.set_image_override(mock.tiny_png)
 print("policy retry ok")
 
 # ── 시트·쪽·표지는 받은 형식대로 key 확장자를 정한다 (#32, #80) ──
