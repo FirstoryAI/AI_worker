@@ -121,6 +121,7 @@ assert not storage.exists(f"{base}/2/images/page-01.png") and not any(
 assert storage.exists(f"{base}/1/images/page-03.png")   # 이전 실행 파일은 남는다
 book = storage.local_path(f"{base}/2/book.html").read_text(encoding="utf-8")
 assert 'src="../1/images/page-01.png"' in book and 'src="images/page-03.png"' in book
+assert 'class="slide page front-cover"><img src="../1/images/front-cover.png"' in book and 'class="slide page back-cover"' in book   # 앞·뒤표지 (#88)
 
 # 글 다시 → mock 작가가 1쪽만 고쳐 그 쪽 장면이 바뀐다. 1쪽 그림만 runs/3에 새로, 나머지 쪽과 시트는 v2의 key 그대로
 r = graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "더 짧게",

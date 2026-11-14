@@ -409,6 +409,8 @@ def result(thread_id: str) -> dict:
         "title": story.title,
         "design": v["story_design"].model_dump(mode="json") if v.get("story_design") else None,
         "cover_path": ill.cover,   # 제목이 들어간 정사각형 표지. 못 그렸으면 null
+        "front_cover_path": ill.front_cover,   # 앞표지 (쪽과 같은 크기, 제목 포함). 못 그렸으면 null (#88)
+        "back_cover_path": ill.back_cover,     # 뒤표지 (쪽과 같은 크기, 글자 없음). 못 그렸으면 null
         "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
                              for name, key in ill.character_sheets.items()],
         "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,

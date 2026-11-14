@@ -47,6 +47,8 @@ def build_html(state: PipelineState) -> str:
 
     img = {p.order: src(p.path) for p in (ill.pages if ill else []) if p.status == "completed" and p.path}
     cover = src(ill.cover) if ill and ill.cover else None
+    front = src(ill.front_cover) if ill and ill.front_cover else None   # 앞·뒤표지는 쪽과 같은 크기 (#88)
+    back = src(ill.back_cover) if ill and ill.back_cover else None
     sheet = src(ill.character_sheet_path) if ill and ill.character_sheet_path else None
     prompts_after = {}
     for q in (guide.prompts if guide else []):
@@ -57,6 +59,9 @@ def build_html(state: PipelineState) -> str:
       {f'<img class="square" src="{_e(cover)}" alt="">' if cover else f'<img src="{_e(sheet)}" alt="">' if sheet else '<div class="ph"></div>'}
       <h1>{_e(story.title)}</h1><p class="hint">→ 방향키 또는 클릭</p>
     </section>"""]
+    if front:
+        slides.append(f"""
+    <section class="slide page front-cover"><img src="{_e(front)}" alt=""></section>""")
     for p in story.pages:
         slides.append(f"""
     <section class="slide page">
@@ -69,6 +74,10 @@ def build_html(state: PipelineState) -> str:
       <div class="bubble"><small>{_e(q.purpose)}</small><p>{_e(q.text)}</p></div>
       <p class="skip">{_e(q.parent_hint or '아이가 말하기 싫어하면 그냥 넘어가도 괜찮아요')}</p>
     </section>""")
+
+    if back:
+        slides.append(f"""
+    <section class="slide page back-cover"><img src="{_e(back)}" alt=""></section>""")
 
     g = guide
     panel = ""
