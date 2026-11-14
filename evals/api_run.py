@@ -334,7 +334,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
     assert set(res["guide"]) == {"synopsis", "prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3
     assert res["cover_path"] == f"{prefix}images/cover.png" and storage.exists(res["cover_path"])
-    assert res["cost"]["image_count"] == config.page_count + 3 and res["cost"]["input_tokens"] == 0, res["cost"]   # 쪽 + 시트 2 + 표지
+    assert res["cost"]["image_count"] == config.page_count + 5 and res["cost"]["input_tokens"] == 0, res["cost"]   # 쪽 + 시트 2 + 표지 3 (정사각형·앞·뒤)
     assert res["safety"] == {"level": "OK", "category": None, "reason": None}
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     err(c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")

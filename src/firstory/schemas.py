@@ -357,6 +357,8 @@ class Illustrations(BaseModel):
     pages: list[PageImage] = []
     cover: Optional[str] = None             # 표지 key (제목이 들어간 정사각형 그림). 못 그렸으면 None
     cover_title: Optional[str] = None       # 그 표지에 쓴 제목. 제목이 그대로면 다시 그리지 않는다
+    front_cover: Optional[str] = None       # 앞표지 key (쪽과 같은 크기, 제목 포함, 정사각형 표지를 넓힌 그림). 못 그렸으면 None
+    back_cover: Optional[str] = None        # 뒤표지 key (쪽과 같은 크기, 글자 없음). 못 그렸으면 None
 
     @property
     def character_sheet_path(self) -> Optional[str]:  # 하위 호환 (주인공)
