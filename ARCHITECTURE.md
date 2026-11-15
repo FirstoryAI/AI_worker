@@ -26,7 +26,7 @@ FIRSTORY 플로우는 직선이 아니다.
 | 플로우 요소 | 기획 근거 | LangGraph 대응 |
 |---|---|---|
 | 인터뷰: 충분하면 넘어가고, 아니면 더 묻기 | 사전조사 2-3 "필요한 질문만 동적으로" | 조건부 엣지 + 루프 |
-| 이미지 생성과 독서 가이드를 동시에 | 🔒 백엔드 사전조사 ④-1 | 병렬 브랜치 (fan-out / fan-in) |
+| 본문 위기 신호와 (독서 가이드 → 이미지)를 동시에. 가이드 질문이 쪽 글 맨 밑에 들어가 가이드가 먼저 (#100) | 🔒 백엔드 사전조사 ④-1 | 병렬 브랜치 (fan-out / fan-in) |
 | 부모 검토: 수정 / 재생성 / 완료 | 기획안 10 | `interrupt()` — human-in-the-loop |
 | 생성 시점과 독서 시점 분리 | 기획안 14, 회의록 6 | checkpointer — 상태 저장 후 나중에 재개 |
 | 같은 Context, 역할 프롬프트만 바꿔 호출 | 🔒 백엔드 사전조사 ③-1 | 노드 = 역할, Context는 state로 공유 |
@@ -55,12 +55,13 @@ FIRSTORY 플로우는 직선이 아니다.
                write_story   ◀──────────────────────── regenerate: text (+피드백)
              (전체 텍스트 + characterSheet + imagePrompt)
                       │
-         ┌────────────┴────────────┐
-         ▼                         ▼
-  reading_guide (B)           illustrate              illustrate_only ◀── regenerate: images
-  텍스트만, 질문 2~3개     sheet 1장 → 페이지 N장 병렬         │
-         │                         │                        │
-         └────────────┬────────────┘                        │
+                      ▼
+             reading_guide (B)      텍스트만, 질문 2~3개 (질문은 그 쪽 글 맨 밑 문단, #100)
+                      │
+                      ▼
+                 illustrate         sheet 1장 → 페이지 N장 병렬   illustrate_only ◀── regenerate: images
+                      │                                     │
+                      │  (safety_output은 다듬기 뒤 나란히)     │
                       ▼                                     │
                    render  ◀────────────────────────────────┘
                       │
@@ -84,7 +85,7 @@ FIRSTORY 플로우는 직선이 아니다.
 | `design_story` | 💡 작가(설계) | main | Context + summary → 간접화 설정 (주인공·세계·상황 재구성, 질문 씨앗) | 기획안 9 |
 | `write_story` | **동화 생성기** | main | Context + summary (+설계, +피드백) → 전체 텍스트 + `characterSheet` + 페이지별 `imagePrompt` | 🔒 ④-1 |
 | `parent_review` | – | – | `interrupt()`. 텍스트+이미지+가이드 **완성 후** 부모가 확인. 완료 / 재생성(scope) | 기획안 10, STEP 5 |
-| `reading_guide` | **Role B · 독서 코치** | main | Context + summary + 페이지 텍스트 → `ReadingGuide` (synopsis·prompts·before·after). **이미지 안 봄, illustrate와 병렬** | 🔒 ③ |
+| `reading_guide` | **Role B · 독서 코치** | main | Context + summary + 페이지 텍스트 → `ReadingGuide` (synopsis·prompts·before·after). **이미지 안 봄, illustrate 앞 (질문을 쪽 글 맨 밑에, #100)** | 🔒 ③ |
 | `illustrate` | – | image | characterSheet → 시트 1장 → 페이지 N장 + 표지 1장(제목 들어간 정사각형, `COVER_SIZE`) 병렬, 페이지 단위 실패 처리. 표지는 전부 그릴 때와 제목이 바뀌었을 때만 다시 | 🔒 ④ |
 | `render` | – | – | 단계별 JSON + book.html. 재생성 후에도 다시 돈다 | 🔒 ⑤ |
 
@@ -245,7 +246,7 @@ LangGraph `interrupt()`를 쓴다. 그래프가 멈추고 상태가 checkpointer
 | OpenAI gpt-image-2 | `images.edit` + 참조 이미지, `input_fidelity=high` | 지금 키 있음. 먼저 이걸로 |
 | Gemini 3.1 Flash Image | 참조 이미지 최대 4장 | 비교 테스트 대상 |
 
-`reading_guide`는 이미지를 안 보니까 **여기와 동시에 돈다** (④-1). 텍스트+가이드가 나오는 시점에 "읽기 시작 가능", 이미지는 도착하는 대로 — 이 UX는 디자인 결정 사항.
+`reading_guide`는 이미지를 안 보지만 **그림 앞에 돈다**: 질문 문장이 그 쪽 글(`text_blocks`) 맨 밑 문단이라 그림의 빈 곳 크기를 정하기 전에 알아야 한다 (#100, 한 편 약 +10초). 텍스트+가이드가 나오는 시점에 "읽기 시작 가능", 이미지는 도착하는 대로 — 이 UX는 디자인 결정 사항.
 
 ---
 
@@ -346,7 +347,7 @@ GET  /stories/:id            → StoryResult
 - 인터뷰: 4요소 종료 조건, 추출+질문 동시, missingFields 서버 계산, "모르겠다" 정리 질문 2회, 최대 15턴(백엔드 상한과 같게), user_skip, summary
 - A/B는 같은 Context 공유 + 역할 프롬프트 분리
 - 질문은 B가 생성, `guide.prompts[]` + `afterPage`, 기본 2 최대 3, `undecided`면 열린 질문만
-- 텍스트 전체 → 이미지 병렬 + 가이드 병렬, `characterSheet` 공통 주입
+- 텍스트 전체 → 가이드 → 이미지 병렬(위기 신호와 나란히), `characterSheet` 공통 주입
 - 상태 5개 + 이미지 진행률, 비동기 작업 구조
 
 ### 지금 정할 것

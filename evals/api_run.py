@@ -325,12 +325,17 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert [p["page_no"] for p in res["pages"]] == list(range(1, config.page_count + 1))
     assert all(p["image_status"] == "done" and p["image_path"] == f"{prefix}images/page-{p['page_no']:02d}.png"
                and storage.exists(p["image_path"]) for p in res["pages"]), res["pages"][0]
-    # 글 덩어리: {paragraphs, x, y, color}. 줄을 이으면 원문. mock 자리(y 7)는 위쪽이라 text_position도 모두 top (작가 값 아님)
+    # 글 덩어리: {paragraphs, x, y, color}. 줄을 이으면 원문 + 그 쪽 가이드 질문(맨 밑 문단, #100). mock 자리(y 7)는 위쪽이라 text_position도 모두 top (작가 값 아님)
+    asks = {}
+    for q in res["guide"]["prompts"]:
+        asks[q["after_page"]] = asks.get(q["after_page"], "") + q["text"]
     for p in res["pages"]:
         assert 1 <= len(p["text_blocks"]) <= 2 and all(set(b) == {"paragraphs", "x", "y", "color"} for b in p["text_blocks"]), p
         assert all(isinstance(b["x"], float) and isinstance(b["y"], float) and b["color"] in ("dark", "light") for b in p["text_blocks"])
-        assert re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para)) == re.sub(r"\s", "", p["text"])
-    assert [p["text_position"] for p in res["pages"]] == ["top"] * config.page_count
+        assert re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para)) == re.sub(r"\s", "", p["text"] + asks.get(p["page_no"], ""))
+        if p["page_no"] in asks:
+            assert re.sub(r"\s", "", "".join(p["text_blocks"][-1]["paragraphs"][-1])) == re.sub(r"\s", "", asks[p["page_no"]]), p
+    assert asks and [p["text_position"] for p in res["pages"]] == ["top"] * config.page_count
     # 의성어 (#92): 별표 말이 있는 쪽(mock 다듬기는 홀수 쪽)만 {text, x, y, color}, owner는 내리지 않는다
     for p in res["pages"]:
         sw = p["sound_word"]
