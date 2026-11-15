@@ -1091,6 +1091,25 @@ chunk_sys.clear()
 again = il.illustrate_only({"story": st_q, "guide": gq, "illustrations": ill_q, "regenerate_pages": [2],
                             "output_prefix": "stories/q/runs/4/"})["illustrations"]
 assert again.pages[1].text_blocks[-1].paragraphs[-1] == qs[2] and not chunk_sys, (again.pages[1].text_blocks, chunk_sys)
+# 리뷰 #2: 다시 만들 때 질문이 새로 붙은 쪽은 그 그림에 질문 자리가 없을 수 있다 → 자리를 못 찾으면 다시 그리기 허용 (실행당 상한 그대로)
+llm.set_structured_override(mock.fake_structured)
+il.set_image_override(lambda p, refs: striped_png() if refs and "Scene" in p else mock.tiny_png(p, refs))
+busy_prev = il.illustrate({"story": st_q, "output_prefix": "stories/q/runs/5/"})["illustrations"]   # 질문 없이 그린 그림
+moved_q = il.illustrate({"story": st_q, "guide": gq, "illustrations": busy_prev, "redraw_pages": [],
+                         "output_prefix": "stories/q/runs/6/"})
+mq = {pi.order: pi for pi in moved_q["illustrations"].pages}
+assert mq[2].path.startswith("stories/q/runs/6/"), mq[2].path                                 # 질문이 새로 붙은 2쪽은 다시 그림
+assert mq[2].text_blocks[-1].paragraphs[-1] == qs[2], mq[2].text_blocks
+mq_nodes = [c.node for c in moved_q["cost"]]
+assert "illustrate:page2" in mq_nodes and not any(n in mq_nodes for n in ("illustrate:page1", "illustrate:page3")), mq_nodes
+assert mq[1].path == busy_prev.pages[0].path and mq[3].path == busy_prev.pages[2].path        # 나머지 쪽은 그대로
+# 질문이 그대로인 쪽은 글만 바뀌어도 다시 그리지 않는다 (지금처럼 자리만)
+body_only = st_q.model_copy(update={"pages": [pg.model_copy(update={"text": pg.text + " 넷째 줄이에요."}) if pg.order == 2 else pg
+                                              for pg in st_q.pages]})
+same_q = il.illustrate({"story": body_only, "guide": gq, "illustrations": moved_q["illustrations"], "redraw_pages": [],
+                        "output_prefix": "stories/q/runs/7/"})
+assert same_q["illustrations"].pages[1].path == mq[2].path and not any(c.node.startswith("illustrate:page") for c in same_q["cost"]), same_q["cost"]
+il.set_image_override(mock.tiny_png)
 llm.set_structured_override(recording_structured)
 print("question in page ok")
 

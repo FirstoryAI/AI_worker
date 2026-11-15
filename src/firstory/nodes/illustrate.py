@@ -480,6 +480,25 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             redraws += 1
             return True
 
+    def make_redraw(p, chars, refs, state: dict):
+        """자리를 못 찾은 쪽을 덩어리 크기·자리(where)에 맞춰 다시 그린다. 실행당 MAX_REDRAWS쪽까지. state(key·토큰·장수)를 고친다."""
+        def redraw(bl: list[Block], where: list[str]) -> Optional[bytes]:
+            if not take_redraw():
+                return None
+            try:
+                again, tin2, tout2 = _draw(
+                    lambda scene: _edit(page_prompt(story, chars, scene, [block_size(b) for b in bl], request, where), refs),
+                    p.image_prompt, f"{img_prefix} page {p.order} redraw", costs)
+            except Exception as e:  # noqa: BLE001 — 못 그리면 처음 그림 그대로 기본 자리로
+                log.warning("쪽 %d: 자리를 위한 다시 그리기 실패: %s", p.order, type(e).__name__)
+                return None
+            state["key"] = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(again)}"), again)
+            state["tin"] += tin2
+            state["tout"] += tout2
+            state["images"] += 1
+            return again
+        return redraw
+
     def work(p):
         t0 = time.time()
         try:
@@ -495,42 +514,35 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
                                    p.image_prompt, f"{img_prefix} page {p.order}", costs)
             state = {"key": storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img),
                      "tin": tin, "tout": tout, "images": 1}
-
-            def redraw(bl: list[Block], where: list[str]) -> Optional[bytes]:
-                if not take_redraw():
-                    return None
-                try:
-                    again, tin2, tout2 = _draw(
-                        lambda scene: _edit(page_prompt(story, chars, scene, [block_size(b) for b in bl], request, where), refs),
-                        p.image_prompt, f"{img_prefix} page {p.order} redraw", costs)
-                except Exception as e:  # noqa: BLE001 — 못 그리면 처음 그림 그대로 기본 자리로
-                    log.warning("쪽 %d: 자리를 위한 다시 그리기 실패: %s", p.order, type(e).__name__)
-                    return None
-                state["key"] = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(again)}"), again)
-                state["tin"] += tin2
-                state["tout"] += tout2
-                state["images"] += 1
-                return again
-
-            tbs, sw = _arrange(p.order, img, blocks, costs, redraw, _sfx(p.order, p.text, chars))
+            tbs, sw = _arrange(p.order, img, blocks, costs, make_redraw(p, chars, refs, state), _sfx(p.order, p.text, chars))
             return (PageImage(order=p.order, path=state["key"], status="completed", text_blocks=tbs, sound_word=sw),
                     int((time.time() - t0) * 1000), state["tin"], state["tout"], state["images"])
         except Exception as e:  # noqa: BLE001
             return PageImage(order=p.order, status="failed", error=str(e)[:300]), int((time.time() - t0) * 1000), 0, 0, 0
 
     def relayout(p):
-        """그림은 그대로 두고 (이전 key) 글이 바뀐 쪽의 덩어리와 자리만 다시. 다시 그리지 않는다."""
+        """그림은 그대로 두고 (이전 key) 글이 바뀐 쪽의 덩어리와 자리만 다시. 다시 그리지 않는다.
+        단, 질문이 새로 붙었거나 바뀐 쪽은 그 그림에 질문 자리가 없을 수 있어 자리를 못 찾으면 다시 그린다 (#100, 실행당 상한 그대로)."""
         pi = by_order[p.order]
+        t0 = time.time()
         try:
-            blocks = _chunk(p.order, p.text, costs, questions.get(p.order, []))
+            tail = questions.get(p.order, [])
+            blocks = _chunk(p.order, p.text, costs, tail)
+            old_last = pi.text_blocks[-1].paragraphs[-1] if pi.text_blocks and pi.text_blocks[-1].paragraphs else []
+            new_question = bool(tail) and _squash("".join(old_last)) != _squash("".join(tail))
             try:
                 image = storage.read_bytes(pi.path)
             except Exception as e:  # noqa: BLE001
                 log.warning("쪽 %d: 저장된 그림을 읽지 못함: %s", p.order, type(e).__name__)
                 image = None
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
-            tbs, sw = _arrange(p.order, image, blocks, costs, sfx=_sfx(p.order, p.text, chars))
-            return pi.model_copy(update={"text_blocks": tbs, "sound_word": sw})
+            state = {"key": pi.path, "tin": 0, "tout": 0, "images": 0}
+            redraw = make_redraw(p, chars, [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars], state) if new_question else None
+            tbs, sw = _arrange(p.order, image, blocks, costs, redraw, _sfx(p.order, p.text, chars))
+            if state["images"]:
+                costs.append(CostEntry(node=f"illustrate:page{p.order}", model=config.image_model, input_tokens=state["tin"],
+                                       output_tokens=state["tout"], images=state["images"], ms=int((time.time() - t0) * 1000)))
+            return pi.model_copy(update={"path": state["key"], "text_blocks": tbs, "sound_word": sw})
         except Exception as e:  # noqa: BLE001 — 글 자리 계산이 전체 생성을 막지 않는다. 쪽은 이전 그대로 (글이 여전히 다르면 다음 실행에 다시 한다)
             log.warning("쪽 %d: 글 자리 다시 계산 실패 → 이전 그대로: %s", p.order, type(e).__name__)
             return pi
