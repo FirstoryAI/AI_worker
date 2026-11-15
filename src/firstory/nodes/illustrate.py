@@ -72,7 +72,7 @@ def _gen(prompt_text: str, size: Optional[str] = None) -> tuple[bytes, int, int]
 
 
 def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] = None) -> tuple[bytes, int, int]:
-    """refs: [(이름, 그림 bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2는 참조 이미지 여러 장 지원).
+    """refs: [(이름, 그림 bytes)]. 여러 장이면 리스트로 넘긴다 (gpt-image-2 이후 모델은 참조 이미지 여러 장 지원).
     쪽·표지라 config.image_format으로 받는다 (#32). 저장 key 확장자는 _ext로 실제 바이트를 보고 정한다."""
     if _override:
         return _override(prompt_text, [b for _, b in refs]), 0, 0

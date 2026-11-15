@@ -13,7 +13,7 @@
 
 - **Python + LangGraph** — 플로우를 그래프로 선언. 인터뷰 루프, 사람 입력 대기(interrupt), 병렬 실행, 상태 저장·재개가 기본 제공
 - **LangSmith** — 모든 LLM 호출이 자동 기록됨. "이 동화 왜 이렇게 나왔지?"를 노드별로 추적
-- **OpenAI** — 텍스트 `gpt-5.5` / `gpt-5.4-mini`, 이미지 `gpt-image-2`
+- **OpenAI** — 텍스트 `gpt-5.5` / `gpt-5.4-mini`, 이미지 `gpt-image-2.5-flare`
 - **SQLite** — 그래프 상태 체크포인트 (`FIRSTORY_CHECKPOINT_DB`, 기본 `out/checkpoints.db`). 나중에 Postgres로 교체
 - **Streamlit** — 입력↔출력 확인용 뷰어. 버리는 물건, 진짜 프론트 아님
 
@@ -35,8 +35,8 @@ form_input ─▶ interview(루프) ─▶ ⏸ 확인 ─▶ design_story ─▶
 | `write_story` | 10페이지 텍스트 + 캐릭터 시트(주인공·조연 외형) + 페이지별 이미지 프롬프트. **교훈 선언 금지, 사건은 닫고 의미는 엶, 사람·가족 호칭 금지, 질문은 안 씀** | 5.5 |
 | `polish_story` | 문장만 다듬기. 작가(이야기·구성)와 역할을 나눠 번역투·한 문장에 두 가지·꾸밈말을 아이 말로 고친다. 원문은 `03-draft.json` | 5.5 |
 | `reading_guide` | Role B 독서 코치. 동화 속 질문 2~3개(`after_page`로 위치), 읽기 전 팁, 현실로 잇는 질문. 텍스트만 보므로 이미지와 **병렬** | 5.5 |
-| `illustrate` | 캐릭터 시트 1장씩 생성 → 각 페이지는 그 장면에 나오는 캐릭터 시트만 참조 이미지로 넣어 병렬 생성 (동시 3장). 한 편에 12~13장 | image-2 |
-| `illustrate_only` | 검토에서 "그림만 다시"를 골랐을 때만. 글은 두고 그림만 다시 | image-2 |
+| `illustrate` | 캐릭터 시트 1장씩 생성 → 각 페이지는 그 장면에 나오는 캐릭터 시트만 참조 이미지로 넣어 병렬 생성 (동시 3장). 한 편에 12~13장 | image-2.5-flare |
+| `illustrate_only` | 검토에서 "그림만 다시"를 골랐을 때만. 글은 두고 그림만 다시 | image-2.5-flare |
 | `render` | 단계별 JSON + `book.html` | – |
 | `parent_review` | 멈추고 사람 입력 대기. 완료 / 다시 쓰기(+피드백) / 캐릭터 바꾸기 / 그림만 다시. "다시 쓰기"는 가이드·그림도 다시 실행 | – |
 
