@@ -416,7 +416,7 @@ print("stale ok")
 # ── 의성어 (#92) ──
 from firstory.llm import prompt  # noqa: E402,F401
 from firstory.nodes.layout import (  # noqa: E402
-    SFX_FOLD, SfxAsk, settle_word, short_look, sound_words, word_size,
+    SFX_FOLD, SfxAsk, _closer_to_source, piece_size, place_word, short_look, sound_words,
 )
 from firstory.schemas import CharacterBox, OwnerBox, SoundWord, TextPlacementWithWord, WordSpot  # noqa: E402
 
@@ -425,8 +425,6 @@ assert sound_words("**톡** 치고 ** 냠냠 **") == ["톡", "냠냠"]
 assert sound_words("별표 없음.") == []
 assert short_look("A small white rabbit with long ears. Wears a yellow apron.") == "A small white rabbit with long ears"
 assert len(short_look("x" * 300)) == 120
-ww, wh = word_size("훌쩍")
-assert abs(ww - text_width("훌쩍") * 0.035 / FONT_RATIO) < 1e-6 and abs(wh - W * 0.035 * 1.2) < 1e-6
 
 # place_page: 별표 없는 쪽은 지금 호출 그대로
 calls.clear()
@@ -472,56 +470,65 @@ llm.set_structured_override(fake_with(RuntimeError("boom")))
 assert place_page(img, [blk_a], ask)[:2] == ([], None)
 
 
-def word_box(sw):
-    w, h = word_size(sw.text)
-    cx, cy = sw.x / 100 * W, sw.y / 100 * H
-    return cx - w / 2, cy - h / 2, w, h
-
-
-def word_box_gap_ok(sw, tbs):
-    x, y, w, h = word_box(sw)
-    g = W * GAP
-    for b in tbs:
-        bw, bh = block_size(b.paragraphs)
-        px, py = b.x / 100 * W, b.y / 100 * H
-        if not (x + w + g <= px + 1 or px + bw + g <= x + 1 or y + h + g <= py + 1 or py + bh + g <= y + 1):
-            return False
-    return True
-
-
+# ── 조각 놓기 place_word (#102) ──
 white = Busy(png(Image.new("RGB", (W, H), "white")))
-tb = [TextBlock(paragraphs=blk_a, x=5.0, y=7.0, color="dark")]
-ok = settle_word(white, "훌쩍훌쩍", {"x": 75.0, "y": 40.0, "owner": "미루"}, tb)
-assert ok == SoundWord(text="훌쩍훌쩍", x=75.0, y=40.0, color="dark", owner="미루"), ok   # 조건을 지키면 그대로
-# 덩어리 위에 놓인 말은 밀려나 2% 이상 떨어진다
-on_block = settle_word(white, "훌쩍훌쩍", {"x": 10.0, "y": 9.0, "owner": "미루"}, tb)
-assert on_block is not None and word_box_gap_ok(on_block, tb), on_block
-assert on_block.x == round(on_block.x, 1) and on_block.y == round(on_block.y, 1)
-# 접히는 선 위의 말은 선에서 2% 이상
-on_fold = settle_word(white, "훌쩍훌쩍", {"x": 50.0, "y": 40.0, "owner": "미루"}, [])
-fx, _, fw, _ = word_box(on_fold)
-assert fx + fw <= W * (0.5 - SFX_FOLD / 100) + 1 or fx >= W * (0.5 + SFX_FOLD / 100) - 1, on_fold
-# 가장자리: 그림 밖으로 나간 말은 여백 안으로
-edge = settle_word(white, "훌쩍훌쩍", {"x": 99.0, "y": 99.0, "owner": "미루"}, [])
-ex, ey, ew_, eh_ = word_box(edge)
-assert ex + ew_ <= W * 0.97 + 1 and ey + eh_ <= H * 0.96 + 1, edge
-# 반지름 15% 안이 모두 덩어리면 None
-wall = [TextBlock(paragraphs=[["가" * 30]] * 14, x=5.0, y=7.0, color="dark")]
-assert settle_word(white, "훌쩍훌쩍", {"x": 20.0, "y": 40.0, "owner": "미루"}, wall) is None
-assert settle_word(white, "훌쩍훌쩍", None, tb) is None
-# 주인 칸: 말이 주인 칸에 겹치면 칸 바깥으로 밀려 2% 이상 떨어진다
-on_owner = settle_word(white, "훌쩍훌쩍", {"x": 70.0, "y": 50.0, "owner": "미루", "box": (60.0, 30.0, 80.0, 80.0)}, tb)
-assert on_owner is not None, on_owner
-ox, oy, ow_, oh_ = word_box(on_owner)
-g = W * GAP
-bx0, by0, bx1, by1 = 0.60 * W, 0.30 * H, 0.80 * W, 0.80 * H
-assert ox + ow_ + g <= bx0 + 1 or bx1 + g <= ox + 1 or oy + oh_ + g <= by0 + 1 or by1 + g <= oy + 1, on_owner
-# 주인 칸 바깥이면 그대로
-off_owner = settle_word(white, "훌쩍훌쩍", {"x": 70.0, "y": 20.0, "owner": "미루", "box": (60.0, 30.0, 80.0, 80.0)}, tb)
-assert (off_owner.x, off_owner.y) == (70.0, 20.0), off_owner
-# 어두운 바탕 → light
+tb = [TextBlock(paragraphs=[["가"]], x=5.0, y=7.0, color="dark")]
+face = {"owner": "모아", "kind": "face", "source": (20.0, 35.0, 30.0, 50.0), "chars": [("모아", (15.0, 30.0, 35.0, 90.0))]}
+sw = place_word(white, "데굴데굴", face, tb)
+l, r = sw.pieces
+assert [p.text for p in sw.pieces] == ["데굴", "데굴"] and (l.side, r.side) == ("left", "right"), sw
+assert l.x < 15 and r.x > 35 and l.y == r.y and l.y <= 35, sw          # 캐릭터 칸 바깥, 대칭, 얼굴 위끝 이하
+assert abs((20 - l.x) - (r.x - 30)) < 0.2, sw                          # 근원 기준 거울 대칭
+assert sw.color == "#7B4FD6" and sw.text == "데굴데굴" and sw.owner == "모아"
+assert all(p.x == round(p.x, 1) and p.y == round(p.y, 1) for p in sw.pieces)
+one = place_word(white, "엉엉", face, tb)
+assert [p.side for p in one.pieces] == ["center"] and one.pieces[0].y < 30, one   # 몸 칸 위
+assert [p.text for p in place_word(white, "우당탕탕", face, tb).pieces] == ["우당탕탕"]
+
+
+def test_object_in_front_of_body():
+    car = {"owner": "자동차", "kind": "object", "source": (55.0, 75.0, 62.0, 82.0),
+           "chars": [("초코", (52.0, 35.0, 72.0, 88.0)), ("모아", (15.0, 30.0, 35.0, 90.0))]}
+    got = place_word(white, "데굴데굴", car, tb)
+    # 접히는 선 너머 빈 곳은 다른 캐릭터(모아)에 더 가까워 버리고, 오른쪽은 반지름 밖 → 안 띄운다. 머리 옆으로는 절대 안 간다
+    assert got is None or all(p.y >= 75 - 3 for p in got.pieces), got
+
+
+test_object_in_front_of_body()
+held = {"owner": "자동차", "kind": "object", "source": (70.0, 70.0, 76.0, 76.0), "chars": [("초코", (62.0, 30.0, 80.0, 88.0))]}
+sw = place_word(white, "데굴데굴", held, tb)
+assert sw and all(abs(p.y - 73) < 6 for p in sw.pieces), sw            # 손에 든 물건도 그 높이 양옆
+assert all(p.x < 62 or p.x > 80 for p in sw.pieces), sw                # 든 캐릭터 몸은 가리지 않는다
+car_free = {"owner": "자동차", "kind": "object", "source": (60.0, 75.0, 66.0, 82.0), "chars": [("초코", (75.0, 35.0, 92.0, 88.0))]}
+sw = place_word(white, "데굴데굴", car_free, tb)
+assert sw and abs(sw.pieces[0].y - 78.5) < 3 and abs(sw.pieces[1].y - 78.5) < 3, sw   # 물건 높이 양옆
+
+
+def test_edge_falls_back_to_one_piece():
+    edge = {"owner": "a", "kind": "face", "source": (2.0, 30.0, 10.0, 45.0), "chars": [("a", (1.0, 28.0, 12.0, 90.0))]}
+    got = place_word(white, "데굴데굴", edge, [])
+    assert got is None or [p.side for p in got.pieces] == ["center"], got
+
+
+test_edge_falls_back_to_one_piece()
+
+
+def test_no_characters_still_places():
+    got = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (60.0, 30.0, 70.0, 45.0), "chars": []}, [])
+    assert got and len(got.pieces) == 1, got
+
+
+test_no_characters_still_places()
+# 근원 가까움 (px 칸): 다른 캐릭터 칸이 더 가까우면 False
+assert _closer_to_source((100.0, 100.0), (120.0, 90.0, 140.0, 110.0), [(50.0, 50.0, 95.0, 95.0)]) is False
+assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), [(50.0, 50.0, 80.0, 80.0)]) is True
+assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), []) is True
+assert place_word(white, "엉엉", None, tb) is None
+# 조각은 글 덩어리·접히는 선·여백을 지킨다
+fold = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (47.0, 40.0, 53.0, 50.0), "chars": []}, [])
+assert fold is None or all(abs(p.x - 50) * W / 100 >= piece_size(p.text)[0] / 2 + W * SFX_FOLD / 100 - 1 for p in fold.pieces), fold
 dark = Busy(png(Image.new("RGB", (W, H), (20, 20, 30))))
-assert settle_word(dark, "훌쩍", {"x": 75.0, "y": 40.0, "owner": "미루"}, []).color == "light"
+assert place_word(dark, "엉엉", face, []).color == "#F0661E"
 # 눈금: grid=True면 의성어 쪽 그림에 10% 눈금을 그려 보내고 지시에 알린다. 별표 없는 쪽은 그림 그대로
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=good)))

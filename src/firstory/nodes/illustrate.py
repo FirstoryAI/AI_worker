@@ -22,7 +22,7 @@ from PIL import Image
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
 from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, build_blocks, calmest_pick, chunk_page, merge,
-                     place_page, settle, settle_word, short_look, sound_words, split_lines, wrap_line)
+                     place_page, place_word, settle, short_look, sound_words, split_lines, wrap_line)
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -352,7 +352,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     → 그래도 안 되면 마지막 그림에서 가장 조용한 곳(calmest_pick) → 그림을 못 읽으면 왼쪽 면 위 기본 자리.
     2덩어리는 양쪽 면(1번 왼쪽·2번 오른쪽)에 빈 곳이 있으면 나누고, 한 군데뿐이면 합친다. 다시 그릴 때는 왼쪽 위·오른쪽 위에 빈 곳 (#95).
     늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도).
-    sfx가 있으면 마지막 그림에 대한 마지막 답의 의성어 자리를 글 자리가 정해진 뒤 settle_word로 검사해 같이 돌려준다 (#92)."""
+    sfx가 있으면 마지막 그림에 대한 마지막 답의 의성어 자리를 글 자리가 정해진 뒤 place_word로 조각·색을 정해 같이 돌려준다 (#92, #102)."""
     got: Optional[list[dict]] = None
     last_word: Optional[tuple[Busy, Optional[dict]]] = None   # (그 답을 받은 그림, 의성어 답)
     cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
@@ -409,7 +409,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     word: Optional[SoundWord] = None
     if sfx is not None and cur is not None and last_word is not None and last_word[0] is cur:
         try:
-            word = settle_word(cur, sfx.word, last_word[1], tbs)
+            word = place_word(cur, sfx.word, last_word[1], tbs)
         except Exception as e:  # noqa: BLE001 — 의성어가 글 자리·생성을 막지 않는다
             log.warning("쪽 %d: 의성어 자리 계산 실패: %s", order, type(e).__name__)
     if sfx is not None and word is None:   # 쪽 번호만 (설계: null이면 경고 로그)

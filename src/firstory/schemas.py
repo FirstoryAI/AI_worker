@@ -371,12 +371,19 @@ class TextPlacementWithWord(TextPlacement):
     sound_word: WordSpot
 
 
-class SoundWord(BaseModel):
-    """그림 위 소리 주인 옆에 띄우는 의성어·의태어. x, y는 말 가운데(그림 폭·높이 대비 %)."""
+class SoundPiece(BaseModel):
+    """의성어 조각 하나. x, y는 조각 가운데(그림 폭·높이 대비 %) (#102)"""
     text: str
     x: float
     y: float
-    color: Literal["dark", "light"]
+    side: Literal["left", "right", "center"]
+
+
+class SoundWord(BaseModel):
+    """그림 위 소리 근원 옆에 띄우는 의성어·의태어. 조각 1~2개, 색 하나(#RRGGBB) (#102)"""
+    text: str
+    color: str
+    pieces: list[SoundPiece]
     owner: Optional[str] = None   # 디버깅용. 아이 이름일 수 있어 로그·API에는 내지 않는다
 
 
