@@ -331,6 +331,15 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
         assert all(isinstance(b["x"], float) and isinstance(b["y"], float) and b["color"] in ("dark", "light") for b in p["text_blocks"])
         assert re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para)) == re.sub(r"\s", "", p["text"])
     assert [p["text_position"] for p in res["pages"]] == ["top"] * config.page_count
+    # 의성어 (#92): 별표 말이 있는 쪽(mock 다듬기는 홀수 쪽)만 {text, x, y, color}, owner는 내리지 않는다
+    for p in res["pages"]:
+        sw = p["sound_word"]
+        if "**" in p["text"]:
+            assert set(sw) == {"text", "x", "y", "color"} and sw["text"] == "깡충" and 0 <= sw["x"] <= 100 and 0 <= sw["y"] <= 100, p
+            assert sw["color"] in ("dark", "light")
+        else:
+            assert sw is None, p
+    assert any(p["sound_word"] for p in res["pages"])
     assert {(s["role"], s["name"]) for s in res["character_sheets"]} == {("protagonist", "포포"), ("supporting", "엄마곰")}
     assert all(s["path"].startswith(f"{prefix}images/sheet-") and storage.exists(s["path"]) for s in res["character_sheets"])
     assert set(res["guide"]) == {"synopsis", "prompts", "before_reading", "after_reading"} and res["guide"]["prompts"][0]["after_page"] == 3

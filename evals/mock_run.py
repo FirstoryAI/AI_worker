@@ -717,9 +717,9 @@ places: list[int] = []   # place_page가 받은 덩어리 수
 orig_place = layout.place_page
 
 
-def spy_place(image, blocks):
+def spy_place(image, blocks, *a, **kw):
     places.append(len(blocks))
-    return orig_place(image, blocks)
+    return orig_place(image, blocks, *a, **kw)
 
 
 il.place_page = spy_place
@@ -901,6 +901,102 @@ assert "****" in "".join(line for b in em.text_blocks for para in b.paragraphs f
 assert not il._stale(emph_story.pages[0], em)
 assert il._stale(emph_story.pages[0].model_copy(update={"text": emph_text + " 쿵"}), em)
 print("emphasis wrap not stale ok")
+
+# 8-13) 의성어 자리 (#92): 별표 말이 있는 쪽만 의성어 스키마로 묻고 sound_word를 싣는다
+from firstory.schemas import TextPlacement, TextPlacementWithWord  # noqa: E402
+
+place_schemas: list[tuple[type, bool]] = []
+
+
+def rec_place(**kw):
+    if kw["node"] == "layout:place":
+        place_schemas.append((kw["schema"], "깡충" in kw["system"]))
+    return mock.fake_structured(**kw)
+
+
+llm.set_structured_override(rec_place)
+il.set_image_override(mock.tiny_png)
+sfx_story = st5.model_copy(update={"pages": [pg.model_copy(update={"text": pg.text + "\n포포가 **깡충** 뛰었어요."}) if pg.order % 2 else pg
+                                             for pg in st5.pages]})
+sw_ill = il.illustrate({"story": sfx_story, "output_prefix": "stories/t/runs/20/"})["illustrations"]
+for pi in sw_ill.pages:
+    if pi.order % 2:
+        assert pi.sound_word and pi.sound_word.text == "깡충" and 0 <= pi.sound_word.x <= 100 and 0 <= pi.sound_word.y <= 100, pi
+        assert pi.sound_word.color in ("dark", "light")
+    else:
+        assert pi.sound_word is None, pi
+assert sorted((sc.__name__, k) for sc, k in place_schemas) == sorted(
+    [("TextPlacementWithWord", True)] * 3 + [("TextPlacement", False)] * 2), place_schemas
+
+# 아무것도 다시 하지 않은 쪽은 이전 sound_word 그대로 (그림만 다시 2쪽)
+kept_sw = il.illustrate({"story": sfx_story, "output_prefix": "stories/t/runs/21/", "illustrations": sw_ill, "redraw_pages": {2}})["illustrations"]
+assert {p.order: p.sound_word for p in kept_sw.pages if p.order != 2} == {p.order: p.sound_word for p in sw_ill.pages if p.order != 2}
+
+# 글만 바뀌어 그림은 그대로인 쪽(relayout)도 새 글의 별표 말로 자리를 다시 찾는다
+thud = sfx_story.model_copy(update={"pages": [pg.model_copy(update={"text": "2쪽 첫 줄이에요.\n**쿵** 소리가 났어요."}) if pg.order == 2 else pg
+                                          for pg in sfx_story.pages]})
+re_sw = il.illustrate({"story": thud, "output_prefix": "stories/t/runs/22/", "illustrations": sw_ill, "redraw_pages": set()})["illustrations"]
+p2_old, p2_new = (next(p for p in x.pages if p.order == 2) for x in (sw_ill, re_sw))
+assert p2_new.path == p2_old.path and p2_new.sound_word and p2_new.sound_word.text == "쿵", p2_new
+
+# 별표 말이 둘이면 첫 번째만, 로그에는 쪽 번호와 개수만
+two = sfx_story.model_copy(update={"pages": [sfx_story.pages[0].model_copy(update={"text": "**톡** 하고 **쿵** 했어요."})]})
+logged.clear()
+logging.getLogger("firstory.illustrate").addHandler(h)
+tw = il.illustrate({"story": two, "output_prefix": "stories/t/runs/23/"})["illustrations"].pages[0]
+logging.getLogger("firstory.illustrate").removeHandler(h)
+assert tw.sound_word.text == "톡", tw
+assert any("의성어 2개" in x for x in logged) and not any("톡" in x or "쿵" in x for x in logged), logged
+
+# 글 자리 때문에 다시 그렸는데 새 그림으로 답을 못 받으면 처음 그림의 말 자리를 쓰지 않는다 (None)
+answers = iter([
+    TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
+                          sound_word=mock.WordSpot(owner="포포", owner_box=mock.OwnerBox(x0=10, y0=10, x1=20, y1=20), x=75, y=40)),
+])
+
+
+def first_then_boom(**kw):
+    if kw["node"] == "layout:place":
+        try:
+            return next(answers)
+        except StopIteration:
+            raise RuntimeError("boom")
+    return mock.fake_structured(**kw)
+
+
+llm.set_structured_override(first_then_boom)
+ask = layout.SfxAsk(word="깡충", text="포포가 **깡충** 뛰었어요.", cast=[("포포", "rabbit")])
+tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png(), ask)
+assert sw_ is None, sw_
+# 다시 그린 그림으로 답을 받으면 그 답의 자리를 쓴다
+answers = iter([
+    TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
+                          sound_word=mock.WordSpot(owner="포포", owner_box=mock.OwnerBox(x0=10, y0=10, x1=20, y1=20), x=75, y=40)),
+    TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
+                          sound_word=mock.WordSpot(owner="포포", owner_box=mock.OwnerBox(x0=10, y0=10, x1=20, y1=20), x=30, y=60)),
+])
+tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png((0, 0, 100, 100)), ask)
+assert sw_ is not None and (sw_.x, sw_.y) == (30.0, 60.0), sw_
+# 의성어 준비가 터져도 그 쪽 그림은 완성, 의성어만 None (리뷰 #3)
+orig_short = il.short_look
+il.short_look = lambda d: (_ for _ in ()).throw(RuntimeError("boom"))
+llm.set_structured_override(mock.fake_structured)
+try:
+    sb = il.illustrate({"story": sfx_story, "output_prefix": "stories/t/runs/24/"})["illustrations"]
+finally:
+    il.short_look = orig_short
+assert all(p.status == "completed" and p.text_blocks and p.sound_word is None for p in sb.pages), sb.pages
+# 별표 말이 있는데 의성어를 못 놓으면 쪽 번호만 경고 (리뷰 #4)
+llm.set_structured_override(lambda **kw: TextPlacementWithWord.model_construct(blocks=[mock.BlockSpot(x=5, y=7, color="dark")], sound_word=None)
+                            if kw["node"] == "layout:place" else mock.fake_structured(**kw))
+logged.clear()
+logging.getLogger("firstory.illustrate").addHandler(h)
+nw = il.illustrate({"story": two, "output_prefix": "stories/t/runs/25/"})["illustrations"].pages[0]
+logging.getLogger("firstory.illustrate").removeHandler(h)
+assert nw.sound_word is None and any("쪽 1" in x and "의성어 자리 없음" in x for x in logged), logged
+assert not any("톡" in x for x in logged), logged
+llm.set_structured_override(recording_structured)
+print("sound word ok")
 
 print("text blocks ok")
 

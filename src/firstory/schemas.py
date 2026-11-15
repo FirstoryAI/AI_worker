@@ -344,12 +344,42 @@ class TextPlacement(BaseModel):
     blocks: list[BlockSpot]
 
 
+class OwnerBox(BaseModel):
+    """소리 주인을 감싸는 네모 칸 (그림 폭·높이 대비 %)"""
+    x0: float = Field(description="왼쪽 끝 %")
+    y0: float = Field(description="위쪽 끝 %")
+    x1: float = Field(description="오른쪽 끝 %")
+    y1: float = Field(description="아래쪽 끝 %")
+
+
+class WordSpot(BaseModel):
+    owner: str = Field(description="이 소리·움직임을 내는(그림에 없으면 반응하는) 인물·물건 이름")
+    owner_box: OwnerBox = Field(description="그 주인의 몸 전체(머리·귀·팔·꼬리 포함)를 감싸는 네모 칸. 붙어 있는 인물들은 함께 감싼다")
+    x: float = Field(description="말 가운데, 그림 폭 대비 %(0~100)")
+    y: float = Field(description="말 가운데, 그림 높이 대비 %(0~100)")
+
+
+class TextPlacementWithWord(TextPlacement):
+    """별표 말(의성어·의태어)이 있는 쪽의 자리 찾기 답 (#92)"""
+    sound_word: WordSpot
+
+
+class SoundWord(BaseModel):
+    """그림 위 소리 주인 옆에 띄우는 의성어·의태어. x, y는 말 가운데(그림 폭·높이 대비 %)."""
+    text: str
+    x: float
+    y: float
+    color: Literal["dark", "light"]
+    owner: Optional[str] = None   # 디버깅용. 아이 이름일 수 있어 로그·API에는 내지 않는다
+
+
 class PageImage(BaseModel):
     order: int
     path: Optional[str] = None   # 저장소 key (storage.py). 그림만 다시 그린 실행에서 안 바뀐 쪽은 이전 실행의 key
     status: Literal["pending", "generating", "completed", "failed"] = "pending"
     error: Optional[str] = None
     text_blocks: Optional[list[TextBlock]] = None   # 그림 위 글 배치. 그림이 실패한 쪽은 None
+    sound_word: Optional[SoundWord] = None          # 그림 위 의성어 자리. 별표 말이 없거나 놓을 곳이 없으면 None (#92)
 
 
 class Illustrations(BaseModel):

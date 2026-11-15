@@ -305,7 +305,7 @@ blk_a = [["첫째 줄이에요.", "둘째 줄이에요."]]
 blk_b = [["셋째 줄이에요."]]
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark"), BlockSpot(x=55.5, y=70, color="light")])))
-spots, costs = place_page(img, [blk_a, blk_b])
+spots, _, costs = place_page(img, [blk_a, blk_b])
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}, {"x": 55.5, "y": 70.0, "color": "light"}], spots
 assert [c.node for c in costs] == ["layout:place"]
 assert calls[0]["schema"] is TextPlacement and calls[0]["image"] == img and "{{" not in calls[0]["system"]
@@ -330,10 +330,10 @@ assert place_page(img, [blk_a, blk_b])[0] == []                                 
 llm.set_structured_override(fake_with(TextPlacement(blocks=[])))
 assert place_page(img, [blk_a])[0] == []
 llm.set_structured_override(fake_with(RuntimeError("글자 내용이 들어 있어도 로그엔 안 남는다")))
-assert place_page(img, [blk_a]) == ([], [])                                                          # 예외 → []
+assert place_page(img, [blk_a]) == ([], None, [])                                                          # 예외 → []
 llm.set_structured_override(fake_with(lambda kw: type("Bad", (), {"blocks": [type("S", (), {"x": "abc", "y": None, "color": "dark"})()]})()))
 assert place_page(img, [blk_a])[0] == []                                                             # 숫자 아님
-assert place_page(img, []) == ([], [])                                                               # 덩어리 없으면 부르지 않음
+assert place_page(img, []) == ([], None, [])                                                               # 덩어리 없으면 부르지 않음
 
 # mock 모드 배선: 진짜 fake_structured 가 두 스키마를 모두 답한다
 llm.set_structured_override(mock.fake_structured)
@@ -412,3 +412,132 @@ assert _stale(page, split_old)            # 글은 같아도 대사가 쪼개져
 assert not _stale(page, one_line)         # 덩어리·문단이 나뉘어도 줄이 같으면 그대로
 assert not _stale(page, PageImage(order=7, status="failed"))
 print("stale ok")
+
+# ── 의성어 (#92) ──
+from firstory.llm import prompt  # noqa: E402,F401
+from firstory.nodes.layout import (  # noqa: E402
+    SFX_FOLD, SfxAsk, settle_word, short_look, sound_words, word_size,
+)
+from firstory.schemas import OwnerBox, SoundWord, TextPlacementWithWord, WordSpot  # noqa: E402
+
+assert sound_words("미루가 **훌쩍훌쩍** 울었어요.") == ["훌쩍훌쩍"]
+assert sound_words("**톡** 치고 ** 냠냠 **") == ["톡", "냠냠"]
+assert sound_words("별표 없음.") == []
+assert short_look("A small white rabbit with long ears. Wears a yellow apron.") == "A small white rabbit with long ears"
+assert len(short_look("x" * 300)) == 120
+ww, wh = word_size("훌쩍")
+assert abs(ww - text_width("훌쩍") * 0.035 / 0.015) < 1e-6 and abs(wh - W * 0.035 * 1.2) < 1e-6
+
+# place_page: 별표 없는 쪽은 지금 호출 그대로
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+spots, wspot, costs = place_page(img, [blk_a])
+assert wspot is None and calls[0]["schema"] is TextPlacement and "의성어" not in calls[0]["system"]
+sys0, user0 = calls[0]["system"], calls[0]["user"]
+
+# 별표 있는 쪽: 의성어 단락 + 의성어 스키마
+ask = SfxAsk(word="훌쩍훌쩍", text="미루가 **훌쩍훌쩍** 울었어요.", cast=[("미루", "A small white rabbit")])
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")],
+                                                            sound_word=WordSpot(owner="미루", owner_box=OwnerBox(x0=50, y0=30, x1=60, y1=80), x=62.5, y=31))))
+spots, wspot, costs = place_page(img, [blk_a], ask)
+assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and [c.node for c in costs] == ["layout:place"]
+assert wspot == {"x": 62.5, "y": 31.0, "owner": "미루", "box": (50.0, 30.0, 60.0, 80.0)}, wspot
+assert calls[0]["schema"] is TextPlacementWithWord
+assert all(s in calls[0]["system"] for s in ("훌쩍훌쩍", "미루", "A small white rabbit")) and "{{" not in calls[0]["system"]
+assert calls[0]["system"].startswith(sys0) and calls[0]["user"].startswith(user0)   # 지금 지시 뒤에 붙일 뿐
+
+
+def wplaced(x, y, box=None):
+    llm.set_structured_override(fake_with(TextPlacementWithWord.model_construct(
+        blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=WordSpot.model_construct(owner="미루", x=x, y=y, owner_box=box))))
+    return place_page(img, [blk_a], ask)[1]
+
+
+assert wplaced(1200, 300) == {"x": 1200 / W * 100, "y": 300 / H * 100, "owner": "미루", "box": None}   # 픽셀 → %, 칸 없음
+assert wplaced(62, 31, OwnerBox.model_construct(x0=960, y0=30, x1=60, y1=80))["box"] is None          # 칸이 뒤집힘 → 칸 없음
+assert wplaced(62, 31, OwnerBox.model_construct(x0=50, y0=float("nan"), x1=60, y1=80))["box"] is None
+assert wplaced(62, 31, OwnerBox.model_construct(x0=50, y0=30, x1=60, y1=180))["box"] is None          # 0~100 밖 → 칸 없음
+assert wplaced(float("nan"), 30) is None and wplaced(-5, 30) is None and wplaced("a", 30) is None
+llm.set_structured_override(fake_with(RuntimeError("boom")))
+assert place_page(img, [blk_a], ask)[:2] == ([], None)
+
+
+def word_box(sw):
+    w, h = word_size(sw.text)
+    cx, cy = sw.x / 100 * W, sw.y / 100 * H
+    return cx - w / 2, cy - h / 2, w, h
+
+
+def word_box_gap_ok(sw, tbs):
+    x, y, w, h = word_box(sw)
+    g = W * GAP
+    for b in tbs:
+        bw, bh = block_size(b.paragraphs)
+        px, py = b.x / 100 * W, b.y / 100 * H
+        if not (x + w + g <= px + 1 or px + bw + g <= x + 1 or y + h + g <= py + 1 or py + bh + g <= y + 1):
+            return False
+    return True
+
+
+white = Busy(png(Image.new("RGB", (W, H), "white")))
+tb = [TextBlock(paragraphs=blk_a, x=5.0, y=7.0, color="dark")]
+ok = settle_word(white, "훌쩍훌쩍", {"x": 75.0, "y": 40.0, "owner": "미루"}, tb)
+assert ok == SoundWord(text="훌쩍훌쩍", x=75.0, y=40.0, color="dark", owner="미루"), ok   # 조건을 지키면 그대로
+# 덩어리 위에 놓인 말은 밀려나 2% 이상 떨어진다
+on_block = settle_word(white, "훌쩍훌쩍", {"x": 10.0, "y": 9.0, "owner": "미루"}, tb)
+assert on_block is not None and word_box_gap_ok(on_block, tb), on_block
+assert on_block.x == round(on_block.x, 1) and on_block.y == round(on_block.y, 1)
+# 접히는 선 위의 말은 선에서 2% 이상
+on_fold = settle_word(white, "훌쩍훌쩍", {"x": 50.0, "y": 40.0, "owner": "미루"}, [])
+fx, _, fw, _ = word_box(on_fold)
+assert fx + fw <= W * (0.5 - SFX_FOLD / 100) + 1 or fx >= W * (0.5 + SFX_FOLD / 100) - 1, on_fold
+# 가장자리: 그림 밖으로 나간 말은 여백 안으로
+edge = settle_word(white, "훌쩍훌쩍", {"x": 99.0, "y": 99.0, "owner": "미루"}, [])
+ex, ey, ew_, eh_ = word_box(edge)
+assert ex + ew_ <= W * 0.97 + 1 and ey + eh_ <= H * 0.96 + 1, edge
+# 반지름 15% 안이 모두 덩어리면 None
+wall = [TextBlock(paragraphs=[["가" * 30]] * 14, x=5.0, y=7.0, color="dark")]
+assert settle_word(white, "훌쩍훌쩍", {"x": 20.0, "y": 40.0, "owner": "미루"}, wall) is None
+assert settle_word(white, "훌쩍훌쩍", None, tb) is None
+# 주인 칸: 말이 주인 칸에 겹치면 칸 바깥으로 밀려 2% 이상 떨어진다
+on_owner = settle_word(white, "훌쩍훌쩍", {"x": 70.0, "y": 50.0, "owner": "미루", "box": (60.0, 30.0, 80.0, 80.0)}, tb)
+assert on_owner is not None, on_owner
+ox, oy, ow_, oh_ = word_box(on_owner)
+g = W * GAP
+bx0, by0, bx1, by1 = 0.60 * W, 0.30 * H, 0.80 * W, 0.80 * H
+assert ox + ow_ + g <= bx0 + 1 or bx1 + g <= ox + 1 or oy + oh_ + g <= by0 + 1 or by1 + g <= oy + 1, on_owner
+# 주인 칸 바깥이면 그대로
+off_owner = settle_word(white, "훌쩍훌쩍", {"x": 70.0, "y": 20.0, "owner": "미루", "box": (60.0, 30.0, 80.0, 80.0)}, tb)
+assert (off_owner.x, off_owner.y) == (70.0, 20.0), off_owner
+# 어두운 바탕 → light
+dark = Busy(png(Image.new("RGB", (W, H), (20, 20, 30))))
+assert settle_word(dark, "훌쩍", {"x": 75.0, "y": 40.0, "owner": "미루"}, []).color == "light"
+# 눈금: grid=True면 의성어 쪽 그림에 10% 눈금을 그려 보내고 지시에 알린다. 별표 없는 쪽은 그림 그대로
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")],
+                                                            sound_word=WordSpot(owner="미루", owner_box=OwnerBox(x0=50, y0=30, x1=60, y1=80), x=62.5, y=31))))
+place_page(img, [blk_a], ask, grid=True)
+assert calls[0]["image"] != img and "눈금" in calls[0]["system"]
+gi = Image.open(io.BytesIO(calls[0]["image"]))
+assert gi.size == (W, H)
+calls.clear()
+place_page(img, [blk_a], ask)
+assert calls[0]["image"] == img and "눈금" not in calls[0]["system"]
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+place_page(img, [blk_a], None, grid=True)
+assert calls[0]["image"] == img and calls[0]["system"] == sys0
+# 의성어 준비(크기 재기·지시·눈금)가 터지면 의성어 없이 예전 호출로 — 글 자리는 그대로 받는다 (리뷰 #3)
+import firstory.nodes.layout as _lay  # noqa: E402
+_orig_ws = _lay.word_size
+_lay.word_size = lambda w: (_ for _ in ()).throw(RuntimeError("font"))
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+try:
+    spots, wspot, _ = place_page(img, [blk_a], ask, grid=True)
+finally:
+    _lay.word_size = _orig_ws
+assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None
+assert calls[0]["schema"] is TextPlacement and calls[0]["system"] == sys0 and calls[0]["image"] == img
+print("sound word ok")
