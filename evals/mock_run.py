@@ -1018,6 +1018,14 @@ answers = iter([
 ])
 tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png((0, 0, 100, 100)), ask)
 assert sw_ is not None and len(sw_.pieces) == 1 and sw_.pieces[0].x < 50 and sw_.pieces[0].y < 50, sw_   # 두 번째(다시 그린 그림) 답의 근원 위
+# AI가 캐릭터 칸을 하나도 안 주면 쪽 번호만 경고 (실험에서 null·겹침 원인을 알아보려고)
+answers = iter([TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
+                                      sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[]))])
+logged.clear()
+logging.getLogger("firstory.illustrate").addHandler(h)
+il._arrange(3, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], None, ask)
+logging.getLogger("firstory.illustrate").removeHandler(h)
+assert any("쪽 3" in x and "캐릭터 칸 없음" in x for x in logged) and not any("포포" in x for x in logged), logged
 # 의성어 준비가 터져도 그 쪽 그림은 완성, 의성어만 None (리뷰 #3)
 orig_short = il.short_look
 il.short_look = lambda d: (_ for _ in ()).throw(RuntimeError("boom"))

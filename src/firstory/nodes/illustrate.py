@@ -408,6 +408,8 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     tbs = [TextBlock(paragraphs=b, **g) for b, g in zip(blocks, got)]
     word: Optional[SoundWord] = None
     if sfx is not None and cur is not None and last_word is not None and last_word[0] is cur:
+        if last_word[1] is not None and not last_word[1]["chars"]:   # 쪽 번호만 (설계: 캐릭터 칸이 비면 경고)
+            log.warning("쪽 %d: 의성어 캐릭터 칸 없음 → 캐릭터 겹침 검사 없이 놓음", order)
         try:
             word = place_word(cur, sfx.word, last_word[1], tbs)
         except Exception as e:  # noqa: BLE001 — 의성어가 글 자리·생성을 막지 않는다

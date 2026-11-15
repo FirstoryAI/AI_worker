@@ -658,6 +658,23 @@ def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
+def _others(kind: str, source: tuple[float, float, float, float],
+            chars: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+    """근원보다 가까우면 안 되는 캐릭터 칸 (px). 근원과 가장 많이 겹치는 캐릭터 하나만 뺀다:
+    face면 그 얼굴의 주인, object면 그 물건을 든 캐릭터. 겹침이 같으면 더 작은 칸(근원에 딱 맞는 쪽).
+    겹치는 캐릭터가 없으면 아무도 빼지 않는다 (#102)."""
+    def inter(c):
+        w = min(source[2], c[2]) - max(source[0], c[0])
+        h = min(source[3], c[3]) - max(source[1], c[1])
+        return w * h if w > 0 and h > 0 else 0.0
+
+    hits = [c for c in chars if inter(c) > 0]
+    if not hits:
+        return list(chars)
+    mine = max(hits, key=lambda c: (inter(c), -(c[2] - c[0]) * (c[3] - c[1])))
+    return [c for c in chars if c is not mine]
+
+
 @dataclass
 class _WordScene:
     """조각을 놓을 때 보는 것 (모두 px)"""
@@ -743,11 +760,7 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
 
     source = px(spot["source"])
     chars = [px(b) for _, b in spot.get("chars", [])]
-    if spot["kind"] == "face":   # 근원 캐릭터 자신(근원 가운데를 품은 칸)은 견줄 상대에서 뺀다
-        mid = ((source[0] + source[2]) / 2, (source[1] + source[3]) / 2)
-        others = [c for c in chars if _rect_dist(mid, c) > 0]
-    else:   # 물건을 든(물건 칸과 겹치는) 캐릭터도 견줄 상대에서 뺀다. 든 물건 둘레는 늘 그 몸에 더 가까워서 다 막힌다 (#102)
-        others = [c for c in chars if not _overlaps(source, c)]
+    others = _others(spot["kind"], source, chars)
     block_px = []
     for b in blocks:
         bw, bh = block_size(b.paragraphs)

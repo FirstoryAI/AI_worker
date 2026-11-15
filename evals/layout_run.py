@@ -416,7 +416,7 @@ print("stale ok")
 # ── 의성어 (#92) ──
 from firstory.llm import prompt  # noqa: E402,F401
 from firstory.nodes.layout import (  # noqa: E402
-    SFX_FOLD, SfxAsk, _closer_to_source, piece_size, place_word, short_look, sound_words,
+    SFX_FOLD, SfxAsk, _closer_to_source, _others, piece_size, place_word, short_look, sound_words,
 )
 from firstory.schemas import CharacterBox, OwnerBox, SoundWord, TextPlacementWithWord, WordSpot  # noqa: E402
 
@@ -524,6 +524,13 @@ assert _closer_to_source((100.0, 100.0), (120.0, 90.0, 140.0, 110.0), [(50.0, 50
 assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), [(50.0, 50.0, 80.0, 80.0)]) is True
 assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), []) is True
 assert place_word(white, "엉엉", None, tb) is None
+# 견줄 상대에서 빼는 캐릭터는 근원과 가장 많이 겹치는 하나뿐 (같으면 더 작은 칸 = 근원 주인)
+_car = (400.0, 800.0, 460.0, 860.0)
+_holder, _leg = (380.0, 350.0, 600.0, 920.0), (200.0, 300.0, 410.0, 900.0)   # 다리 칸이 자동차 끝에 살짝 겹침
+assert _others("object", _car, [_holder, _leg]) == [_leg]
+_face, _owner, _big = (500.0, 300.0, 560.0, 360.0), (480.0, 290.0, 600.0, 900.0), (300.0, 100.0, 900.0, 1000.0)
+assert _others("face", _face, [_big, _owner]) == [_big]                    # 넉넉한 남의 칸이 얼굴을 덮어도 그 칸은 남는다
+assert _others("face", _face, []) == [] and _others("object", _car, [_leg]) == []
 # 조각은 글 덩어리·접히는 선·여백을 지킨다
 fold = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (47.0, 40.0, 53.0, 50.0), "chars": []}, [])
 assert fold is None or all(abs(p.x - 50) * W / 100 >= piece_size(p.text)[0] / 2 + W * SFX_FOLD / 100 - 1 for p in fold.pieces), fold
