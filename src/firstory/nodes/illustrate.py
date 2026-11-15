@@ -174,7 +174,9 @@ def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] =
         "the scene runs straight across the center. "
         "Story text will be printed over the picture later, so compose the scene with generous open space: "
         "the plain wall, sky, floor or blanket simply continues there, uninterrupted — " + "; ".join(spans) + ", "
-        "toward the top or the bottom of the picture (not the middle height), each within the left half or the right half (not across the vertical center). "
+        "toward the top or the bottom of the picture (not the middle height), "
+        + ("the first one within the left half and the second one within the right half (not across the vertical center). "   # 2덩어리는 양쪽 면 (#95)
+           if len(sizes) == 2 else "each within the left half or the right half (not across the vertical center). ") +
         "This open space must look like a natural part of the scene, with the same color, texture and light as its surroundings. "
         "Never draw any box, panel, frame, card, sheet of paper, sign, label, speech bubble, blank rectangle or lighter patch "
         "to mark where text goes. "
@@ -314,6 +316,8 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
              redraw: Optional[Callable[[list[Block], list[str]], Optional[bytes]]] = None) -> list[TextBlock]:
     """그림 위 글 자리. 자리 찾기 → 안 되면 한 덩어리로 합쳐 다시 → 안 되면 redraw(덩어리, where)로 다시 그린 그림에서 다시
     → 그래도 안 되면 마지막 그림에서 가장 조용한 곳(calmest) → 그림을 못 읽으면 왼쪽 면 위 기본 자리.
+    2덩어리는 1번 왼쪽 면·2번 오른쪽 면이라 처음에 합치지 않는다: 자리 찾기 → 왼쪽 위·오른쪽 위로 다시 그리기 → 면마다 calmest
+    → 그래도 놓을 곳이 없을 때만 합친다 (#95).
     늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도)."""
     got: Optional[list[dict]] = None
     cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
@@ -328,11 +332,12 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
         busy = cur = Busy(image)
         got, spots = fit(image, busy, blocks)
         merged = False
-        if got is None and len(blocks) > 1:
+        two = len(blocks) == 2   # 양쪽 면에 하나씩 — 합치면 한 면에 몰린다 (#95)
+        if got is None and len(blocks) > 1 and not two:
             blocks, merged = merge(blocks), True
             got, spots = fit(image, busy, blocks)
         if got is None and redraw:
-            where = ["left top"] if merged else [
+            where = ["left top", "right top"] if two else ["left top"] if merged else [
                 f"{_side(spots[i] if i < len(spots) else None, b, i)} top" for i, b in enumerate(blocks)]
             again = redraw(blocks, where)
             if again is not None:
