@@ -322,7 +322,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
     try:
         def fit(img: bytes, busy: Busy, bl: list[Block]):
-            spots, pcosts = place_page(img, bl)
+            spots, _, pcosts = place_page(img, bl)
             for c in pcosts:
                 c.node = f"layout:place:page{order}"
             costs.extend(pcosts)

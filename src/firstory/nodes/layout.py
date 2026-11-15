@@ -8,6 +8,7 @@ import io
 import logging
 import math
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from PIL import Image, ImageFilter, ImageFont
 
 from ..config import config
 from ..llm import prompt, structured, structured_image
-from ..schemas import CostEntry, TextChunking, TextPlacement
+from ..schemas import CostEntry, SoundWord, TextBlock, TextChunking, TextPlacement, TextPlacementWithWord
 
 log = logging.getLogger("firstory.layout")
 
@@ -40,9 +41,14 @@ FONT_PATH = Path(__file__).parents[1] / "assets/fonts/MemomentKkukkukk.woff2"
 GRID = 8                           # 자리 찾기 격자(px)
 MOVE_COST = 0.01                   # 원래 자리와 멀어진 만큼 더하는 점수(px당)
 TIE_COST = 1e-5                    # calmest: 거리는 복잡도가 같을 때만 가르는 정도
+SFX_RATIO = 0.035                  # 의성어 글자 크기 = 그림 폭의 3.5% (#92)
+SFX_LINE_H = 1.2                   # 의성어 상자 높이 = 글자 크기 배수
+SFX_EDGE_X, SFX_EDGE_Y, SFX_FOLD = 3, 4, 2   # 의성어 좌우 여백, 위·아래 여백, 접히는 선 여백 (%)
+SFX_RADIUS = 0.15                  # 의성어를 밀 수 있는 반지름 (그림 폭 대비)
 
 Block = list[list[str]]            # 덩어리 = 문단 > 줄
 
+_SFX = re.compile(r"\*\*(.+?)\*\*")   # 본문의 의성어·의태어 표시 (render._SFX와 같다)
 _SENTENCE_END = re.compile(r'(?<!\.)\.(?!\.)["”’]?\s+')   # 마침표(말줄임표 제외) 뒤에서 자름
 _DQUOTES = '"“”'
 
@@ -442,29 +448,125 @@ def _sanitize_spots(spots, n: int) -> list[dict]:
     return out
 
 
-def place_page(image: bytes, blocks: list[Block]) -> tuple[list[dict], list[CostEntry]]:
-    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서).
-    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다."""
+def _sanitize_word(spot) -> dict | None:
+    """AI 의성어 답 → {"x": %, "y": %, "owner"}. 숫자가 아니거나 유한하지 않거나 음수면 None. 100 넘는 값은 픽셀로 보고 %로."""
+    try:
+        x, y = float(spot.x), float(spot.y)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not (math.isfinite(x) and math.isfinite(y)) or x < 0 or y < 0:
+        return None
+    if x > 100:
+        x = x / W * 100
+    if y > 100:
+        y = y / H * 100
+    return {"x": x, "y": y, "owner": str(getattr(spot, "owner", "") or "")}
+
+
+def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None
+               ) -> tuple[list[dict], dict | None, list[CostEntry]]:
+    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 자리 {"x", "y", "owner"} (sfx가 있을 때만).
+    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다.
+    sfx가 없으면 지금(#92 전) 호출과 똑같다."""
     if not blocks:
-        return [], []
+        return [], None, []
     sizes = []
     for i, b in enumerate(blocks, 1):
         w, h = block_size(b)
         sizes.append(f"{i}번 덩어리: 가로 약 {w / W * 100:.0f}%, 세로 약 {h / H * 100:.0f}%")
+    system = prompt("text_place", sizes="\n".join(sizes))
+    user = f"덩어리 {len(blocks)}개의 자리를 읽는 순서대로 답하세요."
+    schema = TextPlacement
+    if sfx is not None:
+        ww, wh = word_size(sfx.word)
+        system += "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
+                                   cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
+                                   size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%")
+        user += " 의성어 자리도 답하세요."
+        schema = TextPlacementWithWord
     try:
         answer, cost = structured_image(
             node="layout:place",
             model=config.model_light,
-            schema=TextPlacement,
-            system=prompt("text_place", sizes="\n".join(sizes)),
-            user=f"덩어리 {len(blocks)}개의 자리를 읽는 순서대로 답하세요.",
+            schema=schema,
+            system=system,
+            user=user,
             image=image,
             reasoning="low",
         )
     except Exception as e:  # 글·그림 내용은 로그에 남기지 않는다
         log.warning("자리 찾기 호출 실패 → 기본 자리: %s", type(e).__name__)
-        return [], []
+        return [], None, []
     spots = _sanitize_spots(getattr(answer, "blocks", None), len(blocks))
     if not spots:
         log.warning("자리 찾기 답이 맞지 않음 → 기본 자리")
-    return spots, [cost]
+    word = _sanitize_word(getattr(answer, "sound_word", None)) if sfx is not None else None
+    return spots, word, [cost]
+
+
+# ── 의성어·의태어 (#92) ──
+@dataclass
+class SfxAsk:
+    word: str                          # 별표를 뺀 말
+    text: str                          # 그 쪽 본문 (누구의 소리인지 알려고)
+    cast: list[tuple[str, str]]        # (이름, 그림에서 알아볼 짧은 외형)
+
+
+def sound_words(text: str) -> list[str]:
+    """본문의 **…** 말을 나온 순서대로 (별표·앞뒤 공백 없이)"""
+    return [m.strip() for m in _SFX.findall(text or "") if m.strip()]
+
+
+def short_look(visual_description: str) -> str:
+    """외형 문단의 첫 문장만, 120자까지"""
+    first = (visual_description or "").split(". ")[0].strip().rstrip(".")
+    return first[:120]
+
+
+def word_size(word: str) -> tuple[float, float]:
+    """의성어 상자 크기(px): 본문 글꼴로 잰 폭을 글자 크기 비율만큼 키운다"""
+    return text_width(word) * SFX_RATIO / FONT_RATIO, W * SFX_RATIO * SFX_LINE_H
+
+
+def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float, float, float, float]]) -> bool:
+    x0, y0 = cx - ww / 2, cy - wh / 2
+    x1, y1 = x0 + ww, y0 + wh
+    if x0 < W * SFX_EDGE_X / 100 or x1 > W * (100 - SFX_EDGE_X) / 100:
+        return False
+    if y0 < H * SFX_EDGE_Y / 100 or y1 > H * (100 - SFX_EDGE_Y) / 100:
+        return False
+    fold = W * SFX_FOLD / 100
+    if x1 > W / 2 - fold and x0 < W / 2 + fold:
+        return False
+    return _gap_ok(x0, y0, ww, wh, boxes)
+
+
+def settle_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]) -> SoundWord | None:
+    """AI 의성어 자리 → 검사(여백·접히는 선·글 덩어리와 간격) → 어기면 반지름 안에서 가장 가까운 격자점 → 없으면 None.
+    글자색은 그 자리 바탕 밝기로 정한다."""
+    if spot is None or not word:
+        return None
+    ww, wh = word_size(word)
+    boxes = []
+    for b in blocks:
+        bw, bh = block_size(b.paragraphs)
+        boxes.append((b.x / 100 * W, b.y / 100 * H, bw, bh))
+    cx, cy = spot["x"] / 100 * W, spot["y"] / 100 * H
+    if not _word_ok(cx, cy, ww, wh, boxes):
+        r = W * SFX_RADIUS
+        best = None
+        steps = int(r // GRID)
+        for i in range(-steps, steps + 1):
+            for j in range(-steps, steps + 1):
+                d2 = (i * GRID) ** 2 + (j * GRID) ** 2
+                if d2 > r * r or (best is not None and d2 >= best[0]):
+                    continue
+                nx, ny = cx + i * GRID, cy + j * GRID
+                if _word_ok(nx, ny, ww, wh, boxes):
+                    best = (d2, nx, ny)
+        if best is None:
+            return None
+        cx, cy = best[1], best[2]
+    color = text_color(busy, cx - ww / 2, cy - wh / 2, ww, wh)
+    return SoundWord(text=word, x=round(cx / W * 100, 1), y=round(cy / H * 100, 1), color=color,
+                     owner=spot.get("owner") or None)
