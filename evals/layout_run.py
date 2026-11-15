@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
     BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, GAP, H, MAX_LINE, W,
-    Busy, block_size, build_blocks, calmest, side_of, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
+    Busy, block_size, build_blocks, calmest, calmest_pick, side_of, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
 )
 from firstory import llm, mock  # noqa: E402
 from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
@@ -192,6 +192,18 @@ right_full = Busy(png(stripes((50, 0, 100, 100))))
 assert settle(right_full, [blk, blk2], [{"x": 8, "y": 70, "color": "dark"}, {"x": 55, "y": 75, "color": "dark"}]) is None
 out = calmest(right_full, [blk, blk2])
 assert out and page(out[0], bw) == 0 and page(out[1], bw2) == 1, out
+
+# 6-2) 조용한 곳이 없을 때 나눌지 합칠지: 나눈 자리 중 더 복잡한 쪽이 합친 자리보다 복잡하면 합친다 (#95)
+#      오른쪽 면이 다 줄무늬면 나누면 2 가 줄무늬 위 → 합친 한 덩어리를 왼쪽 면에
+bl, out = calmest_pick(right_full, [blk, blk2])
+assert len(bl) == 1 and bl[0] == blk + blk2 and len(out) == 1, (bl, out)
+assert page(out[0], block_size(bl[0])[0]) == 0, out
+#      어디나 똑같이 조용하면(같으면) 나눈다
+white = Busy(png(Image.new("RGB", (W, H), "white")))
+bl, out = calmest_pick(white, [blk, blk2])
+assert bl == [blk, blk2] and page(out[0], bw) == 0 and page(out[1], bw2) == 1, (bl, out)
+#      한 덩어리는 calmest 그대로
+assert calmest_pick(white, [blk]) == ([blk], calmest(white, [blk]))
 
 
 # 7) 어디도 기준을 못 넘으면 settle은 None, calmest는 가장 덜 복잡한 곳 (오른쪽 아래만 옅은 줄무늬)

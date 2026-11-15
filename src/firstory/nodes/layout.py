@@ -350,6 +350,26 @@ def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
     return out
 
 
+def _worst(busy: Busy, blocks: list[Block], spots: list[dict]) -> float:
+    """자리들 중 가장 복잡한 곳의 복잡도"""
+    return max(_score(busy, s["x"] / 100 * W, s["y"] / 100 * H, *block_size(b)) for b, s in zip(blocks, spots))
+
+
+def calmest_pick(busy: Busy, blocks: list[Block]) -> tuple[list[Block], list[dict]] | None:
+    """조용한 곳이 없을 때의 (덩어리, 자리). 2덩어리면 양쪽에 나눈 calmest와 합친 한 덩어리 calmest 중 덜 복잡한 쪽:
+    나눈 쪽은 두 자리 중 더 복잡한 값으로 보고, 같으면 나눈다 (#95). 1덩어리는 calmest 그대로. 놓을 곳이 없으면 None."""
+    split = calmest(busy, blocks)
+    if len(blocks) != 2:
+        return (blocks, split) if split is not None else None
+    one = merge(blocks)
+    alone = calmest(busy, one)
+    if split is None:
+        return (one, alone) if alone is not None else None
+    if alone is not None and _worst(busy, one, alone) < _worst(busy, blocks, split):
+        return one, alone
+    return blocks, split
+
+
 def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:
     """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격을 확인해 안 되면 옮긴다.
     2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만 밀고 찾는다 (#95).
