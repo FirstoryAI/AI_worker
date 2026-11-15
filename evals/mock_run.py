@@ -705,7 +705,7 @@ il.set_image_override(mock.tiny_png)
 llm.set_structured_override(recording_structured)
 print("text regen relayouts reused image ok")
 
-# 8-5) 자리를 못 찾으면: 덩어리 합치기 → 다시 그리기(실행당 2쪽까지) → 기본 자리
+# 8-5) 두 덩어리가 자리를 못 찾으면: 합쳐서 찾기 → 다시 그리기(실행당 2쪽까지) → 나눈 자리·합친 자리 중 덜 복잡한 곳 (#95)
 def two_blocks(**kw):   # 첫 줄 / 나머지 두 덩어리로 나누고 둘 다 같은 자리(5,7)를 달라고 한다 → 겹쳐서 settle이 찾기를 해야 한다
     if kw["schema"] is TextChunking:
         n = len(re.findall(r"^\d+: ", kw["system"], re.M))
@@ -742,32 +742,46 @@ b8 = il.illustrate({"story": st8, "output_prefix": "stories/t/runs/2/"})
 assert sum(page_calls.values()) == 5 + layout.MAX_REDRAWS, page_calls              # 다시 그리기는 실행당 2쪽까지
 assert sorted(page_calls.values()) == [1, 1, 1, 2, 2], page_calls
 calm_busy = layout.Busy(striped_png())
-for pi in b8["illustrations"].pages:
-    assert pi.status == "completed" and len(pi.text_blocks) == 1, pi                 # 합쳐진 한 덩어리
-    tb = pi.text_blocks[0]
-    assert len(tb.paragraphs) == 2, tb                                              # 문단은 그대로
-    want = layout.calmest(calm_busy, [tb.paragraphs])[0]
-    assert (tb.x, tb.y, tb.color) == (want["x"], want["y"], want["color"]), (tb, want)   # 기본 자리 말고 가장 조용한 곳 (#71)
-    assert calm_busy.at(tb.x / 100 * layout.W, tb.y / 100 * layout.H, *layout.block_size(tb.paragraphs)) \
-        <= calm_busy.at(0.05 * layout.W, 0.07 * layout.H, *layout.block_size(tb.paragraphs)) + 1e-9
+for pg, pi in zip(st8.pages, b8["illustrations"].pages):
+    lines8 = layout.split_lines(pg.text)
+    want_bl, want = layout.calmest_pick(calm_busy, layout.build_blocks(lines8, [[[0]], [list(range(1, len(lines8)))]]))
+    assert pi.status == "completed", pi
+    assert [tb.paragraphs for tb in pi.text_blocks] == want_bl, (pi.text_blocks, want_bl)
+    assert [(tb.x, tb.y, tb.color) for tb in pi.text_blocks] == [(w["x"], w["y"], w["color"]) for w in want], (pi.text_blocks, want)   # 기본 자리 말고 가장 조용한 곳 (#71)
+    if len(pi.text_blocks) == 2:
+        assert pi.text_blocks[0].x < 50 <= pi.text_blocks[1].x, pi.text_blocks      # 나누면 1 은 왼쪽, 2 는 오른쪽 면
 assert 2 in places and 1 in places                                                  # 두 덩어리로 찾고, 합쳐서도 찾았다
 assert all(p.path.endswith(f"page-{p.order:02d}.png") for p in b8["illustrations"].pages)
 # 8-6) 다시 그리기 프롬프트: 덩어리 크기·자리(where)가 들어가고, 첫 그리기에는 자리 지시가 없다
 sizes1 = [layout.block_size(b) for b in layout.build_blocks(["가나다."], [[[0]]])]
 assert "left top" in il.layout_prompt(sizes1, ["left top"]) and "left top" not in il.layout_prompt(sizes1)
+# 두 덩어리면 첫 그리기부터 1 은 왼쪽 면, 2 는 오른쪽 면에 빈 곳 (#95). 한 덩어리는 면을 정하지 않는다
+sizes2 = [layout.block_size(b) for b in layout.build_blocks(["가나다.", "라마바."], [[[0]], [[1]]])]
+assert "first one within the left half" in il.layout_prompt(sizes2) and "second one within the right half" in il.layout_prompt(sizes2)
+assert "first one within the left half" not in il.layout_prompt(sizes1)
 print("redraw cap / default spot ok:", dict(page_calls))
 
-# 8-7) 두 덩어리는 자리가 없고 합친 한 덩어리는 있으면 합친 걸로 간다 — 다시 그리지 않는다 (settle을 그렇게 흉내 낸다)
+# 8-7) 두 덩어리는 양쪽에 자리가 없고 합친 한 덩어리는 있으면 합친 걸로 간다 — 다시 그리지 않는다 (settle을 그렇게 흉내 낸다)
 one_page = st8.model_copy(update={"pages": st8.pages[:1]})
 orig_settle = layout.settle
 il.settle = lambda busy, blocks, spots: None if len(blocks) > 1 else orig_settle(busy, blocks, spots)
 page_calls.clear()
 places.clear()
-il.set_image_override(lambda p, refs: (page_calls.update(["x"]) or mock.tiny_png(p, refs)) if refs and "Scene" in p else mock.tiny_png(p, refs))
+redrawn: list[str] = []
+il.set_image_override(lambda p, refs: (page_calls.update(["x"]) or redrawn.append(p) or mock.tiny_png(p, refs)) if refs and "Scene" in p else mock.tiny_png(p, refs))
 m = il.illustrate({"story": one_page, "output_prefix": "stories/t/runs/3/"})["illustrations"].pages[0]
-il.settle = orig_settle
 assert places == [2, 1] and page_calls["x"] == 1, (places, page_calls)           # 합쳐서 찾았고 다시 그리지 않았다
 assert len(m.text_blocks) == 1 and len(m.text_blocks[0].paragraphs) == 2          # 문단은 그대로
+# 8-7-1) 나눠도 합쳐도 자리가 없으면 왼쪽 위·오른쪽 위로 다시 그려 나눠서·합쳐서 다시 찾고, 그래도 없으면 덜 복잡한 쪽 (#95)
+il.settle = lambda busy, blocks, spots: None
+page_calls.clear()
+places.clear()
+redrawn.clear()
+m2 = il.illustrate({"story": one_page, "output_prefix": "stories/t/runs/5/"})["illustrations"].pages[0]
+il.settle = orig_settle
+assert places == [2, 1, 2, 1] and page_calls["x"] == 2, (places, page_calls)
+assert "left top" in redrawn[1] and "right top" in redrawn[1], redrawn[1][-400:]
+assert len(m2.text_blocks) == 2 and m2.text_blocks[0].x < 50 <= m2.text_blocks[1].x, m2.text_blocks   # 단색 그림이라 같음 → 나눈다
 assert lines_of(m) == joined(one_page.pages[0].text)
 
 # 8-8) 다시 그린 그림이 괜찮으면 같은 key에 덮어쓰고 그 그림에서 자리를 찾는다. 다시 그리기 프롬프트에는 자리 지시가 있다

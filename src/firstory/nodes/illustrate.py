@@ -21,7 +21,7 @@ from PIL import Image
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText, TextBlock
-from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, calmest, chunk_page, merge, place_page, settle, split_lines, wrap_line
+from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, calmest_pick, chunk_page, merge, place_page, settle, split_lines, wrap_line
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -174,7 +174,9 @@ def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] =
         "the scene runs straight across the center. "
         "Story text will be printed over the picture later, so compose the scene with generous open space: "
         "the plain wall, sky, floor or blanket simply continues there, uninterrupted — " + "; ".join(spans) + ", "
-        "toward the top or the bottom of the picture (not the middle height), each within the left half or the right half (not across the vertical center). "
+        "toward the top or the bottom of the picture (not the middle height), "
+        + ("the first one within the left half and the second one within the right half (not across the vertical center). "   # 2덩어리는 양쪽 면 (#95)
+           if len(sizes) == 2 else "each within the left half or the right half (not across the vertical center). ") +
         "This open space must look like a natural part of the scene, with the same color, texture and light as its surroundings. "
         "Never draw any box, panel, frame, card, sheet of paper, sign, label, speech bubble, blank rectangle or lighter patch "
         "to mark where text goes. "
@@ -312,8 +314,9 @@ def _chunk(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
 
 def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: list[CostEntry],
              redraw: Optional[Callable[[list[Block], list[str]], Optional[bytes]]] = None) -> list[TextBlock]:
-    """그림 위 글 자리. 자리 찾기 → 안 되면 한 덩어리로 합쳐 다시 → 안 되면 redraw(덩어리, where)로 다시 그린 그림에서 다시
-    → 그래도 안 되면 마지막 그림에서 가장 조용한 곳(calmest) → 그림을 못 읽으면 왼쪽 면 위 기본 자리.
+    """그림 위 글 자리. 자리 찾기 → 2덩어리면 안 될 때 한 덩어리로 합쳐 다시 → 안 되면 redraw(덩어리, where)로 다시 그린 그림에서 다시
+    → 그래도 안 되면 마지막 그림에서 가장 조용한 곳(calmest_pick) → 그림을 못 읽으면 왼쪽 면 위 기본 자리.
+    2덩어리는 양쪽 면(1번 왼쪽·2번 오른쪽)에 빈 곳이 있으면 나누고, 한 군데뿐이면 합친다. 다시 그릴 때는 왼쪽 위·오른쪽 위에 빈 곳 (#95).
     늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도)."""
     got: Optional[list[dict]] = None
     cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
@@ -325,30 +328,36 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
             costs.extend(pcosts)
             return settle(busy, bl, spots), spots
 
+        def place(img: bytes, busy: Busy):
+            """양쪽에 나눠서 → 안 되면 합쳐서 한 군데 (#95). (덩어리, 자리, 나눈 자리 답)"""
+            got, spots = fit(img, busy, blocks)
+            if got is None and len(blocks) == 2:
+                one = merge(blocks)
+                alone, _ = fit(img, busy, one)
+                if alone is not None:
+                    return one, alone, spots
+            return blocks, got, spots
+
         busy = cur = Busy(image)
-        got, spots = fit(image, busy, blocks)
-        merged = False
-        if got is None and len(blocks) > 1:
-            blocks, merged = merge(blocks), True
-            got, spots = fit(image, busy, blocks)
+        placed, got, spots = place(image, busy)
         if got is None and redraw:
-            where = ["left top"] if merged else [
+            where = ["left top", "right top"] if len(blocks) == 2 else [
                 f"{_side(spots[i] if i < len(spots) else None, b, i)} top" for i, b in enumerate(blocks)]
             again = redraw(blocks, where)
             if again is not None:
                 cur = None   # 쪽 그림이 바뀌었다 — 새 그림을 못 읽으면 처음 그림으로 자리를 정하지 않는다
                 cur = Busy(again)
-                got, spots = fit(again, cur, blocks)
+                placed, got, spots = place(again, cur)
+        if got is not None:
+            blocks = placed
     except Exception as e:  # noqa: BLE001 — 글·그림 내용은 로그에 남기지 않는다
         log.warning("쪽 %d: 글 자리 계산 실패: %s", order, type(e).__name__)
         got = None
     if got is None and cur is not None:   # 기준을 넘는 곳뿐이면 그중 가장 조용한 곳 (#71)
         try:
-            got = calmest(cur, blocks)
-            if got is None and len(blocks) > 1:
-                blocks = merge(blocks)
-                got = calmest(cur, blocks)
-            if got is not None:
+            picked = calmest_pick(cur, blocks)
+            if picked is not None:
+                blocks, got = picked
                 log.warning("쪽 %d: 조용한 글 자리가 없어 가장 덜 복잡한 곳에 둠", order)
         except Exception as e:  # noqa: BLE001
             log.warning("쪽 %d: 가장 조용한 곳 찾기 실패: %s", order, type(e).__name__)

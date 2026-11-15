@@ -223,6 +223,11 @@ def _page(x: float, bw: float) -> int:
     return 0 if x + bw / 2 < W / 2 else 1
 
 
+def side_of(i: int, n: int) -> int | None:
+    """덩어리 n개 중 i번째가 놓일 면. 2덩어리면 1번 왼쪽(0)·2번 오른쪽(1)으로 고정, 그 밖에는 None(면 자유) (#95)"""
+    return i if n == 2 else None
+
+
 def _x_range(page: int, bw: float) -> tuple[float, float]:
     """면 안에서 덩어리 왼쪽 끝이 놓일 수 있는 범위(px). 비면 lo > hi."""
     edge, fold = W * EDGE_X / 100, W * FOLD / 100
@@ -245,9 +250,9 @@ def _to_px(spot: dict) -> tuple[float, float]:
     return x / 100 * W, y / 100 * H
 
 
-def _push(x: float, y: float, bw: float, bh: float) -> tuple[float, float]:
-    """여백 안으로 민다: 덩어리 가운데가 있는 면 안쪽으로"""
-    lo, hi = _x_range(_page(x, bw), bw)
+def _push(x: float, y: float, bw: float, bh: float, page: int | None = None) -> tuple[float, float]:
+    """여백 안으로 민다: page를 주면 그 면 안쪽으로, 아니면 덩어리 가운데가 있는 면 안쪽으로"""
+    lo, hi = _x_range(_page(x, bw) if page is None else page, bw)
     x = min(max(x, lo), max(lo, hi))
     ylo, yhi = H * EDGE_Y / 100, H * (100 - EDGE_Y) / 100 - bh
     return x, min(max(y, ylo), max(ylo, yhi))
@@ -297,10 +302,10 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
 
 
 def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
-            placed: list[tuple[float, float, float, float]]) -> tuple[float, float] | None:
-    """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳"""
+            placed: list[tuple[float, float, float, float]], page: int | None = None) -> tuple[float, float] | None:
+    """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳. page를 주면 그 면에서만"""
     home = _page(near[0], bw)
-    for page in (home, 1 - home):
+    for page in ((home, 1 - home) if page is None else (page,)):
         found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT)
         if found:
             return found
@@ -328,14 +333,15 @@ def luminance(rgb: tuple[float, float, float]) -> float:
 
 def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
     """settle도 다시 그리기도 자리를 못 찾았을 때: 복잡도 기준은 빼고 여백·띠·읽는 순서·간격만 지켜
-    두 면을 통틀어 가장 덜 복잡한 곳. 그림을 안 보는 기본 자리보다 늘 낫거나 같다.
+    두 면을 통틀어 가장 덜 복잡한 곳(2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만, #95). 그림을 안 보는 기본 자리보다 늘 낫거나 같다.
     글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
     near = (DEFAULT_SPOT[0] / 100 * W, DEFAULT_SPOT[1] / 100 * H)   # 복잡도가 (거의) 같을 때만 왼쪽 위 쪽으로
     placed: list[tuple[float, float, float, float]] = []
     out: list[dict] = []
-    for block in blocks:
+    for i, block in enumerate(blocks):
         bw, bh = block_size(block)
-        found = _best_on(busy, (0, 1), near, bw, bh, placed, math.inf, TIE_COST)
+        side = side_of(i, len(blocks))
+        found = _best_on(busy, (0, 1) if side is None else (side,), near, bw, bh, placed, math.inf, TIE_COST)
         if found is None:
             return None
         x, y = found
@@ -344,19 +350,41 @@ def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
     return out
 
 
+def _worst(busy: Busy, blocks: list[Block], spots: list[dict]) -> float:
+    """자리들 중 가장 복잡한 곳의 복잡도"""
+    return max(_score(busy, s["x"] / 100 * W, s["y"] / 100 * H, *block_size(b)) for b, s in zip(blocks, spots))
+
+
+def calmest_pick(busy: Busy, blocks: list[Block]) -> tuple[list[Block], list[dict]] | None:
+    """조용한 곳이 없을 때의 (덩어리, 자리). 2덩어리면 양쪽에 나눈 calmest와 합친 한 덩어리 calmest 중 덜 복잡한 쪽:
+    나눈 쪽은 두 자리 중 더 복잡한 값으로 보고, 같으면 나눈다 (#95). 1덩어리는 calmest 그대로. 놓을 곳이 없으면 None."""
+    split = calmest(busy, blocks)
+    if len(blocks) != 2:
+        return (blocks, split) if split is not None else None
+    one = merge(blocks)
+    alone = calmest(busy, one)
+    if split is None:
+        return (one, alone) if alone is not None else None
+    if alone is not None and _worst(busy, one, alone) < _worst(busy, blocks, split):
+        return one, alone
+    return blocks, split
+
+
 def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:
     """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격을 확인해 안 되면 옮긴다.
+    2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만 밀고 찾는다 (#95).
     덩어리마다 {"x": %, "y": %, "color"}. 글자색은 AI 답이 아니라 마지막 자리의 밝기로 (text_color). 하나라도 자리가 없으면 None."""
     placed: list[tuple[float, float, float, float]] = []
     out: list[dict] = []
     for i, block in enumerate(blocks):
         bw, bh = block_size(block)
         spot = spots[i] if i < len(spots) else {"x": DEFAULT_SPOT[0], "y": DEFAULT_SPOT[1], "color": DEFAULT_SPOT[2]}
-        x, y = _push(*_to_px(spot), bw, bh)
+        side = side_of(i, len(blocks))
+        x, y = _push(*_to_px(spot), bw, bh, side)
         ok = (_in_band(y, bh) and _order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)
               and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
         if not ok:
-            found = _search(busy, (x, y), bw, bh, placed)
+            found = _search(busy, (x, y), bw, bh, placed, side)
             if found is None:
                 return None
             x, y = found
