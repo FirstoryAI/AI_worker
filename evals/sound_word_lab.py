@@ -4,7 +4,7 @@
   uv run python evals/sound_word_lab.py [--grid] [--out 이름] <입력>...
 
 입력은 실행 폴더(03-story.json, 05-illustrations.json, images/)나 샘플 에셋 폴더(story.json, pages/page-NN/page-NN.webp).
-별표 말이 있는 쪽만 부른다. 왼쪽 = 지금 저장된 글 자리, 오른쪽 = 새 글 자리 + 의성어(빨간 점 = AI가 처음 짚은 점).
+별표 말이 있는 쪽만 부른다. 왼쪽 = 지금 저장된 글 자리, 오른쪽 = 새 글 자리 + 의성어 조각(빨간 점선 = AI가 짚은 근원 칸, 파란 점선 = 캐릭터 칸).
 --grid: 자리 찾기 그림에 10% 눈금을 그려 보낸다.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
-    FONT_PATH, FONT_RATIO, H, W, Busy, SfxAsk, place_page, settle, settle_word, short_look, sound_words,
+    FONT_PATH, FONT_RATIO, PIECE_RATIO, H, W, Busy, SfxAsk, place_page, place_word, settle, short_look, sound_words,
 )
 from firstory.schemas import TextBlock  # noqa: E402
 
@@ -93,19 +93,22 @@ def main():
         tout += sum(c.output_tokens for c in costs)
         got = settle(busy, blocks, spots) if spots else None
         new = [TextBlock(paragraphs=b, **g) for b, g in zip(blocks, got)] if got else []
-        sw = settle_word(busy, word, wspot, new or pg["old"])
+        sw = place_word(busy, word, wspot, new or pg["old"])
         name = f"img/{i:02d}{pg['image'].suffix}"
         shutil.copy(pg["image"], out_dir / name)
-        dot = (f'<span class="dot" style="left:{wspot["x"]}%;top:{wspot["y"]}%"></span>' if wspot else "")
-        bx = wspot.get("box") if wspot else None
-        if bx:
-            dot += f'<span class="box" style="left:{bx[0]}%;top:{bx[1]}%;width:{bx[2] - bx[0]}%;height:{bx[3] - bx[1]}%"></span>'
 
-        word_html = (f'<span class="sw {sw.color}" style="left:{sw.x}%;top:{sw.y}%">{html.escape(sw.text)}</span>' if sw else "")
-        moved = (f"밀림 ({wspot['x']:.1f}, {wspot['y']:.1f}) → ({sw.x}, {sw.y})" if sw and wspot and (abs(sw.x - wspot["x"]) > 0.05 or abs(sw.y - wspot["y"]) > 0.05)
-                 else ("AI 자리 그대로" if sw else "놓을 곳 없음 → null" if wspot else "AI 답 없음 → null"))
-        meta = (f"<b>{html.escape(pg['name'])} {pg['order']}쪽</b> · 말 <b>{html.escape(word)}</b> · AI가 고른 주인 <b>{html.escape((wspot or {}).get('owner', '-'))}</b>"
-                f" · {moved} · 글 자리 {'새 자리' if new else '못 정함(기존 자리로 그림)'} · {ms / 1000:.1f}초"
+        def rect(bx, cls):
+            return f'<span class="{cls}" style="left:{bx[0]}%;top:{bx[1]}%;width:{bx[2] - bx[0]}%;height:{bx[3] - bx[1]}%"></span>'
+
+        dot = ""
+        if wspot:
+            dot = rect(wspot["source"], "box") + "".join(rect(b, "cbox") for _, b in wspot["chars"])
+        word_html = "".join(f'<span class="sw" style="left:{q.x}%;top:{q.y}%;color:{sw.color}">{html.escape(q.text)}</span>'
+                            for q in sw.pieces) if sw else ""
+        placed = (f"조각 {len(sw.pieces)}개 · 색 {sw.color}" if sw else ("놓을 곳 없음 → null" if wspot else "AI 답 없음 → null"))
+        meta = (f"<b>{html.escape(pg['name'])} {pg['order']}쪽</b> · 말 <b>{html.escape(word)}</b>"
+                f" · 근원 <b>{html.escape((wspot or {}).get('owner', '-'))}</b> ({(wspot or {}).get('kind', '-')})"
+                f" · {placed} · 글 자리 {'새 자리' if new else '못 정함(기존 자리로 그림)'} · {ms / 1000:.1f}초"
                 f" · 입력 {sum(c.input_tokens for c in costs)} / 출력 {sum(c.output_tokens for c in costs)}토큰")
         rows.append(f"""
 <section><div class="meta">{meta}</div>
@@ -125,14 +128,14 @@ section{{margin:0 0 28px}} .meta{{font-size:14px;margin:4px 0 8px}}
 .pg{{position:relative;container-type:inline-size;aspect-ratio:{W}/{H}}} .pg img{{width:100%;height:100%;object-fit:cover;display:block}}
 .tb{{position:absolute;font-family:K;font-size:{FONT_RATIO * 100:g}cqw;line-height:1.55;white-space:nowrap}} .tb p{{margin:0 0 .93em}}
 .tb.dark{{color:#4a4a4a}} .tb.light{{color:#fff}}
-.sw{{position:absolute;transform:translate(-50%,-50%);font-family:K;font-weight:700;font-size:3.5cqw;line-height:1.2;white-space:nowrap}}
+.sw{{position:absolute;transform:translate(-50%,-50%);font-family:K;font-weight:700;font-size:{PIECE_RATIO * 100:g}cqw;line-height:1.2;white-space:nowrap;-webkit-text-stroke:.6px #fff;paint-order:stroke}}
 .sw.dark{{color:#4a4a4a;text-shadow:0 0 .12em #fff,0 0 .12em #fff}} .sw.light{{color:#fff;text-shadow:0 0 .12em #333,0 0 .12em #333}}
-.box{{position:absolute;border:2px dashed rgba(0,120,255,.8);box-sizing:border-box}}
+.box{{position:absolute;border:2px dashed rgba(230,0,0,.85);box-sizing:border-box}} .cbox{{position:absolute;border:1.5px dashed rgba(0,120,255,.7);box-sizing:border-box}}
 .dot{{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;border:2px solid red;box-sizing:border-box;opacity:.8}}
 pre{{white-space:pre-wrap;font-size:13px}}
 </style>
-<h1>의성어 자리 실험 (#92){' — 눈금' if args.grid else ''}</h1>
-<p>{len(pages)}쪽 · 입력 {tin} / 출력 {tout}토큰. 빨간 고리 = AI가 처음 짚은 말 가운데, 파란 점선 = AI가 짚은 주인 칸, 글자 = 코드 검사 뒤 최종 자리. 말 글자 크기는 그림 폭 3.5%.</p>"""
+<h1>의성어 자리 실험 (#92, #102){' — 눈금' if args.grid else ''}</h1>
+<p>{len(pages)}쪽 · 입력 {tin} / 출력 {tout}토큰. 빨간 점선 = AI가 짚은 근원 칸, 파란 점선 = AI가 짚은 캐릭터 칸, 글자 = 코드가 놓은 조각(서버가 고른 색). 조각 글자 크기는 그림 폭 {PIECE_RATIO * 100:g}%.</p>"""
     (out_dir / "index.html").write_text(head + "".join(rows), encoding="utf-8")
     print(out_dir / "index.html", f"tokens in={tin} out={tout}")
 
