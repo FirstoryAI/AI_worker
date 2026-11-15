@@ -529,7 +529,13 @@ _car = (400.0, 800.0, 460.0, 860.0)
 _holder, _leg = (380.0, 350.0, 600.0, 920.0), (200.0, 300.0, 410.0, 900.0)   # 다리 칸이 자동차 끝에 살짝 겹침
 assert _others("object", _car, [_holder, _leg]) == [_leg]
 _face, _owner, _big = (500.0, 300.0, 560.0, 360.0), (480.0, 290.0, 600.0, 900.0), (300.0, 100.0, 900.0, 1000.0)
-assert _others("face", _face, [_big, _owner]) == [_big]                    # 넉넉한 남의 칸이 얼굴을 덮어도 그 칸은 남는다
+assert _others("face", _face, [_big, _owner]) == []                       # 얼굴을 덮는 칸은 모두 뺀다(안긴 장면: 안은 캐릭터 칸이 얼굴을 덮는다)
+_side_by = (580.0, 100.0, 900.0, 1000.0)
+assert _others("face", _face, [_owner, _side_by]) == [_side_by]            # 얼굴을 안 덮는 옆 캐릭터는 남는다
+# 실험(11/16) 5쪽: 너구리 품에 안긴 토끼 얼굴 → 덮는 칸이 둘. 놓을 곳이 있어야 한다
+hug = {"owner": "모모", "kind": "face", "source": (39.0, 23.0, 51.0, 45.0),
+       "chars": [("모모", (35.0, 19.0, 52.0, 79.0)), ("라라", (37.0, 4.0, 73.0, 79.0))]}
+assert place_word(white, "훌쩍훌쩍", hug, []) is not None
 assert _others("face", _face, []) == [] and _others("object", _car, [_leg]) == []
 # 조각은 글 덩어리·접히는 선·여백을 지킨다
 fold = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (47.0, 40.0, 53.0, 50.0), "chars": []}, [])

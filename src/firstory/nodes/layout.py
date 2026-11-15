@@ -660,9 +660,13 @@ def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float
 
 def _others(kind: str, source: tuple[float, float, float, float],
             chars: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
-    """근원보다 가까우면 안 되는 캐릭터 칸 (px). 근원과 가장 많이 겹치는 캐릭터 하나만 뺀다:
-    face면 그 얼굴의 주인, object면 그 물건을 든 캐릭터. 겹침이 같으면 더 작은 칸(근원에 딱 맞는 쪽).
-    겹치는 캐릭터가 없으면 아무도 빼지 않는다 (#102)."""
+    """근원보다 가까우면 안 되는 캐릭터 칸 (px) (#102).
+    face: 얼굴 가운데를 덮는 칸은 모두 뺀다 — 얼굴 주인과, 안긴 장면에서 그 얼굴을 품은 캐릭터(실험 11/16, 안긴 쪽 2/4).
+    object: 물건과 가장 많이 겹치는 캐릭터 하나(든 캐릭터)만 뺀다. 같으면 더 작은 칸. 물건에 살짝 걸친 다른 캐릭터는 남는다."""
+    if kind == "face":
+        mid = ((source[0] + source[2]) / 2, (source[1] + source[3]) / 2)
+        return [c for c in chars if _rect_dist(mid, c) > 0]
+
     def inter(c):
         w = min(source[2], c[2]) - max(source[0], c[0])
         h = min(source[3], c[3]) - max(source[1], c[1])
