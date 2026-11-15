@@ -541,3 +541,30 @@ finally:
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None
 assert calls[0]["schema"] is TextPlacement and calls[0]["system"] == sys0 and calls[0]["image"] == img
 print("sound word ok")
+
+
+# ── 의성어 나누기·조각 크기·색 (#102) ──
+from firstory.nodes.layout import FONT_RATIO as _FR, contrast, delta_e, pick_color, piece_size, split_word  # noqa: E402
+
+assert split_word("데굴데굴") == ["데굴", "데굴"]
+assert split_word("두근두근") == ["두근", "두근"]
+assert split_word("데굴 데굴") == ["데굴", "데굴"]
+for _w in ("우당탕탕", "와르르르", "엉엉", "꼬르륵", "콩닥콩닥콩닥", "톡"):
+    assert split_word(_w) == [_w], _w
+_pw, _ph = piece_size("데굴")
+assert abs(_pw - text_width("데굴") * 0.025 / _FR) < 1e-6 and abs(_ph - W * 0.025 * 1.2) < 1e-6
+assert round(contrast((255, 255, 255), (0, 0, 0)), 1) == 21.0
+assert delta_e((255, 255, 255), (255, 255, 255)) == 0
+
+
+def _solid(rgb):
+    return Busy(png(Image.new("RGB", (W, H), rgb)))
+
+
+_box = [(800.0, 400.0, 100.0, 60.0)]
+assert pick_color(_solid((255, 255, 255)), _box) == "#7B4FD6"
+assert pick_color(_solid((32, 32, 32)), _box) == "#F0661E"
+assert pick_color(_solid((240, 225, 190)), _box) == "#7B4FD6"
+assert pick_color(_solid((170, 190, 230)), _box) == "#4A4A4A"
+assert pick_color(_solid((255, 255, 255)), _box * 2) == "#7B4FD6"   # 두 조각 = 같은 한 색
+print("split color ok")

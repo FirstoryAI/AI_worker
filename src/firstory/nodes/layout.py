@@ -566,6 +566,73 @@ def word_size(word: str) -> tuple[float, float]:
     return text_width(word) * SFX_RATIO / FONT_RATIO, W * SFX_RATIO * SFX_LINE_H
 
 
+PIECE_RATIO = 0.025                # 의성어 조각 글자 크기 = 그림 폭의 2.5% (#102, 손글씨 예시 비율)
+PALETTE: list[tuple[str, tuple[int, int, int]]] = [   # 의성어 색 후보. 순서 = 동점일 때 우선 (#102)
+    ("#7B4FD6", (0x7B, 0x4F, 0xD6)),   # 보라
+    ("#F0661E", (0xF0, 0x66, 0x1E)),   # 주황
+    ("#E03E4E", (0xE0, 0x3E, 0x4E)),   # 빨강
+    ("#2D6BD9", (0x2D, 0x6B, 0xD9)),   # 파랑
+    ("#2A9D55", (0x2A, 0x9D, 0x55)),   # 초록
+    ("#FFFFFF", (0xFF, 0xFF, 0xFF)),   # 흰색
+    ("#4A4A4A", (0x4A, 0x4A, 0x4A)),   # 진한 회색
+]
+MIN_CONTRAST = 3.0                 # 의성어 색 후보가 되는 WCAG 대비
+
+
+def split_word(word: str) -> list[str]:
+    """같은 두 글자가 두 번 반복되는 4글자 말(데굴데굴)만 두 조각, 나머지는 한 조각. 공백은 빼고 본다 (#102)"""
+    w = word.replace(" ", "")
+    if len(w) == 4 and w[:2] == w[2:]:
+        return [w[:2], w[2:]]
+    return [w]
+
+
+def piece_size(text: str) -> tuple[float, float]:
+    """조각 상자 크기(px): 본문 글꼴로 잰 폭을 조각 글자 크기 비율만큼 바꾼다"""
+    return text_width(text) * PIECE_RATIO / FONT_RATIO, W * PIECE_RATIO * SFX_LINE_H
+
+
+def contrast(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """두 색의 WCAG 대비 (1~21)"""
+    la, lb = luminance(a), luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
+    """sRGB(0~255) → CIELAB (D65)"""
+    def lin(c: float) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (lin(c) for c in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def delta_e(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """두 색의 차이 (CIE76 ΔE)"""
+    return math.dist(_lab(a), _lab(b))
+
+
+def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]]) -> str:
+    """조각 상자들(px x, y, w, h) 둘레 배경과 가장 잘 구별되는 팔레트 색 하나 (#102).
+    모든 배경과 대비 3:1 이상인 색 중 ΔE 최솟값이 가장 큰 색, 없으면 대비 최솟값이 가장 큰 색. 동점은 팔레트 순서."""
+    pad = W * BUSY_PAD
+    bgs = [busy.mean_rgb(x - pad, y - pad, w + 2 * pad, h + 2 * pad) for x, y, w, h in boxes]
+    rows = [(hexc, min(contrast(rgb, bg) for bg in bgs), min(delta_e(rgb, bg) for bg in bgs)) for hexc, rgb in PALETTE]
+    ok = [r for r in rows if r[1] >= MIN_CONTRAST]
+    if ok:
+        return max(ok, key=lambda r: r[2])[0]   # max는 동점이면 앞의 것
+    return max(rows, key=lambda r: r[1])[0]
+
+
 def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float, float, float, float]]) -> bool:
     x0, y0 = cx - ww / 2, cy - wh / 2
     x1, y1 = x0 + ww, y0 + wh
