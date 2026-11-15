@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
-    BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, GAP, H, MAX_LINE, W,
+    BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, FONT_PX, FONT_RATIO, GAP, H, MAX_LINE, W,
     Busy, block_size, build_blocks, calmest, calmest_pick, side_of, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
 )
 from firstory import llm, mock  # noqa: E402
@@ -63,9 +63,9 @@ assert len(blocks) == 2 and len(blocks[0]) == 2 and blocks[1] == [["라라는 �
 assert blocks[0][0] == [lines[0]] and blocks[0][1][0] == lines[1]
 assert merge(blocks) == [blocks[0] + blocks[1]]
 
-w, h = block_size([["가나다"], ["라마"]]); assert h == (2 + 0.6) * 29 * 1.55
+w, h = block_size([["가나다"], ["라마"]]); assert h == (2 + 0.6) * FONT_PX * 1.55
 assert abs(w - text_width("가나다")) < 1e-9
-assert block_size([["가", "나", "다"]])[1] == 3 * 29 * 1.55
+assert block_size([["가", "나", "다"]])[1] == 3 * FONT_PX * 1.55
 
 
 # ── 합성 그림: 왼쪽 위(x 5~45%, y 7~40%)만 줄무늬, 나머지는 흰 바탕 ──
@@ -281,7 +281,7 @@ q = '라라가 말했어요.\n"어제는 혼자 하고 싶었어.\n라라가 싫
 llm.set_structured_override(fake_with(TextChunking(blocks=[[[0], [1]], [[2]]])))
 ql, cks, _ = chunk_page(q)
 assert ql == ['라라가 말했어요.', '"어제는 혼자 하고 싶었어. 라라가 싫어서 간 건 아니야."', '미나가 웃었어요.'], ql   # 대사는 한 줄 (#77)
-assert [l for c in cks for p in c for l in p] == ql
+assert [" ".join(p) for c in cks for p in c] == ql   # 긴 대사는 wrap_line이 자를 수 있어도 한 문단에 남는다
 # 38% 넘는 긴 줄은 build_blocks 가 자른다
 longq = '"어제는 내 그림을 혼자 끝내고 싶었어. 라라가 싫어서 간 건 아니야."'
 llm.set_structured_override(fake_with(TextChunking(blocks=[[[0, 1]]])))
@@ -426,7 +426,7 @@ assert sound_words("별표 없음.") == []
 assert short_look("A small white rabbit with long ears. Wears a yellow apron.") == "A small white rabbit with long ears"
 assert len(short_look("x" * 300)) == 120
 ww, wh = word_size("훌쩍")
-assert abs(ww - text_width("훌쩍") * 0.035 / 0.015) < 1e-6 and abs(wh - W * 0.035 * 1.2) < 1e-6
+assert abs(ww - text_width("훌쩍") * 0.035 / FONT_RATIO) < 1e-6 and abs(wh - W * 0.035 * 1.2) < 1e-6
 
 # place_page: 별표 없는 쪽은 지금 호출 그대로
 calls.clear()

@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
-    FONT_PATH, H, W, Busy, SfxAsk, place_page, settle, settle_word, short_look, sound_words,
+    FONT_PATH, FONT_RATIO, H, W, Busy, SfxAsk, place_page, settle, settle_word, short_look, sound_words,
 )
 from firstory.schemas import TextBlock  # noqa: E402
 
@@ -123,7 +123,7 @@ body{{font-family:-apple-system,sans-serif;margin:16px;background:#f6f5f2;color:
 section{{margin:0 0 28px}} .meta{{font-size:14px;margin:4px 0 8px}}
 .pair{{display:grid;grid-template-columns:1fr 1fr;gap:12px}} figure{{margin:0}} figcaption{{font-size:12px;color:#666;margin-top:4px}}
 .pg{{position:relative;container-type:inline-size;aspect-ratio:{W}/{H}}} .pg img{{width:100%;height:100%;object-fit:cover;display:block}}
-.tb{{position:absolute;font-family:K;font-size:1.5cqw;line-height:1.55;white-space:nowrap}} .tb p{{margin:0 0 .93em}}
+.tb{{position:absolute;font-family:K;font-size:{FONT_RATIO * 100:g}cqw;line-height:1.55;white-space:nowrap}} .tb p{{margin:0 0 .93em}}
 .tb.dark{{color:#4a4a4a}} .tb.light{{color:#fff}}
 .sw{{position:absolute;transform:translate(-50%,-50%);font-family:K;font-weight:700;font-size:3.5cqw;line-height:1.2;white-space:nowrap}}
 .sw.dark{{color:#4a4a4a;text-shadow:0 0 .12em #fff,0 0 .12em #fff}} .sw.light{{color:#fff;text-shadow:0 0 .12em #333,0 0 .12em #333}}

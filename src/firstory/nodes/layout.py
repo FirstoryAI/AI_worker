@@ -22,7 +22,7 @@ from ..schemas import CostEntry, SoundWord, TextBlock, TextChunking, TextPlaceme
 log = logging.getLogger("firstory.layout")
 
 W, H = 1920, 1088                  # 그림 기준 크기(px)
-FONT_RATIO = 0.015                 # 글자 크기 = 그림 폭의 1.5%
+FONT_RATIO = 0.0235                # 글자 크기 = 그림 폭의 2.35% (프론트 StoryTextBlocks 2.35cqw와 같아야 한다, #98)
 LINE_H = 1.55                      # 줄 높이 = 글자 크기 배수
 PARA_GAP = 0.6                     # 문단 사이 = 줄 수
 MAX_LINE = 0.38                    # 한 줄 최대 폭 = 그림 폭의 38%
@@ -35,7 +35,7 @@ DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림
 DARK_TEXT = (0x4A, 0x4A, 0x4A)     # 화면의 진한 글자색 (프론트 StoryTextBlocks)
 WHITE_BIAS = 0.9                   # 흰 글자 대비가 진한 글자 대비의 이 배 이상이면 흰 글자 (비슷하면 흰 글자가 더 잘 읽힌다)
 
-FONT_PX = round(W * FONT_RATIO)    # 29
+FONT_PX = round(W * FONT_RATIO)    # 45
 LINE_PX = FONT_PX * LINE_H
 FONT_PATH = Path(__file__).parents[1] / "assets/fonts/MemomentKkukkukk.woff2"
 GRID = 8                           # 자리 찾기 격자(px)
