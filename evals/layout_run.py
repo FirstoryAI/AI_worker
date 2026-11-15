@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from firstory.nodes.layout import (  # noqa: E402
     BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, GAP, H, MAX_LINE, W,
-    Busy, block_size, build_blocks, calmest, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
+    Busy, block_size, build_blocks, calmest, side_of, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
 )
 from firstory import llm, mock  # noqa: E402
 from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
@@ -139,14 +139,16 @@ out = settle(busy, [blk], [{"x": 80, "y": 8, "color": "dark"}])
 assert out and out[0]["x"] / 100 * W + bw <= W * (1 - EDGE_X / 100) + 1, out
 check_one(out[0], bw, bh)
 
-# 3) 덩어리 2개: 1 이 오른쪽 면 위, 2 가 왼쪽 면 → 읽는 순서를 지키는 자리로 옮김
+# 3) 덩어리 2개: 1 이 오른쪽 면 위, 2 가 왼쪽 면 → 1 은 왼쪽 면, 2 는 오른쪽 면으로 옮김 (#95)
+assert side_of(0, 2) == 0 and side_of(1, 2) == 1 and side_of(0, 1) is None and side_of(2, 3) is None
 blk2 = [["넷째 줄이에요.", "다섯째 줄이에요."]]
 bw2, bh2 = block_size(blk2)
 s1 = {"x": 55, "y": 8, "color": "dark"}
 out = settle(busy, [blk, blk2], [s1, {"x": 8, "y": 70, "color": "light"}])
-assert out and len(out) == 2 and out[0] == {"x": 55.0, "y": 8.0, "color": "dark"}, out
+assert out and len(out) == 2, out
+check_one(out[0], bw, bh)
 check_one(out[1], bw2, bh2)
-assert (page(out[1], bw2), out[1]["y"]) > (page(out[0], bw), out[0]["y"]), out       # 오른쪽 면, 1 보다 아래
+assert page(out[0], bw) == 0 and page(out[1], bw2) == 1, out
 assert out[1]["color"] == "dark"
 
 # 3-1) 순서를 지키는 두 자리(왼쪽 면 위 → 오른쪽 면 아래)는 그대로 둔다
@@ -163,7 +165,13 @@ assert out and len(out) == 2
 sep_x = max(ax - (bx + bw2), bx - (ax + bw))
 sep_y = max(ay - (by + bh2), by - (ay + bh))
 assert max(sep_x, sep_y) >= gap_px - 1, out
-assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"])
+assert page(out[0], bw) == 0 and page(out[1], bw2) == 1, out                         # 둘 다 오른쪽이라 답해도 1 은 왼쪽 면 (#95)
+
+# 3-3) 둘 다 왼쪽 면 아래라고 답하면 1 은 그대로, 2 는 오른쪽 면으로 (#95)
+out = settle(busy, [blk, blk2], [{"x": 8, "y": 70, "color": "dark"}, {"x": 8, "y": 80, "color": "dark"}])
+assert out and out[0] == {"x": 8.0, "y": 70.0, "color": "dark"}, out
+assert page(out[1], bw2) == 1, out
+check_one(out[1], bw2, bh2)
 
 # 4) 픽셀로 답한 자리는 %로 바꾼다
 out = settle(busy, [blk], [{"x": 1037, "y": 800, "color": "dark"}])
@@ -178,6 +186,12 @@ assert settle(full, [blk, blk2], [{"x": 6, "y": 8, "color": "dark"}, {"x": 55, "
 left_full = Busy(png(stripes((0, 0, 50, 100))))
 out = settle(left_full, [blk], [{"x": 8, "y": 8, "color": "dark"}])
 assert out and out[0]["x"] / 100 * W >= W / 2, out
+
+# 6-1) 두 덩어리는 반대 면으로 넘어가지 않는다: 오른쪽 면이 다 줄무늬면 settle은 None, calmest는 그래도 양쪽에 하나씩 (#95)
+right_full = Busy(png(stripes((50, 0, 100, 100))))
+assert settle(right_full, [blk, blk2], [{"x": 8, "y": 70, "color": "dark"}, {"x": 55, "y": 75, "color": "dark"}]) is None
+out = calmest(right_full, [blk, blk2])
+assert out and page(out[0], bw) == 0 and page(out[1], bw2) == 1, out
 
 
 # 7) 어디도 기준을 못 넘으면 settle은 None, calmest는 가장 덜 복잡한 곳 (오른쪽 아래만 옅은 줄무늬)
@@ -209,6 +223,7 @@ assert out[0]["color"] == "dark"                                               #
 dark_bg = Busy(png(stripes_two((0, 0, 100, 100), soft=(70, 70, 90), bg=(50, 50, 60))))
 out = calmest(dark_bg, [blk, blk2])
 assert out and len(out) == 2, out
+assert page(out[0], bw) == 0 and page(out[1], bw2) == 1, out                         # 1 은 왼쪽, 2 는 오른쪽 면 (#95)
 assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"]), out
 assert all(o["color"] == "light" for o in out), out
 # AI가 dark라고 답해도 어두운 바탕이면 흰 글자 (#77)
