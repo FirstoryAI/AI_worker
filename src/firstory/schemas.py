@@ -352,11 +352,18 @@ class OwnerBox(BaseModel):
     y1: float = Field(description="아래쪽 끝 %")
 
 
+class CharacterBox(BaseModel):
+    """그림에 보이는 캐릭터 하나의 몸 칸 (#102)"""
+    name: str = Field(description="캐릭터 이름")
+    box: OwnerBox = Field(description="몸 전체(머리·귀·팔·꼬리 포함)를 윤곽에 붙게 감싸는 칸. 안고 있는 캐릭터들은 한 칸")
+
+
 class WordSpot(BaseModel):
-    owner: str = Field(description="이 소리·움직임을 내는(그림에 없으면 반응하는) 인물·물건 이름")
-    owner_box: OwnerBox = Field(description="그 주인의 몸 전체(머리·귀·팔·꼬리 포함)를 감싸는 네모 칸. 붙어 있는 인물들은 함께 감싼다")
-    x: float = Field(description="말 가운데, 그림 폭 대비 %(0~100)")
-    y: float = Field(description="말 가운데, 그림 높이 대비 %(0~100)")
+    """의성어 근원과 캐릭터 칸. 자리는 코드가 정한다 (#102)"""
+    owner: str = Field(description="소리·움직임의 근원 이름(인물 또는 물건). 근원이 그림에 없으면 반응하는 인물")
+    source_kind: Literal["face", "object"] = Field(description="근원이 캐릭터 얼굴(머리)이면 face, 물건이면 object")
+    source_box: OwnerBox = Field(description="소리·움직임이 나는 곳을 윤곽에 붙게 감싸는 칸: face면 얼굴(머리), object면 그 물건")
+    characters: list[CharacterBox] = Field(description="그림에 보이는 모든 캐릭터의 몸 칸. 물건을 든 캐릭터도 넣는다")
 
 
 class TextPlacementWithWord(TextPlacement):

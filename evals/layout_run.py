@@ -418,7 +418,7 @@ from firstory.llm import prompt  # noqa: E402,F401
 from firstory.nodes.layout import (  # noqa: E402
     SFX_FOLD, SfxAsk, settle_word, short_look, sound_words, word_size,
 )
-from firstory.schemas import OwnerBox, SoundWord, TextPlacementWithWord, WordSpot  # noqa: E402
+from firstory.schemas import CharacterBox, OwnerBox, SoundWord, TextPlacementWithWord, WordSpot  # noqa: E402
 
 assert sound_words("미루가 **훌쩍훌쩍** 울었어요.") == ["훌쩍훌쩍"]
 assert sound_words("**톡** 치고 ** 냠냠 **") == ["톡", "냠냠"]
@@ -435,30 +435,39 @@ spots, wspot, costs = place_page(img, [blk_a])
 assert wspot is None and calls[0]["schema"] is TextPlacement and "의성어" not in calls[0]["system"]
 sys0, user0 = calls[0]["system"], calls[0]["user"]
 
-# 별표 있는 쪽: 의성어 단락 + 의성어 스키마
-ask = SfxAsk(word="훌쩍훌쩍", text="미루가 **훌쩍훌쩍** 울었어요.", cast=[("미루", "A small white rabbit")])
+# 별표 있는 쪽: 의성어 단락 + 의성어 스키마. AI는 근원·캐릭터 칸만 답한다 (#102)
+ask = SfxAsk(word="데굴데굴", text="초코는 옆에서 자동차를 **데굴데굴** 굴렸어요.", cast=[("초코", "A small hedgehog")])
+ob = lambda *v: OwnerBox(x0=v[0], y0=v[1], x1=v[2], y1=v[3])  # noqa: E731
+good = WordSpot(owner="초코", source_kind="object", source_box=ob(40, 70, 48, 78),
+                characters=[CharacterBox(name="초코", box=ob(35, 30, 60, 85)), CharacterBox(name="모아", box=ob(10, 30, 30, 85))])
 calls.clear()
-llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")],
-                                                            sound_word=WordSpot(owner="미루", owner_box=OwnerBox(x0=50, y0=30, x1=60, y1=80), x=62.5, y=31))))
+llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=good)))
 spots, wspot, costs = place_page(img, [blk_a], ask)
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and [c.node for c in costs] == ["layout:place"]
-assert wspot == {"x": 62.5, "y": 31.0, "owner": "미루", "box": (50.0, 30.0, 60.0, 80.0)}, wspot
+assert wspot == {"owner": "초코", "kind": "object", "source": (40.0, 70.0, 48.0, 78.0),
+                 "chars": [("초코", (35.0, 30.0, 60.0, 85.0)), ("모아", (10.0, 30.0, 30.0, 85.0))]}, wspot
 assert calls[0]["schema"] is TextPlacementWithWord
-assert all(s in calls[0]["system"] for s in ("훌쩍훌쩍", "미루", "A small white rabbit")) and "{{" not in calls[0]["system"]
-assert calls[0]["system"].startswith(sys0) and calls[0]["user"].startswith(user0)   # 지금 지시 뒤에 붙일 뿐
+sysmsg = calls[0]["system"]
+assert all(s in sysmsg for s in ("데굴데굴", "초코", "A small hedgehog", "source_kind", "자동차")) and "{{" not in sysmsg
+assert "말 크기" not in sysmsg
+assert sysmsg.startswith(sys0) and calls[0]["user"].startswith(user0)   # 지금 지시 뒤에 붙일 뿐
 
 
-def wplaced(x, y, box=None):
+def wplaced(spot):
     llm.set_structured_override(fake_with(TextPlacementWithWord.model_construct(
-        blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=WordSpot.model_construct(owner="미루", x=x, y=y, owner_box=box))))
+        blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=spot)))
     return place_page(img, [blk_a], ask)[1]
 
 
-assert wplaced(1200, 300) == {"x": 1200 / W * 100, "y": 300 / H * 100, "owner": "미루", "box": None}   # 픽셀 → %, 칸 없음
-assert wplaced(62, 31, OwnerBox.model_construct(x0=960, y0=30, x1=60, y1=80))["box"] is None          # 칸이 뒤집힘 → 칸 없음
-assert wplaced(62, 31, OwnerBox.model_construct(x0=50, y0=float("nan"), x1=60, y1=80))["box"] is None
-assert wplaced(62, 31, OwnerBox.model_construct(x0=50, y0=30, x1=60, y1=180))["box"] is None          # 0~100 밖 → 칸 없음
-assert wplaced(float("nan"), 30) is None and wplaced(-5, 30) is None and wplaced("a", 30) is None
+bad_char = good.model_copy(update={"characters": [CharacterBox.model_construct(name="x", box=ob(60, 10, 50, 20)), good.characters[1]]})
+assert wplaced(bad_char)["chars"] == [("모아", (10.0, 30.0, 30.0, 85.0))]                       # 뒤집힌 칸만 뺀다
+assert wplaced(good.model_copy(update={"characters": []}))["chars"] == []
+assert wplaced(good.model_copy(update={"source_box": ob(50, 10, 40, 20)})) is None              # 근원 칸이 뒤집힘
+assert wplaced(good.model_copy(update={"source_box": OwnerBox.model_construct(x0=50, y0=float("nan"), x1=60, y1=80)})) is None
+assert wplaced(good.model_copy(update={"source_box": ob(50, 30, 60, 180)})) is None              # 0~100 밖
+assert wplaced(WordSpot.model_construct(owner="a", source_kind="hand", source_box=ob(1, 1, 2, 2), characters=[])) is None
+assert wplaced(WordSpot.model_construct(owner="a", source_kind="face", characters=[])) is None   # 근원 칸 없음
+assert wplaced(None) is None
 llm.set_structured_override(fake_with(RuntimeError("boom")))
 assert place_page(img, [blk_a], ask)[:2] == ([], None)
 
@@ -515,8 +524,7 @@ dark = Busy(png(Image.new("RGB", (W, H), (20, 20, 30))))
 assert settle_word(dark, "훌쩍", {"x": 75.0, "y": 40.0, "owner": "미루"}, []).color == "light"
 # 눈금: grid=True면 의성어 쪽 그림에 10% 눈금을 그려 보내고 지시에 알린다. 별표 없는 쪽은 그림 그대로
 calls.clear()
-llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")],
-                                                            sound_word=WordSpot(owner="미루", owner_box=OwnerBox(x0=50, y0=30, x1=60, y1=80), x=62.5, y=31))))
+llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=good)))
 place_page(img, [blk_a], ask, grid=True)
 assert calls[0]["image"] != img and "눈금" in calls[0]["system"]
 gi = Image.open(io.BytesIO(calls[0]["image"]))
@@ -530,14 +538,14 @@ place_page(img, [blk_a], None, grid=True)
 assert calls[0]["image"] == img and calls[0]["system"] == sys0
 # 의성어 준비(크기 재기·지시·눈금)가 터지면 의성어 없이 예전 호출로 — 글 자리는 그대로 받는다 (리뷰 #3)
 import firstory.nodes.layout as _lay  # noqa: E402
-_orig_ws = _lay.word_size
-_lay.word_size = lambda w: (_ for _ in ()).throw(RuntimeError("font"))
+_orig_wg = _lay.with_grid
+_lay.with_grid = lambda image: (_ for _ in ()).throw(RuntimeError("grid"))
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
 try:
     spots, wspot, _ = place_page(img, [blk_a], ask, grid=True)
 finally:
-    _lay.word_size = _orig_ws
+    _lay.with_grid = _orig_wg
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None
 assert calls[0]["schema"] is TextPlacement and calls[0]["system"] == sys0 and calls[0]["image"] == img
 print("sound word ok")

@@ -449,18 +449,20 @@ def _sanitize_spots(spots, n: int) -> list[dict]:
 
 
 def _sanitize_word(spot) -> dict | None:
-    """AI 의성어 답 → {"x": %, "y": %, "owner"}. 숫자가 아니거나 유한하지 않거나 음수면 None. 100 넘는 값은 픽셀로 보고 %로."""
-    try:
-        x, y = float(spot.x), float(spot.y)
-    except (AttributeError, TypeError, ValueError):
+    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": [(이름, 칸 %)]} (#102).
+    근원 칸이 이상하거나 종류가 face·object가 아니면 None. 이상한 캐릭터 칸은 그 칸만 뺀다."""
+    if spot is None:
         return None
-    if not (math.isfinite(x) and math.isfinite(y)) or x < 0 or y < 0:
+    kind = getattr(spot, "source_kind", None)
+    source = _sanitize_box(getattr(spot, "source_box", None))
+    if kind not in ("face", "object") or source is None:
         return None
-    if x > 100:
-        x = x / W * 100
-    if y > 100:
-        y = y / H * 100
-    return {"x": x, "y": y, "owner": str(getattr(spot, "owner", "") or ""), "box": _sanitize_box(getattr(spot, "owner_box", None))}
+    chars = []
+    for c in getattr(spot, "characters", None) or []:
+        box = _sanitize_box(getattr(c, "box", None))
+        if box is not None:
+            chars.append((str(getattr(c, "name", "") or ""), box))
+    return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": chars}
 
 
 def _sanitize_box(box) -> tuple[float, float, float, float] | None:
@@ -495,7 +497,7 @@ def with_grid(image: bytes) -> bytes:
 
 def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = False
                ) -> tuple[list[dict], dict | None, list[CostEntry]]:
-    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 자리 {"x", "y", "owner"} (sfx가 있을 때만).
+    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 근원·캐릭터 칸 (_sanitize_word, sfx가 있을 때만).
     settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다.
     sfx가 없으면 지금(#92 전) 호출과 똑같다."""
     if not blocks:
@@ -509,10 +511,8 @@ def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, g
     schema = TextPlacement
     if sfx is not None:
         try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리는 그대로 받는다)
-            ww, wh = word_size(sfx.word)
             sys_w = system + "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
                                               cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
-                                              size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%",
                                               grid=GRID_NOTE if grid else "")
             img_w = with_grid(image) if grid else image
         except Exception as e:  # noqa: BLE001
