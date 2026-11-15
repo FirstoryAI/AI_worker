@@ -20,8 +20,9 @@ from openai import BadRequestError
 from PIL import Image
 
 from ..llm import client, prompt, structured
-from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, StoryText, TextBlock
-from .layout import DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, block_size, build_blocks, calmest_pick, chunk_page, merge, place_page, settle, split_lines, wrap_line
+from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, SoundWord, StoryText, TextBlock
+from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, build_blocks, calmest_pick, chunk_page, merge,
+                     place_page, settle, settle_word, short_look, sound_words, split_lines, wrap_line)
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -312,20 +313,35 @@ def _chunk(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
         return []
 
 
+def _sfx(order: int, text: str, chars) -> Optional[SfxAsk]:
+    """쪽 글의 별표 말(의성어·의태어) → 자리 찾기에 같이 물을 것. 없으면 None. 둘 이상이면 첫 번째만 (#92)"""
+    words = sound_words(text)
+    if not words:
+        return None
+    if len(words) > 1:   # 쪽 번호와 개수만. 말·글은 남기지 않는다
+        log.warning("쪽 %d: 의성어 %d개 → 첫 번째만", order, len(words))
+    return SfxAsk(word=words[0], text=text, cast=[(c.name, short_look(c.visual_description)) for c in chars])
+
+
 def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: list[CostEntry],
-             redraw: Optional[Callable[[list[Block], list[str]], Optional[bytes]]] = None) -> list[TextBlock]:
+             redraw: Optional[Callable[[list[Block], list[str]], Optional[bytes]]] = None,
+             sfx: Optional[SfxAsk] = None) -> tuple[list[TextBlock], Optional[SoundWord]]:
     """그림 위 글 자리. 자리 찾기 → 2덩어리면 안 될 때 한 덩어리로 합쳐 다시 → 안 되면 redraw(덩어리, where)로 다시 그린 그림에서 다시
     → 그래도 안 되면 마지막 그림에서 가장 조용한 곳(calmest_pick) → 그림을 못 읽으면 왼쪽 면 위 기본 자리.
     2덩어리는 양쪽 면(1번 왼쪽·2번 오른쪽)에 빈 곳이 있으면 나누고, 한 군데뿐이면 합친다. 다시 그릴 때는 왼쪽 위·오른쪽 위에 빈 곳 (#95).
-    늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도)."""
+    늘 유효한 text_blocks를 돌려준다 (그림이 없어 읽지 못할 때도).
+    sfx가 있으면 마지막 그림에 대한 마지막 답의 의성어 자리를 글 자리가 정해진 뒤 settle_word로 검사해 같이 돌려준다 (#92)."""
     got: Optional[list[dict]] = None
+    last_word: Optional[tuple[Busy, Optional[dict]]] = None   # (그 답을 받은 그림, 의성어 답)
     cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
     try:
         def fit(img: bytes, busy: Busy, bl: list[Block]):
-            spots, _, pcosts = place_page(img, bl)
+            nonlocal last_word
+            spots, word, pcosts = place_page(img, bl, sfx, grid=sfx is not None)
             for c in pcosts:
                 c.node = f"layout:place:page{order}"
             costs.extend(pcosts)
+            last_word = (busy, word)
             return settle(busy, bl, spots), spots
 
         def place(img: bytes, busy: Busy):
@@ -346,6 +362,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
             again = redraw(blocks, where)
             if again is not None:
                 cur = None   # 쪽 그림이 바뀌었다 — 새 그림을 못 읽으면 처음 그림으로 자리를 정하지 않는다
+                last_word = None   # 처음 그림의 의성어 자리도 쓰지 않는다
                 cur = Busy(again)
                 placed, got, spots = place(again, cur)
         if got is not None:
@@ -366,7 +383,14 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
         log.warning("쪽 %d: 글 자리를 못 찾아 기본 자리에 둠", order)
         blocks = merge(blocks) if len(blocks) > 1 else blocks
         got = [{"x": DEFAULT_SPOT[0], "y": DEFAULT_SPOT[1], "color": DEFAULT_SPOT[2]}] * len(blocks)
-    return [TextBlock(paragraphs=b, **g) for b, g in zip(blocks, got)]
+    tbs = [TextBlock(paragraphs=b, **g) for b, g in zip(blocks, got)]
+    word: Optional[SoundWord] = None
+    if sfx is not None and cur is not None and last_word is not None and last_word[0] is cur:
+        try:
+            word = settle_word(cur, sfx.word, last_word[1], tbs)
+        except Exception as e:  # noqa: BLE001 — 의성어가 글 자리·생성을 막지 않는다
+            log.warning("쪽 %d: 의성어 자리 계산 실패: %s", order, type(e).__name__)
+    return tbs, word
 
 
 def _ref(data: bytes) -> bytes:
@@ -461,8 +485,8 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
                 state["images"] += 1
                 return again
 
-            tbs = _arrange(p.order, img, blocks, costs, redraw)
-            return (PageImage(order=p.order, path=state["key"], status="completed", text_blocks=tbs),
+            tbs, sw = _arrange(p.order, img, blocks, costs, redraw, _sfx(p.order, p.text, chars))
+            return (PageImage(order=p.order, path=state["key"], status="completed", text_blocks=tbs, sound_word=sw),
                     int((time.time() - t0) * 1000), state["tin"], state["tout"], state["images"])
         except Exception as e:  # noqa: BLE001
             return PageImage(order=p.order, status="failed", error=str(e)[:300]), int((time.time() - t0) * 1000), 0, 0, 0
@@ -477,7 +501,9 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             except Exception as e:  # noqa: BLE001
                 log.warning("쪽 %d: 저장된 그림을 읽지 못함: %s", p.order, type(e).__name__)
                 image = None
-            return pi.model_copy(update={"text_blocks": _arrange(p.order, image, blocks, costs)})
+            chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
+            tbs, sw = _arrange(p.order, image, blocks, costs, sfx=_sfx(p.order, p.text, chars))
+            return pi.model_copy(update={"text_blocks": tbs, "sound_word": sw})
         except Exception as e:  # noqa: BLE001 — 글 자리 계산이 전체 생성을 막지 않는다. 쪽은 이전 그대로 (글이 여전히 다르면 다음 실행에 다시 한다)
             log.warning("쪽 %d: 글 자리 다시 계산 실패 → 이전 그대로: %s", p.order, type(e).__name__)
             return pi

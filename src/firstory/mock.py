@@ -83,7 +83,8 @@ def fake_structured(*, node, model, schema, system, user, image=None):
                                                              characters_in_scene=["포포"], image_prompt="scene 1 revised")])
     if schema is PolishedStory:
         given = [int(n) for n in re.findall(r'"order": (\d+)', system)]   # 글 다시 만들기면 다시 쓴 쪽만 온다
-        return PolishedStory(pages=[PolishedPage(order=i, text=f"{i}쪽. 포포는 깡충 뛰었어요.") for i in given])
+        return PolishedStory(pages=[PolishedPage(order=i, text=f"{i}쪽. 포포는 **깡충** 뛰었어요." if i % 2 else f"{i}쪽. 포포는 깡충 뛰었어요.")
+                                    for i in given])   # 홀수 쪽만 의성어 (#92)
     if schema is ReadingGuide:
         return ReadingGuide(synopsis="토끼 포포는 친구에게 같이 놀자고 했다가 거절당해 속상했어요. 다음 날 포포는 다시 말을 걸었어요.",
                             prompts=[GuidePrompt(id="q1", after_page=3, text="포포는 어떤 기분이었을까요?", purpose="empathy",

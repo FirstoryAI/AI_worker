@@ -376,6 +376,12 @@ def status(thread_id: str) -> dict:
     return out
 
 
+def _sound_word(pi) -> Optional[dict]:
+    """그림 위 의성어 자리 {text, x, y, color} (#92). owner(아이 이름일 수 있음)는 내리지 않는다"""
+    sw = pi.sound_word if pi else None
+    return sw.model_dump(include={"text", "x", "y", "color"}) if sw else None
+
+
 def _text_blocks(pi) -> Optional[list[dict]]:
     """그림 위 글 덩어리 [{paragraphs, x, y, color}]. 그림이 실패한 쪽·옛 결과는 None"""
     return [b.model_dump() for b in pi.text_blocks] if pi and pi.text_blocks else None
@@ -416,6 +422,7 @@ def result(thread_id: str) -> dict:
         "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
                    "text_position": _text_position(p, images.get(p.order)),
                    "text_blocks": _text_blocks(images.get(p.order)),
+                   "sound_word": _sound_word(images.get(p.order)),
                    "image_path": images[p.order].path if p.order in images else None,
                    "image_status": "done" if p.order in images else "failed"} for p in story.pages],
         "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,
