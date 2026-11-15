@@ -1,7 +1,7 @@
 """
 위기 신호 판단 (G2, API 스펙 4장). 판단만 한다. 횟수를 세고 막는 건 Spring이 한다.
 - judge: 부모 글(/v1/safety/check) 또는 완성 본문을 OK / SENSITIVE / REVISE / CRISIS로
-- safety_output: 완성 동화 본문 판단 노드. polish_story 뒤에서 reading_guide·illustrate와 나란히 돈다.
+- safety_output: 완성 동화 본문 판단 노드. polish_story 뒤에서 reading_guide → illustrate와 나란히 돈다.
   그림만 다시(illustrate_only)는 글이 그대로라 지나가지 않고, 지난 판단(output_safety)이 남는다
 """
 from __future__ import annotations

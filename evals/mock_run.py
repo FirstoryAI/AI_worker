@@ -616,12 +616,21 @@ def striped_png(clear=None) -> bytes:
     return buf.getvalue()
 
 
-# 8-1) 처음 만들기: 그림이 있는 모든 쪽에 덩어리 1~2개, 줄을 이으면 원문
+# 8-1) 처음 만들기: 그림이 있는 모든 쪽에 덩어리 1~2개, 줄을 이으면 원문. 가이드 질문 쪽은 원문 + 맨 밑 문단에 질문 (#100)
+q_by_page = {}
+for q in r2["guide"].prompts:
+    q_by_page.setdefault(q.after_page, []).append(q.text)
+assert q_by_page, r2["guide"]
 for pg in r2["story"].pages:
     pi = next(x for x in r2["illustrations"].pages if x.order == pg.order)
     assert pi.text_blocks and 1 <= len(pi.text_blocks) <= 2, pi
-    assert lines_of(pi) == joined(pg.text), (lines_of(pi), pg.text)
+    assert lines_of(pi) == joined(pg.text + "".join(q_by_page.get(pg.order, []))), (lines_of(pi), pg.text)
+    if pg.order in q_by_page:
+        assert joined("".join(pi.text_blocks[-1].paragraphs[-1])) == joined("".join(q_by_page[pg.order])), pi.text_blocks
     assert all(b.color in ("dark", "light") and 0 <= b.x <= 100 and 0 <= b.y <= 100 for b in pi.text_blocks)
+edges = {(e.source, e.target) for e in graph.get_graph().edges}
+assert ("reading_guide", "illustrate") in edges and ("polish_story", "illustrate") not in edges, edges   # 가이드가 그림보다 먼저
+assert ("polish_story", "safety_output") in edges and ("safety_output", "render") in edges, edges
 n2 = [c.node for c in r2["cost"]]
 assert all(f"layout:place:page{o}" in n2 for o in ALL_PAGES) and "layout:chunk" not in n2 and "layout:place" not in n2, n2
 assert "layout:chunk:page1" in n2   # 줄이 둘이라 덩어리 나누기를 부른다
@@ -685,6 +694,38 @@ new_nodes = [c.node for c in v2["cost"][before:]]
 assert "layout:place:page1" in new_nodes and not any(n.startswith("layout:") and n.endswith(tuple(f"page{o}" for o in range(2, 20)))
                                                       for n in new_nodes), new_nodes
 assert not any(n.startswith("illustrate:page") for n in new_nodes)
+
+# 글 다시 만들기에서 가이드가 질문을 다른 쪽으로 옮기면, 두 쪽 모두 그림은 그대로 두고 글 자리만 다시 (#100)
+g_old = v2["guide"]
+old_q = g_old.prompts[0]
+moved_to = old_q.after_page + 1
+moved = g_old.model_copy(update={"prompts": [old_q.model_copy(update={"after_page": moved_to}), *g_old.prompts[1:]]})
+
+
+def move_q(**kw):
+    if kw["schema"] is StoryRevision:
+        return StoryRevision(reason="mock", pages=[next(pg for pg in v2["story"].pages if pg.order == 1)])   # 글은 그대로
+    if kw["schema"] is PolishedStory:
+        return PolishedStory(pages=[PolishedPage(order=1, text=next(pg.text for pg in v2["story"].pages if pg.order == 1))])
+    if kw["node"] == "reading_guide":
+        return moved
+    return recording_structured(**kw)
+
+
+llm.set_structured_override(move_q)
+before_m = len(v2["cost"])
+graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "질문만"}), cfg8)
+v3 = graph.get_state(cfg8).values
+pages3 = {pi.order: pi for pi in v3["illustrations"].pages}
+src, dst = old_q.after_page, moved_to
+assert pages3[src].path == pages2[src].path and pages3[dst].path == pages2[dst].path      # 그림 그대로
+assert joined(old_q.text) not in lines_of(pages3[src]), pages3[src].text_blocks
+assert joined("".join(pages3[dst].text_blocks[-1].paragraphs[-1])) == joined(old_q.text), pages3[dst].text_blocks
+nodes_m = [c.node for c in v3["cost"][before_m:]]
+assert f"layout:place:page{src}" in nodes_m and f"layout:place:page{dst}" in nodes_m, nodes_m
+assert not any(n.startswith("illustrate:page") for n in nodes_m), nodes_m
+v2 = v3   # 아래 수정은 이 버전에서 이어 간다
+llm.set_structured_override(recording_structured)
 
 # 글 자리(text_position)만 바뀐 수정은 장면이 그대로라 그림을 하나도 다시 그리지 않는다
 cur1 = next(pg for pg in v2["story"].pages if pg.order == 1)
@@ -997,6 +1038,80 @@ assert nw.sound_word is None and any("쪽 1" in x and "의성어 자리 없음" 
 assert not any("톡" in x for x in logged), logged
 llm.set_structured_override(recording_structured)
 print("sound word ok")
+
+# 8-x) 가이드 질문은 그 쪽 마지막 덩어리의 맨 밑 새 문단 (#100). 원고·덩어리 나누기 AI에는 질문이 없다
+from firstory.schemas import AfterReading, BeforeReading, GuidePrompt, ReadingGuide  # noqa: E402
+
+
+def guide_of(*pairs):   # (after_page, text)
+    return ReadingGuide(synopsis="s", prompts=[GuidePrompt(id=f"q{i}", after_page=a, text=t, purpose="empathy")
+                                               for i, (a, t) in enumerate(pairs)],
+                        before_reading=BeforeReading(intent="i", tips=["t"]), after_reading=AfterReading(bridge_question="b"))
+
+
+Q = "포포가 울었어요. 포포 마음은 어땠을까요?"
+qs = il._questions(guide_of((2, Q), (2, "다음엔 어떻게 할까요?"), (0, "범위 밖?"), (99, "범위 밖?")))
+assert qs[2] == ["포포가 울었어요.", "포포 마음은 어땠을까요?", "다음엔 어떻게 할까요?"], qs
+assert il._questions(None) == {}
+st_q = st5.model_copy(update={"pages": [pg.model_copy(update={"text": f"{pg.order}쪽 첫 줄이에요. 둘째 줄이에요. 셋째 줄이에요."})
+                                        for pg in st5.pages[:3]]})
+il.set_image_override(mock.tiny_png)
+chunk_sys: list[str] = []
+
+
+def chunk_rec(**kw):
+    if kw["schema"] is TextChunking:
+        chunk_sys.append(kw["system"])
+    return mock.fake_structured(**kw)
+
+
+llm.set_structured_override(chunk_rec)
+gq = guide_of((2, Q), (2, "다음엔 어떻게 할까요?"), (99, "범위 밖?"))
+ill_q = il.illustrate({"story": st_q, "guide": gq, "output_prefix": "stories/q/runs/1/"})["illustrations"]
+p2 = next(pi for pi in ill_q.pages if pi.order == 2)
+assert p2.text_blocks[-1].paragraphs[-1] == qs[2], p2.text_blocks                       # 마지막 덩어리의 마지막 문단 = 질문 줄
+assert len(p2.text_blocks[-1].paragraphs) >= 2, p2.text_blocks                          # 본문과 다른 문단
+assert lines_of(p2) == joined(st_q.pages[1].text + "".join(qs[2])), lines_of(p2)         # 본문 다음 질문
+assert not any("마음은" in s or "다음엔" in s for s in chunk_sys), chunk_sys              # 덩어리 나누기 AI에 질문을 안 넘김
+assert all(lines_of(pi) == joined(pg.text) for pg, pi in zip(st_q.pages, ill_q.pages) if pi.order != 2)   # 다른 쪽엔 없음
+assert st_q.pages[1].text.endswith("셋째 줄이에요.")                                      # 원고 그대로
+assert not il._stale(st_q.pages[1], p2, qs[2]) and il._stale(st_q.pages[1], p2, [])       # 질문까지 같아야 그대로
+ill_none = il.illustrate({"story": st_q, "output_prefix": "stories/q/runs/2/"})["illustrations"]
+assert [pi.text_blocks for pi in ill_none.pages if pi.order != 2] == [pi.text_blocks for pi in ill_q.pages if pi.order != 2]
+assert lines_of(ill_none.pages[1]) == joined(st_q.pages[1].text)                         # 가이드가 없으면 지금과 같다
+# 두 덩어리로 나뉘어도 질문은 둘째 덩어리 끝 (합쳐지면 한 덩어리의 끝)
+llm.set_structured_override(lambda **kw: TextChunking(blocks=[[[0]], [[1, 2]]]) if kw["schema"] is TextChunking
+                            else mock.fake_structured(**kw))
+ill_q2 = il.illustrate({"story": st_q, "guide": gq, "output_prefix": "stories/q/runs/3/"})["illustrations"]
+p2b = ill_q2.pages[1]
+assert p2b.text_blocks[-1].paragraphs[-1] == qs[2] and lines_of(p2b) == lines_of(p2), p2b.text_blocks
+# 그림만 다시(illustrate_only)도 같은 질문을 붙인다. 글·질문이 그대로인 쪽은 덩어리를 다시 나누지 않는다
+llm.set_structured_override(chunk_rec)
+chunk_sys.clear()
+again = il.illustrate_only({"story": st_q, "guide": gq, "illustrations": ill_q, "regenerate_pages": [2],
+                            "output_prefix": "stories/q/runs/4/"})["illustrations"]
+assert again.pages[1].text_blocks[-1].paragraphs[-1] == qs[2] and not chunk_sys, (again.pages[1].text_blocks, chunk_sys)
+# 리뷰 #2: 다시 만들 때 질문이 새로 붙은 쪽은 그 그림에 질문 자리가 없을 수 있다 → 자리를 못 찾으면 다시 그리기 허용 (실행당 상한 그대로)
+llm.set_structured_override(mock.fake_structured)
+il.set_image_override(lambda p, refs: striped_png() if refs and "Scene" in p else mock.tiny_png(p, refs))
+busy_prev = il.illustrate({"story": st_q, "output_prefix": "stories/q/runs/5/"})["illustrations"]   # 질문 없이 그린 그림
+moved_q = il.illustrate({"story": st_q, "guide": gq, "illustrations": busy_prev, "redraw_pages": [],
+                         "output_prefix": "stories/q/runs/6/"})
+mq = {pi.order: pi for pi in moved_q["illustrations"].pages}
+assert mq[2].path.startswith("stories/q/runs/6/"), mq[2].path                                 # 질문이 새로 붙은 2쪽은 다시 그림
+assert mq[2].text_blocks[-1].paragraphs[-1] == qs[2], mq[2].text_blocks
+mq_nodes = [c.node for c in moved_q["cost"]]
+assert "illustrate:page2" in mq_nodes and not any(n in mq_nodes for n in ("illustrate:page1", "illustrate:page3")), mq_nodes
+assert mq[1].path == busy_prev.pages[0].path and mq[3].path == busy_prev.pages[2].path        # 나머지 쪽은 그대로
+# 질문이 그대로인 쪽은 글만 바뀌어도 다시 그리지 않는다 (지금처럼 자리만)
+body_only = st_q.model_copy(update={"pages": [pg.model_copy(update={"text": pg.text + " 넷째 줄이에요."}) if pg.order == 2 else pg
+                                              for pg in st_q.pages]})
+same_q = il.illustrate({"story": body_only, "guide": gq, "illustrations": moved_q["illustrations"], "redraw_pages": [],
+                        "output_prefix": "stories/q/runs/7/"})
+assert same_q["illustrations"].pages[1].path == mq[2].path and not any(c.node.startswith("illustrate:page") for c in same_q["cost"]), same_q["cost"]
+il.set_image_override(mock.tiny_png)
+llm.set_structured_override(recording_structured)
+print("question in page ok")
 
 print("text blocks ok")
 
