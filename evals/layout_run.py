@@ -528,4 +528,16 @@ calls.clear()
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
 place_page(img, [blk_a], None, grid=True)
 assert calls[0]["image"] == img and calls[0]["system"] == sys0
+# 의성어 준비(크기 재기·지시·눈금)가 터지면 의성어 없이 예전 호출로 — 글 자리는 그대로 받는다 (리뷰 #3)
+import firstory.nodes.layout as _lay  # noqa: E402
+_orig_ws = _lay.word_size
+_lay.word_size = lambda w: (_ for _ in ()).throw(RuntimeError("font"))
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+try:
+    spots, wspot, _ = place_page(img, [blk_a], ask, grid=True)
+finally:
+    _lay.word_size = _orig_ws
+assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None
+assert calls[0]["schema"] is TextPlacement and calls[0]["system"] == sys0 and calls[0]["image"] == img
 print("sound word ok")

@@ -508,15 +508,20 @@ def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, g
     user = f"덩어리 {len(blocks)}개의 자리를 읽는 순서대로 답하세요."
     schema = TextPlacement
     if sfx is not None:
-        ww, wh = word_size(sfx.word)
-        system += "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
-                                   cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
-                                   size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%",
-                                   grid=GRID_NOTE if grid else "")
-        user += " 의성어 자리도 답하세요."
-        schema = TextPlacementWithWord
-        if grid:
-            image = with_grid(image)
+        try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리는 그대로 받는다)
+            ww, wh = word_size(sfx.word)
+            sys_w = system + "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
+                                              cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
+                                              size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%",
+                                              grid=GRID_NOTE if grid else "")
+            img_w = with_grid(image) if grid else image
+        except Exception as e:  # noqa: BLE001
+            log.warning("의성어 자리 묻기 준비 실패 → 의성어 없이: %s", type(e).__name__)
+            sfx = None
+        else:
+            system, image = sys_w, img_w
+            user += " 의성어 자리도 답하세요."
+            schema = TextPlacementWithWord
     try:
         answer, cost = structured_image(
             node="layout:place",

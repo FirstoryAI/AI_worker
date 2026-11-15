@@ -977,6 +977,24 @@ answers = iter([
 ])
 tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png((0, 0, 100, 100)), ask)
 assert sw_ is not None and (sw_.x, sw_.y) == (30.0, 60.0), sw_
+# 의성어 준비가 터져도 그 쪽 그림은 완성, 의성어만 None (리뷰 #3)
+orig_short = il.short_look
+il.short_look = lambda d: (_ for _ in ()).throw(RuntimeError("boom"))
+llm.set_structured_override(mock.fake_structured)
+try:
+    sb = il.illustrate({"story": sfx_story, "output_prefix": "stories/t/runs/24/"})["illustrations"]
+finally:
+    il.short_look = orig_short
+assert all(p.status == "completed" and p.text_blocks and p.sound_word is None for p in sb.pages), sb.pages
+# 별표 말이 있는데 의성어를 못 놓으면 쪽 번호만 경고 (리뷰 #4)
+llm.set_structured_override(lambda **kw: TextPlacementWithWord.model_construct(blocks=[mock.BlockSpot(x=5, y=7, color="dark")], sound_word=None)
+                            if kw["node"] == "layout:place" else mock.fake_structured(**kw))
+logged.clear()
+logging.getLogger("firstory.illustrate").addHandler(h)
+nw = il.illustrate({"story": two, "output_prefix": "stories/t/runs/25/"})["illustrations"].pages[0]
+logging.getLogger("firstory.illustrate").removeHandler(h)
+assert nw.sound_word is None and any("쪽 1" in x and "의성어 자리 없음" in x for x in logged), logged
+assert not any("톡" in x for x in logged), logged
 llm.set_structured_override(recording_structured)
 print("sound word ok")
 

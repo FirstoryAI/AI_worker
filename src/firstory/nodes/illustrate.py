@@ -315,12 +315,16 @@ def _chunk(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
 
 def _sfx(order: int, text: str, chars) -> Optional[SfxAsk]:
     """쪽 글의 별표 말(의성어·의태어) → 자리 찾기에 같이 물을 것. 없으면 None. 둘 이상이면 첫 번째만 (#92)"""
-    words = sound_words(text)
-    if not words:
+    try:
+        words = sound_words(text)
+        if not words:
+            return None
+        if len(words) > 1:   # 쪽 번호와 개수만. 말·글은 남기지 않는다
+            log.warning("쪽 %d: 의성어 %d개 → 첫 번째만", order, len(words))
+        return SfxAsk(word=words[0], text=text, cast=[(c.name, short_look(c.visual_description)) for c in chars])
+    except Exception as e:  # noqa: BLE001 — 의성어 준비가 쪽 그림을 망치지 않는다
+        log.warning("쪽 %d: 의성어 준비 실패 → 의성어 없이: %s", order, type(e).__name__)
         return None
-    if len(words) > 1:   # 쪽 번호와 개수만. 말·글은 남기지 않는다
-        log.warning("쪽 %d: 의성어 %d개 → 첫 번째만", order, len(words))
-    return SfxAsk(word=words[0], text=text, cast=[(c.name, short_look(c.visual_description)) for c in chars])
 
 
 def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: list[CostEntry],
@@ -390,6 +394,8 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
             word = settle_word(cur, sfx.word, last_word[1], tbs)
         except Exception as e:  # noqa: BLE001 — 의성어가 글 자리·생성을 막지 않는다
             log.warning("쪽 %d: 의성어 자리 계산 실패: %s", order, type(e).__name__)
+    if sfx is not None and word is None:   # 쪽 번호만 (설계: null이면 경고 로그)
+        log.warning("쪽 %d: 의성어 자리 없음 → null", order)
     return tbs, word
 
 
