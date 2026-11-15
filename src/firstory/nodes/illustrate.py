@@ -20,7 +20,7 @@ from openai import BadRequestError
 from PIL import Image
 
 from ..llm import client, prompt, structured
-from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, SoftenedScene, SoundWord, StoryText, TextBlock
+from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
 from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, build_blocks, calmest_pick, chunk_page, merge,
                      place_page, settle, settle_word, short_look, sound_words, split_lines, wrap_line)
 from ..state import PipelineState
@@ -270,18 +270,27 @@ def _squash(text: str) -> str:
     return re.sub(r"\s|\*\*", "", text)
 
 
-def _stale(p, pi: PageImage) -> bool:
-    """이미 그린 쪽의 글 배치가 지금 글과 맞지 않나. 이전 text_blocks의 줄을 이은 글(공백 뺀)과 지금 글을 견준다.
+def _questions(guide: Optional[ReadingGuide]) -> dict[int, list[str]]:
+    """가이드 질문 → 쪽 번호별 질문 줄 (#100). 같은 쪽 질문이 여럿이면 가이드 순서대로 잇는다. 가이드가 없으면 {}."""
+    out: dict[int, list[str]] = {}
+    for q in (guide.prompts if guide else []):
+        out.setdefault(q.after_page, []).extend(split_lines(q.text))
+    return out
+
+
+def _stale(p, pi: PageImage, tail: list[str] = ()) -> bool:
+    """이미 그린 쪽의 글 배치가 지금 글과 맞지 않나. 이전 text_blocks의 줄을 이은 글(공백 뺀)과 지금 글(+ 질문 줄 tail)을 견준다.
     text_blocks가 아직 없는 옛 쪽도 다시 한다. 그림이 없는(실패한) 쪽은 배치할 게 없다."""
     if pi.status != "completed" or not pi.path:
         return False
     if not pi.text_blocks:
         return True
     old_lines = [line for b in pi.text_blocks for para in b.paragraphs for line in para]
-    if _squash("".join(old_lines)) != _squash(" ".join(split_lines(p.text))):
+    lines = split_lines(p.text) + list(tail)
+    if _squash("".join(old_lines)) != _squash(" ".join(lines)):
         return True
     # 글은 같아도 줄 나누기 규칙이 바뀌었으면(대사 한 줄, #77) 덩어리·자리만 다시 한다
-    return old_lines != [w for line in split_lines(p.text) for w in wrap_line(line)]
+    return old_lines != [w for line in lines for w in wrap_line(line)]
 
 
 def _side(spot: Optional[dict], block: Block, i: int) -> str:
@@ -292,7 +301,16 @@ def _side(spot: Optional[dict], block: Block, i: int) -> str:
     return "left" if spot["x"] / 100 * W + bw / 2 < W / 2 else "right"
 
 
-def _chunk(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
+def _chunk(order: int, text: str, costs: list[CostEntry], tail: list[str] = ()) -> list[Block]:
+    """쪽 글 → 덩어리. tail(가이드 질문 줄, #100)은 덩어리 나누기에 넘기지 않고 마지막 덩어리의 새 문단으로 붙인다."""
+    blocks = _chunk_text(order, text, costs)
+    if not tail:
+        return blocks
+    para = [w for line in tail for w in wrap_line(line)]
+    return [*blocks[:-1], [*blocks[-1], para]] if blocks else [[para]]
+
+
+def _chunk_text(order: int, text: str, costs: list[CostEntry]) -> list[Block]:
     """쪽 글 → 덩어리. 글 자리 계산은 생성을 막지 않는다: 어디서 실패하든 쪽의 줄을 한 덩어리로,
     그것도 안 되면 빈 목록(_arrange가 기본 자리로 처리)을 돌려준다. 글 내용은 로그에 남기지 않는다."""
     try:
@@ -417,12 +435,14 @@ def _ref(data: bytes) -> bytes:
 
 
 def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None,
-         request: Optional[str] = None):
+         request: Optional[str] = None, questions: Optional[dict[int, list[str]]] = None):
     """img_prefix: 이번 실행의 그림 key 앞부분 (…/images). 일부 쪽만 다시 그리면 나머지 쪽과 시트는
     prev의 key를 그대로 둔다 — 파일을 복사하지 않는다 (API 스펙 G4).
     only_pages가 None이면 시트·표지·모든 쪽, 집합이면 그 쪽만(빈 집합이면 쪽은 그대로). 표지는 전부 그릴 때와
-    제목이 바뀌었거나 이전 표지가 없을 때만 다시 그린다. request(부모 메모)는 다시 그리는 쪽 프롬프트에만 붙인다."""
+    제목이 바뀌었거나 이전 표지가 없을 때만 다시 그린다. request(부모 메모)는 다시 그리는 쪽 프롬프트에만 붙인다.
+    questions(쪽 번호 → 가이드 질문 줄)는 그 쪽 글 맨 밑 문단으로 붙인다 (#100)."""
     costs: list[CostEntry] = []
+    questions = questions or {}
     ill = prev.model_copy(deep=True) if prev else Illustrations()
     by_name = {c.name: c for c in story.characters}
 
@@ -466,10 +486,11 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
             refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
             old_pi = prev_pages.get(p.order)   # 그림만 다시: 글이 그대로면 덩어리 나누기는 이전 그대로 (AI를 다시 부르지 않는다)
-            if old_pi and old_pi.status == "completed" and old_pi.path and old_pi.text_blocks and not _stale(p, old_pi):
+            tail = questions.get(p.order, [])
+            if old_pi and old_pi.status == "completed" and old_pi.path and old_pi.text_blocks and not _stale(p, old_pi, tail):
                 blocks = [[list(para) for para in tb.paragraphs] for tb in old_pi.text_blocks]
             else:
-                blocks = _chunk(p.order, p.text, costs)   # 덩어리를 먼저 나눠야 그림에 필요한 빈 곳 크기를 안다
+                blocks = _chunk(p.order, p.text, costs, tail)   # 덩어리를 먼저 나눠야 그림에 필요한 빈 곳 크기를 안다
             img, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, [block_size(b) for b in blocks], request), refs),
                                    p.image_prompt, f"{img_prefix} page {p.order}", costs)
             state = {"key": storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img),
@@ -501,7 +522,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         """그림은 그대로 두고 (이전 key) 글이 바뀐 쪽의 덩어리와 자리만 다시. 다시 그리지 않는다."""
         pi = by_order[p.order]
         try:
-            blocks = _chunk(p.order, p.text, costs)
+            blocks = _chunk(p.order, p.text, costs, questions.get(p.order, []))
             try:
                 image = storage.read_bytes(pi.path)
             except Exception as e:  # noqa: BLE001
@@ -561,7 +582,8 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         front_job = (ex.submit(lambda: front_cover(cover_job.result()[0] if cover_job else ill.cover))
                      if redraw_front else None)
         drawn = {p.order for p in targets}
-        stale = [p for p in story.pages if p.order not in drawn and p.order in by_order and _stale(p, by_order[p.order])]
+        stale = [p for p in story.pages if p.order not in drawn and p.order in by_order
+                 and _stale(p, by_order[p.order], questions.get(p.order, []))]
         relayouts = ex.map(relayout, stale)   # 글이 바뀌어 장면은 그대로인 쪽: 그림을 그대로 쓰고 배치만
         for pi, ms, tin, tout, n in ex.map(work, targets):
             by_order[pi.order] = pi
@@ -591,17 +613,18 @@ def illustrate(state: PipelineState) -> dict:
         return {"illustrations": Illustrations(), "cost": [], "redraw_pages": None}
     story, prev, redraw = state["story"], state.get("illustrations"), state.get("redraw_pages")
     prefix = storage.join(state["output_prefix"], "images")
+    qs = _questions(state.get("guide"))
     if redraw is None or prev is None:
-        ill, costs = _run(story, prefix)
+        ill, costs = _run(story, prefix, questions=qs)
         return {"illustrations": ill, "cost": costs, "redraw_pages": None}
     done = {pi.order for pi in prev.pages if pi.status == "completed" and pi.path}
     pages = set(redraw) | ({p.order for p in story.pages} - done)
     by_order = {pi.order: pi for pi in prev.pages}
-    relayout = any(p.order in by_order and _stale(p, by_order[p.order]) for p in story.pages)
+    relayout = any(p.order in by_order and _stale(p, by_order[p.order], qs.get(p.order, [])) for p in story.pages)
     if (not pages and not relayout and prev.cover and prev.cover_title == story.title
             and prev.front_cover and prev.back_cover):   # 글·장면·제목·표지 다 그대로 — 전부 이전 실행 것
         return {"illustrations": prev, "cost": [], "redraw_pages": None}
-    ill, costs = _run(story, prefix, only_pages=pages, prev=prev)
+    ill, costs = _run(story, prefix, only_pages=pages, prev=prev, questions=qs)
     return {"illustrations": ill, "cost": costs, "redraw_pages": None}
 
 
@@ -628,5 +651,5 @@ def illustrate_only(state: PipelineState) -> dict:
     chosen = state.get("regenerate_pages")
     pages = (set(chosen) or None) if chosen is not None else _pages_from_feedback(fb)
     ill, costs = _run(state["story"], storage.join(state["output_prefix"], "images"), only_pages=pages,
-                      prev=state.get("illustrations"), request=_memo(fb))
+                      prev=state.get("illustrations"), request=_memo(fb), questions=_questions(state.get("guide")))
     return {"illustrations": ill, "cost": costs}
