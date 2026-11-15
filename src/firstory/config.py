@@ -20,7 +20,7 @@ class Config:
     model_main: str = _env("MODEL_MAIN", "gpt-5.5")
     model_interview: str = _env("MODEL_INTERVIEW", "gpt-5.4")   # 인터뷰 다음 질문. mini는 말이 미묘하게 어긋나 5.4 (#82)
     model_judge: str = _env("MODEL_JUDGE", _env("MODEL_MAIN", "gpt-5.5"))   # 프롬프트 실험 채점용 (lab.py)
-    image_model: str = _env("IMAGE_MODEL", "gpt-image-2")
+    image_model: str = _env("IMAGE_MODEL", "gpt-image-2.5-flare")  # gpt-image-2는 Deprecated, 값·토큰 같고 약 35% 빠름 (#93)
     image_quality: str = _env("IMAGE_QUALITY", "low")
     image_size: str = _env("IMAGE_SIZE", "1920x1088")  # 16:9. 가로·세로 모두 16의 배수여야 해서 1080 대신 1088
     cover_size: str = _env("COVER_SIZE", "1024x1024")  # 표지는 정사각형
