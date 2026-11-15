@@ -524,6 +524,19 @@ assert _closer_to_source((100.0, 100.0), (120.0, 90.0, 140.0, 110.0), [(50.0, 50
 assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), [(50.0, 50.0, 80.0, 80.0)]) is True
 assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), []) is True
 assert place_word(white, "엉엉", None, tb) is None
+# 실험(11/16 샘플 동화): 한쪽이 옆 캐릭터에 막혀도 조각마다 자기 쪽에서 따로 자리를 찾는다 (거울 대칭 아님)
+_ph = piece_size("데굴")[1] / H * 100
+for _word, _spot in (
+        ("데굴데굴", {"owner": "자동차", "kind": "object", "source": (46.0, 75.0, 53.0, 81.0),
+                     "chars": [("a", (63.0, 8.0, 86.0, 83.0)), ("b", (49.0, 39.0, 68.0, 82.0))]}),
+        ("사각사각", {"owner": "크레파스", "kind": "object", "source": (57.0, 67.0, 60.0, 74.0),
+                     "chars": [("a", (45.0, 33.0, 66.0, 74.0)), ("b", (68.0, 11.0, 100.0, 75.0))]})):
+    _got = place_word(white, _word, _spot, [])
+    assert _got and [p.side for p in _got.pieces] == ["left", "right"], (_word, _got)
+    _l, _r = _got.pieces
+    assert _l.x < _spot["source"][0] and _r.x > _spot["source"][2], _got                # 근원 양옆
+    assert abs(_l.y - _r.y) <= 2 * _ph + 0.1, _got                                        # 높이 차이는 조각 둘 높이까지
+    assert all(_spot["source"][1] - _ph - 0.1 <= p.y <= _spot["source"][3] + _ph + 0.1 for p in _got.pieces), _got   # 물건 높이 둘레
 # 견줄 상대에서 빼는 캐릭터는 근원과 가장 많이 겹치는 하나뿐 (같으면 더 작은 칸 = 근원 주인)
 _car = (400.0, 800.0, 460.0, 860.0)
 _holder, _leg = (380.0, 350.0, 600.0, 920.0), (200.0, 300.0, 410.0, 900.0)   # 다리 칸이 자동차 끝에 살짝 겹침

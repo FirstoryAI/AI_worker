@@ -717,23 +717,35 @@ def _offsets(signs: tuple[int, int] | None) -> list[tuple[float, float]]:
 
 
 def _place_pair(sc: _WordScene, size: tuple[float, float]) -> list[tuple[float, float]] | None:
-    """두 조각을 근원 양옆에 거울 대칭으로. face는 근원 위끝 높이, object는 근원 가운데 높이에서 시작해
-    두 조각을 같이 바깥으로 벌리고 위로 올린다. object는 근원 위끝보다 조각 하나 높이까지만 올라간다."""
+    """두 조각을 근원 양옆에. 왼쪽 조각은 근원 왼쪽에서 바깥(왼쪽)으로만, 오른쪽 조각은 오른쪽으로만 움직이며
+    각자 가장 가까운 자리를 찾는다 — 그림책 장면은 한쪽이 옆 캐릭터에 막히기 쉬워 거울 대칭으로는 거의 안 놓인다(실험 11/16).
+    시작 높이는 face면 근원 위끝, object면 근원 가운데. 위아래로 움직일 수 있되 face는 조각 아래끝이 근원 아래끝을,
+    object는 가운데가 근원 칸 ± 조각 높이를 넘지 않는다. 두 조각 높이 차이는 조각 둘 높이까지."""
     pw, ph = size
     x0, y0, x1, y1 = sc.source
     g = W * 0.01
     base = y0 if sc.kind == "face" else (y0 + y1) / 2
-    lx, rx = x0 - g - pw / 2, x1 + g + pw / 2
-    for dx, dy in _offsets((1, -1)):
-        y = base + dy
-        if sc.kind == "object" and y < y0 - ph:
-            continue
-        left, right = (lx - dx, y), (rx + dx, y)
-        if left[0] + pw / 2 > right[0] - pw / 2:   # 두 조각이 겹침
-            continue
-        if _piece_ok(sc, *left, pw, ph) and _piece_ok(sc, *right, pw, ph):
-            return [left, right]
-    return None
+    got = []
+    for sx, sign in ((x0 - g - pw / 2, -1), (x1 + g + pw / 2, 1)):
+        hit = None
+        for dx, dy in _offsets(None):
+            if dx * sign < 0:
+                continue
+            x, y = sx + dx, base + dy
+            if sc.kind == "face" and y + ph / 2 > y1:
+                continue
+            if sc.kind == "object" and not (y0 - ph <= y <= y1 + ph):
+                continue
+            if _piece_ok(sc, x, y, pw, ph):
+                hit = (x, y)
+                break
+        if hit is None:
+            return None
+        got.append(hit)
+    (lx, ly), (rx, ry) = got
+    if abs(ly - ry) > 2 * ph or lx + pw / 2 > rx - pw / 2:
+        return None
+    return got
 
 
 def _place_one(sc: _WordScene, size: tuple[float, float]) -> tuple[float, float] | None:
