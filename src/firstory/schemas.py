@@ -344,8 +344,17 @@ class TextPlacement(BaseModel):
     blocks: list[BlockSpot]
 
 
+class OwnerBox(BaseModel):
+    """소리 주인을 감싸는 네모 칸 (그림 폭·높이 대비 %)"""
+    x0: float = Field(description="왼쪽 끝 %")
+    y0: float = Field(description="위쪽 끝 %")
+    x1: float = Field(description="오른쪽 끝 %")
+    y1: float = Field(description="아래쪽 끝 %")
+
+
 class WordSpot(BaseModel):
     owner: str = Field(description="이 소리·움직임을 내는(그림에 없으면 반응하는) 인물·물건 이름")
+    owner_box: OwnerBox = Field(description="그 주인의 몸 전체(머리·귀·팔·꼬리 포함)를 감싸는 네모 칸. 붙어 있는 인물들은 함께 감싼다")
     x: float = Field(description="말 가운데, 그림 폭 대비 %(0~100)")
     y: float = Field(description="말 가운데, 그림 높이 대비 %(0~100)")
 

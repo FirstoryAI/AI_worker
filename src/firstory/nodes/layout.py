@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..config import config
 from ..llm import prompt, structured, structured_image
@@ -460,10 +460,40 @@ def _sanitize_word(spot) -> dict | None:
         x = x / W * 100
     if y > 100:
         y = y / H * 100
-    return {"x": x, "y": y, "owner": str(getattr(spot, "owner", "") or "")}
+    return {"x": x, "y": y, "owner": str(getattr(spot, "owner", "") or ""), "box": _sanitize_box(getattr(spot, "owner_box", None))}
 
 
-def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None
+def _sanitize_box(box) -> tuple[float, float, float, float] | None:
+    """주인 칸 → (x0, y0, x1, y1) %. 숫자가 아니거나 0~100 밖이거나 뒤집혔으면 None (칸 없이 간다)"""
+    try:
+        v = tuple(float(getattr(box, k)) for k in ("x0", "y0", "x1", "y1"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(a) and 0 <= a <= 100 for a in v) or v[0] >= v[2] or v[1] >= v[3]:
+        return None
+    return v
+
+
+GRID_NOTE = "그림에 10% 간격으로 빨간 눈금과 숫자(%)를 그려 두었다. 자리를 % 로 읽을 때 눈금을 쓴다. 눈금은 실제 그림에는 없다."
+
+
+def with_grid(image: bytes) -> bytes:
+    """그림에 10% 간격 빨간 눈금과 숫자를 그린다 (AI가 % 자리를 읽기 쉽게, #92)"""
+    img = Image.open(io.BytesIO(image)).convert("RGB")
+    d = ImageDraw.Draw(img, "RGBA")
+    font = ImageFont.load_default(size=max(14, img.width // 70))
+    for k in range(1, 10):
+        x, y = img.width * k / 10, img.height * k / 10
+        d.line([(x, 0), (x, img.height)], fill=(255, 0, 0, 110), width=2)
+        d.line([(0, y), (img.width, y)], fill=(255, 0, 0, 110), width=2)
+        d.text((x + 4, 4), f"{k * 10}", fill=(255, 0, 0, 230), font=font)
+        d.text((4, y + 2), f"{k * 10}", fill=(255, 0, 0, 230), font=font)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = False
                ) -> tuple[list[dict], dict | None, list[CostEntry]]:
     """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 자리 {"x", "y", "owner"} (sfx가 있을 때만).
     settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다.
@@ -481,9 +511,12 @@ def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None
         ww, wh = word_size(sfx.word)
         system += "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
                                    cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
-                                   size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%")
+                                   size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%",
+                                   grid=GRID_NOTE if grid else "")
         user += " 의성어 자리도 답하세요."
         schema = TextPlacementWithWord
+        if grid:
+            image = with_grid(image)
     try:
         answer, cost = structured_image(
             node="layout:place",
@@ -542,7 +575,7 @@ def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float
 
 
 def settle_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]) -> SoundWord | None:
-    """AI 의성어 자리 → 검사(여백·접히는 선·글 덩어리와 간격) → 어기면 반지름 안에서 가장 가까운 격자점 → 없으면 None.
+    """AI 의성어 자리 → 검사(여백·접히는 선·글 덩어리·주인 칸과 간격) → 어기면 반지름 안에서 가장 가까운 격자점 → 없으면 None.
     글자색은 그 자리 바탕 밝기로 정한다."""
     if spot is None or not word:
         return None
@@ -551,9 +584,14 @@ def settle_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock
     for b in blocks:
         bw, bh = block_size(b.paragraphs)
         boxes.append((b.x / 100 * W, b.y / 100 * H, bw, bh))
+    r = W * SFX_RADIUS
+    if spot.get("box"):   # 주인 칸도 피한다: 말은 주인 몸 바깥 옆에. 칸 안에서 나올 수 있게 반지름을 칸 반만큼 늘린다
+        x0, y0, x1, y1 = spot["box"]
+        bw, bh = (x1 - x0) / 100 * W, (y1 - y0) / 100 * H
+        boxes.append((x0 / 100 * W, y0 / 100 * H, bw, bh))
+        r += max(bw, bh) / 2
     cx, cy = spot["x"] / 100 * W, spot["y"] / 100 * H
     if not _word_ok(cx, cy, ww, wh, boxes):
-        r = W * SFX_RADIUS
         best = None
         steps = int(r // GRID)
         for i in range(-steps, steps + 1):
