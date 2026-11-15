@@ -54,8 +54,10 @@ def load(src: Path) -> list[dict]:
             old = [TextBlock(paragraphs=b["paragraphs"], x=b["x"], y=b["y"], color=b["color"].lower()) for b in p.get("textBlocks") or []]
             if not old:
                 continue
+            nested = src / "pages" / f"page-{n:02d}" / f"page-{n:02d}.webp"   # 노란접시 에셋 모양
+            flat = src / (p.get("image") or f"page-{n:02d}.webp")              # 프론트 sample-stories 모양 (인물 정보 없음)
             out.append({"name": story.get("title", src.name), "order": n, "text": p["text"],
-                        "image": src / "pages" / f"page-{n:02d}" / f"page-{n:02d}.webp", "old": old, "cast": SAMPLE_CAST})
+                        "image": nested if nested.exists() else flat, "old": old, "cast": SAMPLE_CAST if nested.exists() else []})
     return out
 
 
