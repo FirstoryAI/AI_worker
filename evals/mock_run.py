@@ -962,8 +962,8 @@ sfx_story = st5.model_copy(update={"pages": [pg.model_copy(update={"text": pg.te
 sw_ill = il.illustrate({"story": sfx_story, "output_prefix": "stories/t/runs/20/"})["illustrations"]
 for pi in sw_ill.pages:
     if pi.order % 2:
-        assert pi.sound_word and pi.sound_word.text == "깡충" and 0 <= pi.sound_word.x <= 100 and 0 <= pi.sound_word.y <= 100, pi
-        assert pi.sound_word.color in ("dark", "light")
+        assert pi.sound_word and pi.sound_word.text == "깡충" and pi.sound_word.color.startswith("#") and len(pi.sound_word.color) == 7, pi
+        assert 1 <= len(pi.sound_word.pieces) <= 2 and all(0 <= q.x <= 100 and 0 <= q.y <= 100 for q in pi.sound_word.pieces), pi
     else:
         assert pi.sound_word is None, pi
 assert sorted((sc.__name__, k) for sc, k in place_schemas) == sorted(
@@ -992,7 +992,7 @@ assert any("의성어 2개" in x for x in logged) and not any("톡" in x or "쿵
 # 글 자리 때문에 다시 그렸는데 새 그림으로 답을 못 받으면 처음 그림의 말 자리를 쓰지 않는다 (None)
 answers = iter([
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", owner_box=mock.OwnerBox(x0=10, y0=10, x1=20, y1=20), x=75, y=40)),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[])),
 ])
 
 
@@ -1012,12 +1012,20 @@ assert sw_ is None, sw_
 # 다시 그린 그림으로 답을 받으면 그 답의 자리를 쓴다
 answers = iter([
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", owner_box=mock.OwnerBox(x0=10, y0=10, x1=20, y1=20), x=75, y=40)),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[])),
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", owner_box=mock.OwnerBox(x0=10, y0=10, x1=20, y1=20), x=30, y=60)),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=20, y0=50, x1=26, y1=60), characters=[])),
 ])
 tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png((0, 0, 100, 100)), ask)
-assert sw_ is not None and (sw_.x, sw_.y) == (30.0, 60.0), sw_
+assert sw_ is not None and len(sw_.pieces) == 1 and sw_.pieces[0].x < 50 and sw_.pieces[0].y < 50, sw_   # 두 번째(다시 그린 그림) 답의 근원 위
+# AI가 캐릭터 칸을 하나도 안 주면 쪽 번호만 경고 (실험에서 null·겹침 원인을 알아보려고)
+answers = iter([TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
+                                      sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[]))])
+logged.clear()
+logging.getLogger("firstory.illustrate").addHandler(h)
+il._arrange(3, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], None, ask)
+logging.getLogger("firstory.illustrate").removeHandler(h)
+assert any("쪽 3" in x and "캐릭터 칸 없음" in x for x in logged) and not any("포포" in x for x in logged), logged
 # 의성어 준비가 터져도 그 쪽 그림은 완성, 의성어만 None (리뷰 #3)
 orig_short = il.short_look
 il.short_look = lambda d: (_ for _ in ()).throw(RuntimeError("boom"))

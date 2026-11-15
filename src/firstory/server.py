@@ -377,9 +377,9 @@ def status(thread_id: str) -> dict:
 
 
 def _sound_word(pi) -> Optional[dict]:
-    """그림 위 의성어 자리 {text, x, y, color} (#92). owner(아이 이름일 수 있음)는 내리지 않는다"""
+    """그림 위 의성어 {text, color, pieces[{text, x, y, side}]} (#92, #102). owner(아이 이름일 수 있음)는 내리지 않는다"""
     sw = pi.sound_word if pi else None
-    return sw.model_dump(include={"text", "x", "y", "color"}) if sw else None
+    return sw.model_dump(include={"text", "color", "pieces"}) if sw else None
 
 
 def _text_blocks(pi) -> Optional[list[dict]]:

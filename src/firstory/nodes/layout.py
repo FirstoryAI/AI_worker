@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..config import config
 from ..llm import prompt, structured, structured_image
-from ..schemas import CostEntry, SoundWord, TextBlock, TextChunking, TextPlacement, TextPlacementWithWord
+from ..schemas import CostEntry, SoundPiece, SoundWord, TextBlock, TextChunking, TextPlacement, TextPlacementWithWord
 
 log = logging.getLogger("firstory.layout")
 
@@ -41,8 +41,7 @@ FONT_PATH = Path(__file__).parents[1] / "assets/fonts/MemomentKkukkukk.woff2"
 GRID = 8                           # 자리 찾기 격자(px)
 MOVE_COST = 0.01                   # 원래 자리와 멀어진 만큼 더하는 점수(px당)
 TIE_COST = 1e-5                    # calmest: 거리는 복잡도가 같을 때만 가르는 정도
-SFX_RATIO = 0.035                  # 의성어 글자 크기 = 그림 폭의 3.5% (#92)
-SFX_LINE_H = 1.2                   # 의성어 상자 높이 = 글자 크기 배수
+SFX_LINE_H = 1.2                   # 의성어 조각 상자 높이 = 글자 크기 배수
 SFX_EDGE_X, SFX_EDGE_Y, SFX_FOLD = 3, 4, 2   # 의성어 좌우 여백, 위·아래 여백, 접히는 선 여백 (%)
 SFX_RADIUS = 0.15                  # 의성어를 밀 수 있는 반지름 (그림 폭 대비)
 
@@ -449,18 +448,20 @@ def _sanitize_spots(spots, n: int) -> list[dict]:
 
 
 def _sanitize_word(spot) -> dict | None:
-    """AI 의성어 답 → {"x": %, "y": %, "owner"}. 숫자가 아니거나 유한하지 않거나 음수면 None. 100 넘는 값은 픽셀로 보고 %로."""
-    try:
-        x, y = float(spot.x), float(spot.y)
-    except (AttributeError, TypeError, ValueError):
+    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": [(이름, 칸 %)]} (#102).
+    근원 칸이 이상하거나 종류가 face·object가 아니면 None. 이상한 캐릭터 칸은 그 칸만 뺀다."""
+    if spot is None:
         return None
-    if not (math.isfinite(x) and math.isfinite(y)) or x < 0 or y < 0:
+    kind = getattr(spot, "source_kind", None)
+    source = _sanitize_box(getattr(spot, "source_box", None))
+    if kind not in ("face", "object") or source is None:
         return None
-    if x > 100:
-        x = x / W * 100
-    if y > 100:
-        y = y / H * 100
-    return {"x": x, "y": y, "owner": str(getattr(spot, "owner", "") or ""), "box": _sanitize_box(getattr(spot, "owner_box", None))}
+    chars = []
+    for c in getattr(spot, "characters", None) or []:
+        box = _sanitize_box(getattr(c, "box", None))
+        if box is not None:
+            chars.append((str(getattr(c, "name", "") or ""), box))
+    return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": chars}
 
 
 def _sanitize_box(box) -> tuple[float, float, float, float] | None:
@@ -495,7 +496,7 @@ def with_grid(image: bytes) -> bytes:
 
 def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = False
                ) -> tuple[list[dict], dict | None, list[CostEntry]]:
-    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 자리 {"x", "y", "owner"} (sfx가 있을 때만).
+    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 근원·캐릭터 칸 (_sanitize_word, sfx가 있을 때만).
     settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다.
     sfx가 없으면 지금(#92 전) 호출과 똑같다."""
     if not blocks:
@@ -509,10 +510,8 @@ def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, g
     schema = TextPlacement
     if sfx is not None:
         try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리는 그대로 받는다)
-            ww, wh = word_size(sfx.word)
             sys_w = system + "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
                                               cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
-                                              size=f"가로 약 {ww / W * 100:.0f}%, 세로 약 {wh / H * 100:.0f}%",
                                               grid=GRID_NOTE if grid else "")
             img_w = with_grid(image) if grid else image
         except Exception as e:  # noqa: BLE001
@@ -561,9 +560,71 @@ def short_look(visual_description: str) -> str:
     return first[:120]
 
 
-def word_size(word: str) -> tuple[float, float]:
-    """의성어 상자 크기(px): 본문 글꼴로 잰 폭을 글자 크기 비율만큼 키운다"""
-    return text_width(word) * SFX_RATIO / FONT_RATIO, W * SFX_RATIO * SFX_LINE_H
+PIECE_RATIO = 0.025                # 의성어 조각 글자 크기 = 그림 폭의 2.5% (#102, 손글씨 예시 비율)
+PALETTE: list[tuple[str, tuple[int, int, int]]] = [   # 의성어 색 후보. 순서 = 동점일 때 우선 (#102)
+    ("#7B4FD6", (0x7B, 0x4F, 0xD6)),   # 보라
+    ("#F0661E", (0xF0, 0x66, 0x1E)),   # 주황
+    ("#E03E4E", (0xE0, 0x3E, 0x4E)),   # 빨강
+    ("#2D6BD9", (0x2D, 0x6B, 0xD9)),   # 파랑
+    ("#2A9D55", (0x2A, 0x9D, 0x55)),   # 초록
+    ("#FFFFFF", (0xFF, 0xFF, 0xFF)),   # 흰색
+    ("#4A4A4A", (0x4A, 0x4A, 0x4A)),   # 진한 회색
+]
+MIN_CONTRAST = 3.0                 # 의성어 색 후보가 되는 WCAG 대비
+
+
+def split_word(word: str) -> list[str]:
+    """같은 두 글자가 두 번 반복되는 4글자 말(데굴데굴)만 두 조각, 나머지는 한 조각. 공백은 빼고 본다 (#102)"""
+    w = word.replace(" ", "")
+    if len(w) == 4 and w[:2] == w[2:]:
+        return [w[:2], w[2:]]
+    return [w]
+
+
+def piece_size(text: str) -> tuple[float, float]:
+    """조각 상자 크기(px): 본문 글꼴로 잰 폭을 조각 글자 크기 비율만큼 바꾼다"""
+    return text_width(text) * PIECE_RATIO / FONT_RATIO, W * PIECE_RATIO * SFX_LINE_H
+
+
+def contrast(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """두 색의 WCAG 대비 (1~21)"""
+    la, lb = luminance(a), luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
+    """sRGB(0~255) → CIELAB (D65)"""
+    def lin(c: float) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (lin(c) for c in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def delta_e(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    """두 색의 차이 (CIE76 ΔE)"""
+    return math.dist(_lab(a), _lab(b))
+
+
+def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]]) -> str:
+    """조각 상자들(px x, y, w, h) 둘레 배경과 가장 잘 구별되는 팔레트 색 하나 (#102).
+    모든 배경과 대비 3:1 이상인 색 중 ΔE 최솟값이 가장 큰 색, 없으면 대비 최솟값이 가장 큰 색. 동점은 팔레트 순서."""
+    pad = W * BUSY_PAD
+    bgs = [busy.mean_rgb(x - pad, y - pad, w + 2 * pad, h + 2 * pad) for x, y, w, h in boxes]
+    rows = [(hexc, min(contrast(rgb, bg) for bg in bgs), min(delta_e(rgb, bg) for bg in bgs)) for hexc, rgb in PALETTE]
+    ok = [r for r in rows if r[1] >= MIN_CONTRAST]
+    if ok:
+        return max(ok, key=lambda r: r[2])[0]   # max는 동점이면 앞의 것
+    return max(rows, key=lambda r: r[1])[0]
 
 
 def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float, float, float, float]]) -> bool:
@@ -579,37 +640,168 @@ def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float
     return _gap_ok(x0, y0, ww, wh, boxes)
 
 
-def settle_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]) -> SoundWord | None:
-    """AI 의성어 자리 → 검사(여백·접히는 선·글 덩어리·주인 칸과 간격) → 어기면 반지름 안에서 가장 가까운 격자점 → 없으면 None.
-    글자색은 그 자리 바탕 밝기로 정한다."""
-    if spot is None or not word:
+def _rect_dist(pt: tuple[float, float], box: tuple[float, float, float, float]) -> float:
+    """점과 칸(x0, y0, x1, y1) 사이 거리. 칸 안이면 0"""
+    dx = max(box[0] - pt[0], 0.0, pt[0] - box[2])
+    dy = max(box[1] - pt[1], 0.0, pt[1] - box[3])
+    return math.hypot(dx, dy)
+
+
+def _closer_to_source(pt: tuple[float, float], source: tuple[float, float, float, float],
+                      others: list[tuple[float, float, float, float]]) -> bool:
+    """조각 가운데가 근원 칸에 다른 캐릭터 칸 어느 것보다 가까운가 (px, #102)"""
+    d = _rect_dist(pt, source)
+    return all(d < _rect_dist(pt, o) for o in others)
+
+
+def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _others(kind: str, source: tuple[float, float, float, float],
+            chars: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+    """근원보다 가까우면 안 되는 캐릭터 칸 (px) (#102).
+    face: 얼굴 가운데를 덮는 칸은 모두 뺀다 — 얼굴 주인과, 안긴 장면에서 그 얼굴을 품은 캐릭터(실험 11/16, 안긴 쪽 2/4).
+    object: 물건과 가장 많이 겹치는 캐릭터 하나(든 캐릭터)만 뺀다. 같으면 더 작은 칸. 물건에 살짝 걸친 다른 캐릭터는 남는다."""
+    if kind == "face":
+        mid = ((source[0] + source[2]) / 2, (source[1] + source[3]) / 2)
+        return [c for c in chars if _rect_dist(mid, c) > 0]
+
+    def inter(c):
+        w = min(source[2], c[2]) - max(source[0], c[0])
+        h = min(source[3], c[3]) - max(source[1], c[1])
+        return w * h if w > 0 and h > 0 else 0.0
+
+    hits = [c for c in chars if inter(c) > 0]
+    if not hits:
+        return list(chars)
+    mine = max(hits, key=lambda c: (inter(c), -(c[2] - c[0]) * (c[3] - c[1])))
+    return [c for c in chars if c is not mine]
+
+
+@dataclass
+class _WordScene:
+    """조각을 놓을 때 보는 것 (모두 px)"""
+    kind: str                                          # face | object
+    source: tuple[float, float, float, float]          # 근원 칸 x0, y0, x1, y1
+    chars: list[tuple[float, float, float, float]]     # 모든 캐릭터 칸 (겹치면 안 됨)
+    others: list[tuple[float, float, float, float]]    # 근원보다 가까우면 안 되는 캐릭터 칸
+    blocks: list[tuple[float, float, float, float]]    # 글 덩어리 x, y, w, h (_gap_ok 모양)
+
+
+def _piece_ok(sc: _WordScene, cx: float, cy: float, pw: float, ph: float) -> bool:
+    """여백·접히는 선·글 덩어리 간격, 캐릭터 칸과 안 겹침, 근원이 다른 캐릭터보다 가까움"""
+    if not _word_ok(cx, cy, pw, ph, sc.blocks):
+        return False
+    rect = (cx - pw / 2, cy - ph / 2, cx + pw / 2, cy + ph / 2)
+    if any(_overlaps(rect, c) for c in sc.chars):
+        return False
+    return _closer_to_source((cx, cy), sc.source, sc.others)
+
+
+def _offsets(signs: tuple[int, int] | None) -> list[tuple[float, float]]:
+    """반지름 안 격자 이동 (가까운 순). signs가 (sx, sy)면 그 방향 사분면만(0 포함), None이면 사방"""
+    r = W * SFX_RADIUS
+    n = int(r // GRID)
+    rng = range(-n, n + 1)
+    out = []
+    for i in rng:
+        for j in rng:
+            if signs is not None and (i * signs[0] < 0 or j * signs[1] < 0):
+                continue
+            dx, dy = i * GRID, j * GRID
+            if dx * dx + dy * dy <= r * r:
+                out.append((dx, dy))
+    out.sort(key=lambda d: d[0] * d[0] + d[1] * d[1])
+    return out
+
+
+def _place_pair(sc: _WordScene, size: tuple[float, float]) -> list[tuple[float, float]] | None:
+    """두 조각을 근원 양옆에. 왼쪽 조각은 근원 왼쪽에서 바깥(왼쪽)으로만, 오른쪽 조각은 오른쪽으로만 움직이며
+    각자 가장 가까운 자리를 찾는다 — 그림책 장면은 한쪽이 옆 캐릭터에 막히기 쉬워 거울 대칭으로는 거의 안 놓인다(실험 11/16).
+    시작 높이는 face면 근원 위끝, object면 근원 가운데. 위아래로 움직일 수 있되 face는 조각 아래끝이 근원 아래끝을,
+    object는 가운데가 근원 칸 ± 조각 높이를 넘지 않는다. 두 조각 높이 차이는 조각 둘 높이까지."""
+    pw, ph = size
+    x0, y0, x1, y1 = sc.source
+    g = W * 0.01
+    base = y0 if sc.kind == "face" else (y0 + y1) / 2
+    got = []
+    for sx, sign in ((x0 - g - pw / 2, -1), (x1 + g + pw / 2, 1)):
+        hit = None
+        for dx, dy in _offsets(None):
+            if dx * sign < 0:
+                continue
+            x, y = sx + dx, base + dy
+            if sc.kind == "face" and y + ph / 2 > y1:
+                continue
+            if sc.kind == "object" and not (y0 - ph <= y <= y1 + ph):
+                continue
+            if _piece_ok(sc, x, y, pw, ph):
+                hit = (x, y)
+                break
+        if hit is None:
+            return None
+        got.append(hit)
+    (lx, ly), (rx, ry) = got
+    if abs(ly - ry) > 2 * ph or lx + pw / 2 > rx - pw / 2:
         return None
-    ww, wh = word_size(word)
-    boxes = []
+    return got
+
+
+def _place_one(sc: _WordScene, size: tuple[float, float]) -> tuple[float, float] | None:
+    """한 조각을 근원 바로 위 가운데에서 시작해 가까운 곳으로. face는 조각 아래끝이 근원 아래끝보다 아래로 가지 않고,
+    object는 근원 위끝보다 조각 하나 높이까지만 올라가고 근원 아래끝보다 아래로 가지 않는다(가운데 기준)."""
+    pw, ph = size
+    x0, y0, x1, y1 = sc.source
+    cx, cy = (x0 + x1) / 2, y0 - W * 0.01 - ph / 2
+    for dx, dy in _offsets(None):
+        x, y = cx + dx, cy + dy
+        if sc.kind == "face" and y + ph / 2 > y1:
+            continue
+        if sc.kind == "object" and not (y0 - ph <= y <= y1):
+            continue
+        if _piece_ok(sc, x, y, pw, ph):
+            return x, y
+    return None
+
+
+def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]) -> SoundWord | None:
+    """근원·캐릭터 칸(_sanitize_word) → 조각 1~2개 자리와 색 (#102).
+    반복 4글자는 두 조각을 근원 양옆에, 안 되면 원래 말 한 조각으로, 그래도 안 되면 None."""
+    if spot is None or not word or not word.strip():
+        return None
+
+    def px(b: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        return b[0] / 100 * W, b[1] / 100 * H, b[2] / 100 * W, b[3] / 100 * H
+
+    source = px(spot["source"])
+    chars = [px(b) for _, b in spot.get("chars", [])]
+    others = _others(spot["kind"], source, chars)
+    block_px = []
     for b in blocks:
         bw, bh = block_size(b.paragraphs)
-        boxes.append((b.x / 100 * W, b.y / 100 * H, bw, bh))
-    r = W * SFX_RADIUS
-    if spot.get("box"):   # 주인 칸도 피한다: 말은 주인 몸 바깥 옆에. 칸 안에서 나올 수 있게 반지름을 칸 반만큼 늘린다
-        x0, y0, x1, y1 = spot["box"]
-        bw, bh = (x1 - x0) / 100 * W, (y1 - y0) / 100 * H
-        boxes.append((x0 / 100 * W, y0 / 100 * H, bw, bh))
-        r += max(bw, bh) / 2
-    cx, cy = spot["x"] / 100 * W, spot["y"] / 100 * H
-    if not _word_ok(cx, cy, ww, wh, boxes):
-        best = None
-        steps = int(r // GRID)
-        for i in range(-steps, steps + 1):
-            for j in range(-steps, steps + 1):
-                d2 = (i * GRID) ** 2 + (j * GRID) ** 2
-                if d2 > r * r or (best is not None and d2 >= best[0]):
-                    continue
-                nx, ny = cx + i * GRID, cy + j * GRID
-                if _word_ok(nx, ny, ww, wh, boxes):
-                    best = (d2, nx, ny)
-        if best is None:
-            return None
-        cx, cy = best[1], best[2]
-    color = text_color(busy, cx - ww / 2, cy - wh / 2, ww, wh)
-    return SoundWord(text=word, x=round(cx / W * 100, 1), y=round(cy / H * 100, 1), color=color,
+        block_px.append((b.x / 100 * W, b.y / 100 * H, bw, bh))
+    sc = _WordScene(kind=spot["kind"], source=source, chars=chars, others=others, blocks=block_px)
+
+    parts = split_word(word)
+    whole = word.replace(" ", "")
+    placed: list[tuple[str, float, float, str]] | None = None
+    if len(parts) == 2:
+        pw = max(piece_size(t)[0] for t in parts)
+        pair = _place_pair(sc, (pw, piece_size(parts[0])[1]))
+        if pair:
+            placed = [(parts[0], *pair[0], "left"), (parts[1], *pair[1], "right")]
+    if placed is None:
+        one = _place_one(sc, piece_size(whole))
+        if one:
+            placed = [(whole, *one, "center")]
+    if placed is None:
+        return None
+    rects = []
+    for t, cx, cy, _ in placed:
+        pw, ph = piece_size(t)
+        rects.append((cx - pw / 2, cy - ph / 2, pw, ph))
+    return SoundWord(text=word, color=pick_color(busy, rects),
+                     pieces=[SoundPiece(text=t, x=round(cx / W * 100, 1), y=round(cy / H * 100, 1), side=side)
+                             for t, cx, cy, side in placed],
                      owner=spot.get("owner") or None)

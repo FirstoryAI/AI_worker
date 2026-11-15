@@ -336,12 +336,14 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
         if p["page_no"] in asks:
             assert re.sub(r"\s", "", "".join(p["text_blocks"][-1]["paragraphs"][-1])) == re.sub(r"\s", "", asks[p["page_no"]]), p
     assert asks and [p["text_position"] for p in res["pages"]] == ["top"] * config.page_count
-    # 의성어 (#92): 별표 말이 있는 쪽(mock 다듬기는 홀수 쪽)만 {text, x, y, color}, owner는 내리지 않는다
+    # 의성어 (#92, #102): 별표 말이 있는 쪽(mock 다듬기는 홀수 쪽)만 {text, color, pieces}, owner는 내리지 않는다
     for p in res["pages"]:
         sw = p["sound_word"]
         if "**" in p["text"]:
-            assert set(sw) == {"text", "x", "y", "color"} and sw["text"] == "깡충" and 0 <= sw["x"] <= 100 and 0 <= sw["y"] <= 100, p
-            assert sw["color"] in ("dark", "light")
+            assert set(sw) == {"text", "color", "pieces"} and sw["text"] == "깡충" and re.fullmatch(r"#[0-9A-F]{6}", sw["color"]), p
+            assert 1 <= len(sw["pieces"]) <= 2 and all(set(q) == {"text", "x", "y", "side"} and 0 <= q["x"] <= 100 and 0 <= q["y"] <= 100
+                                                       for q in sw["pieces"]), p
+            assert "".join(q["text"] for q in sw["pieces"]) == sw["text"].replace(" ", ""), p
         else:
             assert sw is None, p
     assert any(p["sound_word"] for p in res["pages"])
