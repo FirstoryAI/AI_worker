@@ -2,6 +2,7 @@
 프롬프트 전략(state["strategy"])이 켜져 있으면 prompts/strategies/ 블록을 {{extra}} 자리에 끼운다. 다 꺼져 있으면 지금 프롬프트 그대로."""
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from langgraph.graph import END
@@ -10,7 +11,7 @@ from langgraph.types import interrupt
 from .. import storage
 from ..config import config
 from ..llm import prompt, structured
-from ..schemas import PolishedStory, ReadingGuide, Strategy, StoryRevision, StoryText, design_schema
+from ..schemas import GuidePrompt, PolishedStory, ReadingGuide, Strategy, StoryRevision, StoryText, design_schema
 from ..state import PipelineState
 
 _persona = prompt("_persona")
@@ -253,4 +254,24 @@ def reading_guide(state: PipelineState) -> dict:
         reasoning="low",
     )
     g.prompts = g.prompts[: config.guide_prompts_max]
+    for p in g.prompts:
+        p.scene_note = scene_note(p)
     return {"guide": g, "cost": [cost]}
+
+
+# 장면 설명 뒷부분. 질문이 무엇을 묻는지(purpose)에 따라 부모가 아이와 해 볼 것 (#105)
+_SCENE_NOTE_TAIL = {
+    "empathy": "주인공의 마음을 헤아려 볼 수 있어요.",
+    "predict": "다음에 일어날 일을 상상해 볼 수 있어요.",
+    "perspective": "다른 친구의 입장이 되어 볼 수 있어요.",
+    "connect": "아이의 경험을 떠올려 볼 수 있어요.",
+}
+
+
+def scene_note(p: GuidePrompt) -> str:
+    """부모용 장면 설명: 본문에 들어간 질문을 그대로 인용한다.
+    text는 "장면 짚기. 질문?" 꼴이라 마지막 물음 문장만 떼어 온다. 물음 문장이 없으면 text 전체."""
+    text = p.text.replace("**", "").strip()
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    question = next((s for s in reversed(sentences) if s.rstrip("\"'”’").endswith("?")), text)
+    return f"“{question}”라는 질문으로 아이와 함께 {_SCENE_NOTE_TAIL[p.purpose]}"
