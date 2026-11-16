@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from firstory.nodes import illustrate as il  # noqa: E402
 from firstory.nodes import layout  # noqa: E402
-from firstory.nodes.layout import FONT_PATH, FONT_RATIO, H, W, SfxAsk, block_size, blockers, short_look, sound_words  # noqa: E402
+from firstory.nodes.layout import FONT_PATH, FONT_RATIO, H, W, SfxAsk, block_size, blockers, short_look, sound_words, wrap_line  # noqa: E402
 from firstory.schemas import TextBlock  # noqa: E402
 
 
@@ -75,7 +75,11 @@ def main():
     ap.add_argument("--out", default="text-avoid-1116")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--mock", action="store_true", help="가짜 AI로 (호출·비용 0). FIRSTORY_MOCK은 서버에서만 먹는다")
+    ap.add_argument("--replay", help="이 out 폴더의 answers.json에 저장된 AI 답을 다시 쓴다 (호출·비용 0)")
+    ap.add_argument("--no-avoid", action="store_true", help="캐릭터 칸을 피하지 않는다 (#104 전과 비교용)")
     args = ap.parse_args()
+    if args.no_avoid:
+        il.blockers = lambda chars: []
     if args.mock:
         from firstory import llm, mock
         llm.set_structured_override(mock.fake_structured)
@@ -87,12 +91,24 @@ def main():
     if args.limit:
         pages = pages[:args.limit]
 
-    # 쪽마다 AI가 짚은 칸을 보려고 place_page를 감싼다 (그림 하나에 첫 답)
+    # 쪽마다 AI가 짚은 칸을 보려고 place_page를 감싼다 (그림 하나에 첫 답). 답은 answers.json에 남겨 --replay로 다시 쓴다
     seen: list = []
     orig_place = il.place_page
+    saved: dict = json.loads((ROOT / "out" / args.replay / "answers.json").read_text()) if args.replay else {}
+    answers: dict = {}
+    key = [""]
 
     def spy(*a, **k):
-        r = orig_place(*a, **k)
+        kk = f"{key[0]}#{len(seen)}"
+        if args.replay:
+            spots, chars, word = saved[kk]
+            chars = [(n, tuple(b)) for n, b in chars]
+            if word:
+                word = {**word, "source": tuple(word["source"]), "chars": [(n, tuple(b)) for n, b in word["chars"]]}
+            r = (spots, chars, word, [])
+        else:
+            r = orig_place(*a, **k)
+            answers[kk] = r[:3]
         seen.append(r[1])
         return r
 
@@ -103,8 +119,9 @@ def main():
         image = pg["image"].read_bytes()
         words = sound_words(pg["text"])
         sfx = SfxAsk(word=words[0], text=pg["text"], cast=pg["cast"]) if words else None
-        blocks = [b.paragraphs for b in pg["old"]]
+        blocks = [[[w for line in para for w in wrap_line(line)] for para in b.paragraphs] for b in pg["old"]]   # 지금 글자 크기로 다시 감기
         seen.clear()
+        key[0] = f"{pg['name']}/{pg['order']}"
         wanted: list = []
         costs: list = []
         t0 = time.time()
@@ -137,6 +154,8 @@ def main():
 </div></section>""")
         print(f"{i + 1}/{len(pages)} {pg['order']}쪽 {ms}ms 겹침 {ob:.1f}→{oa:.1f}", flush=True)
     il.place_page = orig_place
+    if not args.replay:
+        (out_dir / "answers.json").write_text(json.dumps(answers, ensure_ascii=False), encoding="utf-8")
 
     head = f"""<!doctype html><meta charset="utf-8"><title>글 캐릭터 피하기 실험</title>
 <style>
