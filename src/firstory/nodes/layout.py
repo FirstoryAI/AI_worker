@@ -165,21 +165,23 @@ def merge(blocks: list[Block]) -> list[Block]:
     return [[para for block in blocks for para in block]]
 
 
+_SENTENCE_STOP = re.compile(r'[.?!…]["”’\']*$')   # split_block: 문장이 끝난 줄 (wrap_line이 감은 줄 사이는 아님)
 SPLIT_SKEW = 2 / 3                 # split_block: 문단 경계에서 큰 쪽이 전체 줄의 이 비율을 넘으면 줄 경계로 (#104)
 
 
 def split_block(block: Block) -> list[Block] | None:
     """자리 없는 한 덩어리 → 양쪽 면에 놓을 두 덩어리 (#104). 문단·줄 순서와 글자는 그대로.
     문단 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽). 그 경계에서 큰 쪽이 SPLIT_SKEW를 넘거나 문단이 하나면
-    줄 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽, 끊긴 문단은 둘로). 따옴표가 열린 채 끊기는 경계는 안 된다.
+    줄 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽, 끊긴 문단은 둘로). 따옴표가 열린 채 끊기는 경계, 문장 중간(감긴 줄 사이)은 안 된다.
     나눌 곳이 없으면 None."""
     rows = [(pi, line) for pi, para in enumerate(block) for line in para]
     n = len(rows)
     if n < 2:
         return None
 
-    def ok(k: int) -> bool:
-        return not _quote_open(" ".join(line for _, line in rows[:k]))
+    def ok(k: int) -> bool:   # 앞 줄이 문장 끝이고 대사가 열려 있지 않다
+        return bool(_SENTENCE_STOP.search(rows[k - 1][1].rstrip().removesuffix("**"))) and not _quote_open(
+            " ".join(line for _, line in rows[:k]))
 
     def nearest(ks: list[int]) -> int | None:
         ks = [k for k in ks if ok(k)]

@@ -1110,6 +1110,11 @@ llm.set_structured_override(chars_seq([]))
 redraws.clear()
 tbs_, _ = il._arrange(1, white_png, b7, [], redraw_to(white_png))
 assert len(tbs_) == 1 and (tbs_[0].x, tbs_[0].y) == (5.0, 7.0) and redraws == [], tbs_
+# 칸이 없어도 한 덩어리가 들어갈 곳이 없으면 나눠서 양쪽 면 — 다시 그리기를 아낀다 (리뷰 판단: 설계 4번은 칸 여부와 상관없음)
+llm.set_structured_override(chars_seq([]))
+redraws.clear()
+tbs_, _ = il._arrange(1, striped_png((0, 0, 100, 40)), b7, [], redraw_to(white_png))
+assert len(tbs_) == 2 and tbs_[0].x < 50 <= tbs_[1].x and redraws == [], tbs_
 llm.set_structured_override(recording_structured)
 print("avoid characters ok")
 
