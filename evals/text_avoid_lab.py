@@ -64,9 +64,9 @@ def blocks_html(tbs: list[TextBlock]) -> str:
 
 
 def overlap(tbs: list[TextBlock], chars) -> float:
-    """덩어리들이 (넉넉히 키운) 캐릭터 칸과 겹친 넓이, 그림 넓이 대비 %"""
-    av = blockers(chars)
-    return sum(layout._overlap(t.x / 100 * W, t.y / 100 * H, *block_size(t.paragraphs), av) for t in tbs) / (W * H) * 100
+    """덩어리들의 실제 글자(줄마다)가 캐릭터 몸 칸과 겹친 넓이, 그림 넓이 대비 %"""
+    av = layout._unpad(blockers(chars))
+    return sum(layout._overlap_rows(t.x / 100 * W, t.y / 100 * H, layout.rows_of(t.paragraphs), av) for t in tbs) / (W * H) * 100
 
 
 def main():

@@ -716,3 +716,40 @@ _bl0, _sp0 = calmest_pick(_wbusy, [blk_a])
 assert _over(_bl, _sp, _avall) <= _over(_bl0, _sp0, _avall), (_sp, _sp0)
 assert calmest(_wbusy, [blk_a], _avall) is not None
 print("calmest avoid ok")
+
+
+# ── 겹침은 줄마다 실제 글자 폭으로 잰다 (4쪽: 긴 첫 줄 때문에 네모가 칸에 닿아 벽 자리를 버렸음) ──
+from firstory.nodes.layout import LINE_PX  # noqa: E402
+
+_long = "초코가 모아 옆의 바퀴 블록으로 손을"
+_blk = [[_long, "뻗었어요."], ["음."]]
+_wl = text_width(_long) / W * 100
+_x0 = 5 + text_width("뻗었어요.") / W * 100 + 1.5 + 3              # 짧은 줄 오른쪽 끝 + 여백 + 3%
+_y0 = 7 + LINE_PX / H * 100 + 1.5 * W / H + 1                       # 첫 줄 아래 + 여백 + 1%
+assert _x0 < 5 + _wl                                                 # 덩어리 네모는 칸에 닿는다
+_avr = blockers([("a", (_x0, _y0, 60.0, 95.0))])
+_got = settle(_wbusy, [_blk], [{"x": 5, "y": 7, "color": "dark"}], _avr)
+assert _got == [{"x": 5.0, "y": 7.0, "color": "dark"}], _got          # 실제 글자는 안 닿으니 AI 자리 그대로
+print("row overlap ok")
+
+
+# ── 마지막 안전판: 캐릭터 몸에는 안 닿고 여백만 살짝 걸치는 조용한 벽 > 겹침 0인 복잡한 물건 위 ──
+def _busy_but_topleft() -> Busy:
+    im = Image.new("RGB", (W, H), "white")
+    d = ImageDraw.Draw(im)
+    for x in range(0, W, 24):
+        d.rectangle([x, 0, x + 11, H], fill=(40, 40, 40))
+    d.rectangle([0, 0, W // 2, int(H * 0.45)], fill="white")        # 왼쪽 위만 조용한 벽
+    return Busy(png(im))
+
+
+_one = [["모아는 울고 싶었어요."]]
+_w1 = text_width("모아는 울고 싶었어요.") / W * 100
+# 칸 왼쪽 끝을 글 오른쪽 끝 + 0.5%에: 캐릭터 몸에는 안 닿고 넉넉히 키운 여백(1.5%)에만 걸친다. 칸은 위쪽만이라 아래 띠는 겹침 0
+_xa = 5 + _w1 + 0.5
+_avm = blockers([("a", (_xa, 0.0, 100.0, 60.0))])
+_bbusy = _busy_but_topleft()
+assert settle(_bbusy, [_one], [{"x": 5, "y": 7, "color": "dark"}], _avm) is None   # 엄격한 자리는 없다
+_bl, _sp = calmest_pick(_bbusy, [_one], _avm)
+assert _sp[0]["x"] < 50 and _sp[0]["y"] < 45, _sp                                     # 조용한 왼쪽 위 벽
+print("fallback prefers calm wall ok")

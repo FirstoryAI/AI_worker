@@ -32,7 +32,8 @@ BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대�
 GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
 MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
 CHAR_PAD = 0.015                   # 글이 피하는 캐릭터 칸을 사방으로 키우는 폭 (그림 폭 대비, #104)
-OVERLAP_COST = 1.0                 # calmest: 캐릭터 칸과 겹친 넓이(px²)당 점수 — 복잡도(최대 약 128)보다 늘 앞선다
+OVERLAP_COST = 1.0                 # calmest: 캐릭터 몸(키우기 전 칸)과 겹친 넓이(px²)당 점수 — 한 줄만 조금 닿아도 복잡도보다 크다
+MARGIN_COST = 0.005                # calmest: 키운 여백에만 걸친 넓이(px²)당 점수 — 한 줄이 여백에 걸친 약 2,000px² ≈ 복잡도 10
 DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림을 못 읽거나 놓을 곳이 아예 없을 때만)
 DARK_TEXT = (0x4A, 0x4A, 0x4A)     # 화면의 진한 글자색 (프론트 StoryTextBlocks)
 WHITE_BIAS = 0.9                   # 흰 글자 대비가 진한 글자 대비의 이 배 이상이면 흰 글자 (비슷하면 흰 글자가 더 잘 읽힌다)
@@ -343,6 +344,29 @@ def _overlap(x: float, y: float, bw: float, bh: float, avoid) -> float:
     return total
 
 
+def rows_of(block: Block) -> list[tuple[float, float, float]]:
+    """덩어리의 줄마다 (위끝 dy, 실제 글자 폭, 줄 높이) px. 글은 왼쪽 정렬이라 줄 오른쪽 끝은 줄마다 다르다"""
+    out, dy = [], 0.0
+    for i, para in enumerate(block):
+        if i:
+            dy += PARA_GAP * LINE_PX
+        for line in para:
+            out.append((dy, text_width(line), LINE_PX))
+            dy += LINE_PX
+    return out
+
+
+def _unpad(avoid) -> list[Rect]:
+    """blockers로 키운 칸 → 캐릭터 몸 칸 (px)"""
+    p = W * CHAR_PAD
+    return [(x0 + p, y0 + p, x1 - p, y1 - p) for x0, y0, x1, y1 in avoid]
+
+
+def _overlap_rows(x: float, y: float, rows, avoid) -> float:
+    """덩어리를 (x, y)에 놓았을 때 줄마다 실제 글자 상자가 칸들과 겹친 넓이 합 (px²)"""
+    return sum(_overlap(x, y + dy, w, h, avoid) for dy, w, h in rows)
+
+
 def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
     pad = W * BUSY_PAD
     return busy.at(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
@@ -350,10 +374,12 @@ def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
 
 def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: float, bh: float,
              placed: list[tuple[float, float, float, float]], limit: float,
-             move_cost: float = MOVE_COST, avoid=(), strict: bool = True) -> tuple[float, float] | None:
+             move_cost: float = MOVE_COST, avoid=(), strict: bool = True, rows=None) -> tuple[float, float] | None:
     """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳.
-    strict면 캐릭터 칸(avoid)과 겹치는 자리는 버리고, 아니면 겹친 넓이만큼 점수를 더한다 (#104)"""
+    strict면 캐릭터 칸(avoid)과 겹치는 자리는 버리고, 아니면 겹친 넓이만큼 점수를 더한다 (#104).
+    rows(rows_of)를 주면 겹침은 줄마다 실제 글자 폭으로 잰다 — 덩어리 네모로 재면 긴 줄 하나 때문에 빈 벽을 버린다"""
     best: tuple[float, tuple[float, float]] | None = None
+    real = _unpad(avoid)
     for page in pages:
         lo, hi = _x_range(page, bw)
         for ylo, yhi in _y_bands(bh):
@@ -362,24 +388,27 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
                     x, y = float(x), float(y)
                     if not (_order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)):
                         continue
-                    over = _overlap(x, y, bw, bh, avoid) if avoid else 0.0
+                    over = (_overlap_rows(x, y, rows, avoid) if rows is not None else _overlap(x, y, bw, bh, avoid)) if avoid else 0.0
                     if strict and over > 0:
                         continue
                     std = _score(busy, x, y, bw, bh)
                     if std > limit:
                         continue
-                    score = std + move_cost * math.hypot(x - near[0], y - near[1]) + OVERLAP_COST * over
+                    score = std + move_cost * math.hypot(x - near[0], y - near[1])
+                    if over:   # 몸에 닿은 넓이는 크게, 여백에만 걸친 넓이는 작게 — 조용한 벽이 복잡한 물건 위보다 낫게
+                        body = _overlap_rows(x, y, rows, real) if rows is not None else _overlap(x, y, bw, bh, real)
+                        score += OVERLAP_COST * body + MARGIN_COST * (over - body)
                     if best is None or score < best[0]:
                         best = (score, (x, y))
     return best[1] if best else None
 
 
 def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
-            placed: list[tuple[float, float, float, float]], page: int | None = None, avoid=()) -> tuple[float, float] | None:
+            placed: list[tuple[float, float, float, float]], page: int | None = None, avoid=(), rows=None) -> tuple[float, float] | None:
     """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳. page를 주면 그 면에서만"""
     home = _page(near[0], bw)
     for page in ((home, 1 - home) if page is None else (page,)):
-        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT, avoid=avoid)
+        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT, avoid=avoid, rows=rows)
         if found:
             return found
     return None
@@ -415,7 +444,7 @@ def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
         bw, bh = block_size(block)
         side = side_of(i, len(blocks))
         found = _best_on(busy, (0, 1) if side is None else (side,), near, bw, bh, placed, math.inf, TIE_COST,
-                         avoid=avoid, strict=False)
+                         avoid=avoid, strict=False, rows=rows_of(block))
         if found is None:
             return None
         x, y = found
@@ -425,9 +454,17 @@ def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
 
 
 def _cost(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> tuple[float, float]:
-    """(캐릭터 칸과 겹친 넓이 합, 자리들 중 가장 복잡한 곳의 복잡도)"""
-    rects = [(s["x"] / 100 * W, s["y"] / 100 * H, *block_size(b)) for b, s in zip(blocks, spots)]
-    return (sum(_overlap(*r, avoid) for r in rects), max(_score(busy, *r) for r in rects))
+    """(캐릭터 몸과 겹친 넓이 합, 가장 복잡한 자리의 복잡도 + 여백에만 걸친 넓이 × MARGIN_COST). 겹침은 줄마다"""
+    real = _unpad(avoid)
+    body = pad = 0.0
+    worst = 0.0
+    for b, s in zip(blocks, spots):
+        x, y = s["x"] / 100 * W, s["y"] / 100 * H
+        rows = rows_of(b)
+        body += _overlap_rows(x, y, rows, real)
+        pad += _overlap_rows(x, y, rows, avoid)
+        worst = max(worst, _score(busy, x, y, *block_size(b)))
+    return body, worst + MARGIN_COST * (pad - body)
 
 
 def calmest_pick(busy: Busy, blocks: list[Block], avoid=()) -> tuple[list[Block], list[dict]] | None:
@@ -464,9 +501,9 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> list
         side = side_of(i, len(blocks))
         x, y = _push(*_to_px(spot), bw, bh, side)
         ok = (_in_band(y, bh) and _order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)
-              and _overlap(x, y, bw, bh, avoid) == 0 and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
+              and _overlap_rows(x, y, rows_of(block), avoid) == 0 and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
         if not ok:
-            found = _search(busy, (x, y), bw, bh, placed, side, avoid)
+            found = _search(busy, (x, y), bw, bh, placed, side, avoid, rows_of(block))
             if found is None:
                 return None
             x, y = found
