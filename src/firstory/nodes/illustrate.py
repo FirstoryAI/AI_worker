@@ -176,7 +176,8 @@ def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] =
         "Story text will be printed over the picture later, so compose the scene with generous open space: "
         "the plain wall, sky, floor or blanket simply continues there, uninterrupted — " + "; ".join(spans) + ", "
         "toward the top or the bottom of the picture (not the middle height), "
-        + ("the first one within the left half and the second one within the right half (not across the vertical center). "   # 2덩어리는 양쪽 면 (#95)
+        + ("the first one within the left half and the second one within the right half (not across the vertical center); "   # 2덩어리는 양쪽 면 (#95)
+           "both are just empty parts of the same single scene, not two separate pages. "   # 좌우 두 장면으로 나누지 않게 (#110)
            if len(sizes) == 2 else "each within the left half or the right half (not across the vertical center). ") +
         "This open space must look like a natural part of the scene, with the same color, texture and light as its surroundings. "
         "Never draw any box, panel, frame, card, sheet of paper, sign, label, speech bubble, blank rectangle or lighter patch "
@@ -242,6 +243,15 @@ def back_cover_prompt(story: StoryText) -> str:
     return "\n".join(lines)
 
 
+def single_moment(page_chars: list[CharacterSheet]) -> str:
+    """한 장에 두 순간(좌우 두 장면, 같은 인물 두 번)이 그려지는 것을 막는 줄 (#110).
+    지시문에 'next part'·'then'처럼 이어지는 동작이 있고 글이 두 덩어리(양쪽 면 지시)면 그림 모델이 둘로 나눠 그렸다."""
+    cast = ", ".join(f"{c.name} once" for c in page_chars)
+    return ("This page is ONE picture of ONE moment, like a single photograph — not a comic strip, not a before-and-after pair, "
+            f"not two pages side by side. Each character appears exactly once ({cast}). "
+            "If the Scene below describes several actions in a row, choose one moment and draw only that.")
+
+
 def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt: str, sizes: list[tuple[float, float]],
                 request: Optional[str] = None, where: Optional[list[str]] = None) -> str:
     lines = [
@@ -251,6 +261,7 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
         lines.append(f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}")
     lines += [
         "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not swap, do not add other characters.",
+        single_moment(page_chars),
         f"Scene (follow the described poses and positions precisely): {image_prompt}",
         f"Style: {story.style_guide}",
         "Time of day and light follow the Scene, not the Style: in an evening or night scene the windows are dark and lamps are on.",
