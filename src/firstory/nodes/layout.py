@@ -31,6 +31,8 @@ BUSY_LIMIT = 8.0                   # 복잡도(RGB 표준편차) 통과 기준
 BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대비)
 GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
 MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
+CHAR_PAD = 0.015                   # 글이 피하는 캐릭터 칸을 사방으로 키우는 폭 (그림 폭 대비, #104)
+OVERLAP_COST = 1.0                 # calmest: 캐릭터 칸과 겹친 넓이(px²)당 점수 — 복잡도(최대 약 128)보다 늘 앞선다
 DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림을 못 읽거나 놓을 곳이 아예 없을 때만)
 DARK_TEXT = (0x4A, 0x4A, 0x4A)     # 화면의 진한 글자색 (프론트 StoryTextBlocks)
 WHITE_BIAS = 0.9                   # 흰 글자 대비가 진한 글자 대비의 이 배 이상이면 흰 글자 (비슷하면 흰 글자가 더 잘 읽힌다)
@@ -279,6 +281,26 @@ def _order_ok(x: float, y: float, bw: float, placed: list[tuple[float, float, fl
     return all((_page(x, bw), y) > (_page(px, pw), py) for px, py, pw, _ in placed)
 
 
+Rect = tuple[float, float, float, float]   # px x0, y0, x1, y1
+
+
+def blockers(chars: "Chars") -> list[Rect]:
+    """캐릭터 칸(%) → 글이 피할 px 칸. 사방으로 그림 폭의 CHAR_PAD씩 키운다 (#104)"""
+    p = W * CHAR_PAD
+    return [(b[0] / 100 * W - p, b[1] / 100 * H - p, b[2] / 100 * W + p, b[3] / 100 * H + p) for _, b in chars]
+
+
+def _overlap(x: float, y: float, bw: float, bh: float, avoid) -> float:
+    """덩어리(x, y, bw, bh)와 칸들이 겹친 넓이 합 (px²)"""
+    total = 0.0
+    for x0, y0, x1, y1 in avoid:
+        w = min(x + bw, x1) - max(x, x0)
+        h = min(y + bh, y1) - max(y, y0)
+        if w > 0 and h > 0:
+            total += w * h
+    return total
+
+
 def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
     pad = W * BUSY_PAD
     return busy.at(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
@@ -286,8 +308,9 @@ def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
 
 def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: float, bh: float,
              placed: list[tuple[float, float, float, float]], limit: float,
-             move_cost: float = MOVE_COST) -> tuple[float, float] | None:
-    """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳"""
+             move_cost: float = MOVE_COST, avoid=(), strict: bool = True) -> tuple[float, float] | None:
+    """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳.
+    strict면 캐릭터 칸(avoid)과 겹치는 자리는 버리고, 아니면 겹친 넓이만큼 점수를 더한다 (#104)"""
     best: tuple[float, tuple[float, float]] | None = None
     for page in pages:
         lo, hi = _x_range(page, bw)
@@ -297,21 +320,24 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
                     x, y = float(x), float(y)
                     if not (_order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)):
                         continue
+                    over = _overlap(x, y, bw, bh, avoid) if avoid else 0.0
+                    if strict and over > 0:
+                        continue
                     std = _score(busy, x, y, bw, bh)
                     if std > limit:
                         continue
-                    score = std + move_cost * math.hypot(x - near[0], y - near[1])
+                    score = std + move_cost * math.hypot(x - near[0], y - near[1]) + OVERLAP_COST * over
                     if best is None or score < best[0]:
                         best = (score, (x, y))
     return best[1] if best else None
 
 
 def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
-            placed: list[tuple[float, float, float, float]], page: int | None = None) -> tuple[float, float] | None:
+            placed: list[tuple[float, float, float, float]], page: int | None = None, avoid=()) -> tuple[float, float] | None:
     """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳. page를 주면 그 면에서만"""
     home = _page(near[0], bw)
     for page in ((home, 1 - home) if page is None else (page,)):
-        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT)
+        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT, avoid=avoid)
         if found:
             return found
     return None
@@ -375,8 +401,8 @@ def calmest_pick(busy: Busy, blocks: list[Block]) -> tuple[list[Block], list[dic
     return blocks, split
 
 
-def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:
-    """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격을 확인해 안 되면 옮긴다.
+def settle(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> list[dict] | None:
+    """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격·캐릭터 칸(avoid, #104)을 확인해 안 되면 옮긴다.
     2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만 밀고 찾는다 (#95).
     덩어리마다 {"x": %, "y": %, "color"}. 글자색은 AI 답이 아니라 마지막 자리의 밝기로 (text_color). 하나라도 자리가 없으면 None."""
     placed: list[tuple[float, float, float, float]] = []
@@ -387,9 +413,9 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | N
         side = side_of(i, len(blocks))
         x, y = _push(*_to_px(spot), bw, bh, side)
         ok = (_in_band(y, bh) and _order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)
-              and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
+              and _overlap(x, y, bw, bh, avoid) == 0 and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
         if not ok:
-            found = _search(busy, (x, y), bw, bh, placed, side)
+            found = _search(busy, (x, y), bw, bh, placed, side, avoid)
             if found is None:
                 return None
             x, y = found

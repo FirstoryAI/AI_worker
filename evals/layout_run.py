@@ -636,3 +636,36 @@ assert pick_color(_solid((240, 225, 190)), _box) == "#7B4FD6"
 assert pick_color(_solid((170, 190, 230)), _box) == "#4A4A4A"
 assert pick_color(_solid((255, 255, 255)), _box * 2) == "#7B4FD6"   # 두 조각 = 같은 한 색
 print("split color ok")
+
+
+# ── 캐릭터 칸 피하기 (#104) ──
+from firstory.nodes.layout import CHAR_PAD, _overlap, blockers  # noqa: E402
+
+_wbusy = Busy(png(Image.new("RGB", (W, H), "white")))
+_p = W * CHAR_PAD
+assert blockers([("a", (10.0, 10.0, 20.0, 20.0))]) == [(0.1 * W - _p, 0.1 * H - _p, 0.2 * W + _p, 0.2 * H + _p)]
+assert CHAR_PAD == 0.015 and blockers([]) == []
+assert _overlap(0, 0, 100, 100, [(50.0, 50.0, 150.0, 150.0)]) == 2500.0
+assert _overlap(0, 0, 100, 100, [(200.0, 0.0, 300.0, 100.0)]) == 0.0
+
+
+def _rect(spot, block):
+    bw, bh = block_size(block)
+    x, y = spot["x"] / 100 * W, spot["y"] / 100 * H
+    return x, y, bw, bh
+
+
+# AI가 고른 자리(6%, 8%)가 캐릭터 칸 위 → 칸을 피한 곳으로 옮긴다
+_av = blockers([("a", (4.0, 5.0, 30.0, 60.0))])
+_got = settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], _av)
+assert _got and _overlap(*_rect(_got[0], blk_a), _av) == 0, _got
+assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}]) == settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], [])
+assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}])[0]["x"] == 6.0   # 칸이 없으면 지금처럼 AI 자리 그대로
+# 2덩어리: 왼쪽 면 위 띠를 칸이 덮으면 1번은 왼쪽 면 아래 띠로 (면 고정 #95 유지)
+_av2 = blockers([("a", (0.0, 0.0, 50.0, 45.0))])
+_got2 = settle(_wbusy, [blk_a, blk_b], [{"x": 6, "y": 8, "color": "dark"}, {"x": 55, "y": 8, "color": "dark"}], _av2)
+assert _got2 and _got2[0]["x"] < 50 and _got2[0]["y"] > 50 and _got2[1]["x"] >= 50, _got2
+assert all(_overlap(*_rect(s, b), _av2) == 0 for s, b in zip(_got2, [blk_a, blk_b])), _got2
+# 어디에도 칸을 피할 곳이 없으면 None (호출한 쪽이 다음 단계로)
+assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], blockers([("a", (0.0, 0.0, 100.0, 100.0))])) is None
+print("avoid ok")
