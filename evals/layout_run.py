@@ -689,3 +689,25 @@ for _b in ([["1.", "2.", "3.", "4.", "5.", "6."], ["질문?"]], [["a.", "b.", "c
     _o = split_block(_b)
     assert [l for blk in _o for para in blk for l in para] == [l for para in _b for l in para]   # 줄 순서·글자 그대로
 print("split block ok")
+
+
+# ── 마지막 안전판: 겹침 먼저 (#104) ──
+_b7 = [[f"미루가 블록을 {i}번 쌓았어요." for i in range(1, 8)]]
+_av7 = blockers([("a", (0.0, 45.0, 50.0, 100.0)), ("b", (50.0, 50.0, 100.0, 100.0))])
+
+
+def _over(blocks, spots, avoid):
+    return sum(_overlap(*_rect(s, b), avoid) for b, s in zip(blocks, spots))
+
+
+assert settle(_wbusy, [_b7], [{"x": 6, "y": 8, "color": "dark"}], _av7) is None          # 7줄 한 덩어리는 어디에 둬도 칸에 닿는다
+_bl, _sp = calmest_pick(_wbusy, [_b7], _av7)
+assert len(_bl) == 2 and _over(_bl, _sp, _av7) == 0, (_bl, _sp)                         # 나눈 두 덩어리가 뽑힘
+assert _sp[0]["x"] < 50 <= _sp[1]["x"]
+# 그림 전체가 칸이어도 늘 자리는 있고, 겹침은 칸을 모를 때보다 작거나 같다
+_avall = blockers([("a", (0.0, 20.0, 100.0, 100.0))])
+_bl, _sp = calmest_pick(_wbusy, [blk_a], _avall)
+_bl0, _sp0 = calmest_pick(_wbusy, [blk_a])
+assert _over(_bl, _sp, _avall) <= _over(_bl0, _sp0, _avall), (_sp, _sp0)
+assert calmest(_wbusy, [blk_a], _avall) is not None
+print("calmest avoid ok")

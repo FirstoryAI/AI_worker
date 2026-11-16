@@ -402,17 +402,18 @@ def luminance(rgb: tuple[float, float, float]) -> float:
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
-def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
+def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
     """settle도 다시 그리기도 자리를 못 찾았을 때: 복잡도 기준은 빼고 여백·띠·읽는 순서·간격만 지켜
-    두 면을 통틀어 가장 덜 복잡한 곳(2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만, #95). 그림을 안 보는 기본 자리보다 늘 낫거나 같다.
-    글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
+    두 면을 통틀어 (캐릭터 칸과 겹친 넓이, 복잡도)가 가장 작은 곳(2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만, #95, #104).
+    그림을 안 보는 기본 자리보다 늘 낫거나 같다. 글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
     near = (DEFAULT_SPOT[0] / 100 * W, DEFAULT_SPOT[1] / 100 * H)   # 복잡도가 (거의) 같을 때만 왼쪽 위 쪽으로
     placed: list[tuple[float, float, float, float]] = []
     out: list[dict] = []
     for i, block in enumerate(blocks):
         bw, bh = block_size(block)
         side = side_of(i, len(blocks))
-        found = _best_on(busy, (0, 1) if side is None else (side,), near, bw, bh, placed, math.inf, TIE_COST)
+        found = _best_on(busy, (0, 1) if side is None else (side,), near, bw, bh, placed, math.inf, TIE_COST,
+                         avoid=avoid, strict=False)
         if found is None:
             return None
         x, y = found
@@ -421,24 +422,32 @@ def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
     return out
 
 
-def _worst(busy: Busy, blocks: list[Block], spots: list[dict]) -> float:
-    """자리들 중 가장 복잡한 곳의 복잡도"""
-    return max(_score(busy, s["x"] / 100 * W, s["y"] / 100 * H, *block_size(b)) for b, s in zip(blocks, spots))
+def _cost(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> tuple[float, float]:
+    """(캐릭터 칸과 겹친 넓이 합, 자리들 중 가장 복잡한 곳의 복잡도)"""
+    rects = [(s["x"] / 100 * W, s["y"] / 100 * H, *block_size(b)) for b, s in zip(blocks, spots)]
+    return (sum(_overlap(*r, avoid) for r in rects), max(_score(busy, *r) for r in rects))
 
 
-def calmest_pick(busy: Busy, blocks: list[Block]) -> tuple[list[Block], list[dict]] | None:
-    """조용한 곳이 없을 때의 (덩어리, 자리). 2덩어리면 양쪽에 나눈 calmest와 합친 한 덩어리 calmest 중 덜 복잡한 쪽:
-    나눈 쪽은 두 자리 중 더 복잡한 값으로 보고, 같으면 나눈다 (#95). 1덩어리는 calmest 그대로. 놓을 곳이 없으면 None."""
-    split = calmest(busy, blocks)
-    if len(blocks) != 2:
-        return (blocks, split) if split is not None else None
-    one = merge(blocks)
-    alone = calmest(busy, one)
-    if split is None:
-        return (one, alone) if alone is not None else None
-    if alone is not None and _worst(busy, one, alone) < _worst(busy, blocks, split):
-        return one, alone
-    return blocks, split
+def calmest_pick(busy: Busy, blocks: list[Block], avoid=()) -> tuple[list[Block], list[dict]] | None:
+    """조용한 곳이 없을 때의 (덩어리, 자리). 후보는 받은 덩어리 그대로, 2덩어리면 합친 한 덩어리, 1덩어리면 split_block으로 나눈 둘.
+    _cost (겹친 넓이, 가장 복잡한 자리)가 가장 작은 후보. 같으면 앞 후보 — 2덩어리는 나눈 쪽, 1덩어리는 그대로 (#95, #104).
+    놓을 곳이 없으면 None."""
+    cands = [blocks]
+    if len(blocks) == 2:
+        cands.append(merge(blocks))
+    elif len(blocks) == 1:
+        parts = split_block(blocks[0])
+        if parts is not None:
+            cands.append(parts)
+    best: tuple[tuple[float, float], list[Block], list[dict]] | None = None
+    for bl in cands:
+        spots = calmest(busy, bl, avoid)
+        if spots is None:
+            continue
+        cost = _cost(busy, bl, spots, avoid)
+        if best is None or cost < best[0]:
+            best = (cost, bl, spots)
+    return (best[1], best[2]) if best else None
 
 
 def settle(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> list[dict] | None:
