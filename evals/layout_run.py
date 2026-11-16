@@ -496,8 +496,7 @@ face = {"owner": "모아", "kind": "face", "source": (20.0, 35.0, 30.0, 50.0), "
 sw = place_word(white, "데굴데굴", face, tb)
 l, r = sw.pieces
 assert [p.text for p in sw.pieces] == ["데굴", "데굴"] and (l.side, r.side) == ("left", "right"), sw
-assert l.x < 15 and r.x > 35 and l.y == r.y and l.y <= 35, sw          # 캐릭터 칸 바깥, 대칭, 얼굴 위끝 이하
-assert abs((20 - l.x) - (r.x - 30)) < 0.2, sw                          # 근원 기준 거울 대칭
+assert l.x < 20 < 30 < r.x and l.y <= 35 and r.y <= 35, sw             # 근원 양옆, 얼굴 위끝 이하 (#108 여유 뒤엔 대칭이 아닐 수 있음)
 assert sw.color == "#7B4FD6" and sw.text == "데굴데굴" and sw.owner == "모아"
 assert all(p.x == round(p.x, 1) and p.y == round(p.y, 1) for p in sw.pieces)
 one = place_word(white, "엉엉", face, tb)
@@ -551,7 +550,9 @@ for _word, _spot in (
         ("사각사각", {"owner": "크레파스", "kind": "object", "source": (57.0, 67.0, 60.0, 74.0),
                      "chars": [("a", (45.0, 33.0, 66.0, 74.0)), ("b", (68.0, 11.0, 100.0, 75.0))]})):
     _got = place_word(white, _word, _spot, [])
-    assert _got and [p.side for p in _got.pieces] == ["left", "right"], (_word, _got)
+    if _got is None or len(_got.pieces) == 1:   # #108: 인물과 여유를 두면 좁은 장면은 한 조각(또는 안 띄움)으로 내려갈 수 있다
+        continue
+    assert [p.side for p in _got.pieces] == ["left", "right"], (_word, _got)
     _l, _r = _got.pieces
     assert _l.x < _spot["source"][0] and _r.x > _spot["source"][2], _got                # 근원 양옆
     assert abs(_l.y - _r.y) <= 2 * _ph + 0.1, _got                                        # 높이 차이는 조각 둘 높이까지
@@ -753,3 +754,31 @@ assert settle(_bbusy, [_one], [{"x": 5, "y": 7, "color": "dark"}], _avm) is None
 _bl, _sp = calmest_pick(_bbusy, [_one], _avm)
 assert _sp[0]["x"] < 50 and _sp[0]["y"] < 45, _sp                                     # 조용한 왼쪽 위 벽
 print("fallback prefers calm wall ok")
+
+
+# ── 의성어 조각은 캐릭터 칸에서 여유(CHAR_PAD)를 두고 떨어진다 (#108: 96번 4쪽 '훌쩍훌쩍'이 귀 끝에 닿음) ──
+def _clear_of(sw, chars):
+    """모든 조각이 CHAR_PAD만큼 키운 캐릭터 칸(%)과 안 겹치나"""
+    for q in (sw.pieces if sw else []):
+        qw, qh = piece_size(q.text)
+        r = (q.x / 100 * W - qw / 2, q.y / 100 * H - qh / 2, q.x / 100 * W + qw / 2, q.y / 100 * H + qh / 2)
+        for c in chars:
+            cp = (c[0] / 100 * W - W * CHAR_PAD, c[1] / 100 * H - W * CHAR_PAD, c[2] / 100 * W + W * CHAR_PAD, c[3] / 100 * H + W * CHAR_PAD)
+            if r[0] < cp[2] and cp[0] < r[2] and r[1] < cp[3] and cp[1] < r[3]:
+                return False
+    return True
+
+
+_scenes = [
+    ("훌쩍훌쩍", {"owner": "나리", "kind": "face", "source": (37.0, 38.0, 46.0, 55.0),
+                 "chars": [("나리", (35.0, 33.0, 48.0, 85.0)), ("솔", (49.0, 37.0, 63.0, 86.0))]}),
+    ("데굴데굴", face), ("엉엉", face), ("데굴데굴", held), ("데굴데굴", car_free), ("훌쩍훌쩍", hug),
+    ("데굴데굴", {"owner": "자동차", "kind": "object", "source": (46.0, 75.0, 53.0, 81.0),
+                 "chars": [("a", (63.0, 8.0, 86.0, 83.0)), ("b", (49.0, 39.0, 68.0, 82.0))]}),
+    ("사각사각", {"owner": "크레파스", "kind": "object", "source": (57.0, 67.0, 60.0, 74.0),
+                 "chars": [("a", (45.0, 33.0, 66.0, 74.0)), ("b", (68.0, 11.0, 100.0, 75.0))]}),
+]
+for _w, _s in _scenes:
+    _sw = place_word(_wbusy, _w, _s, [])
+    assert _clear_of(_sw, [b for _, b in _s["chars"]]), (_w, _s, _sw)
+print("sound word pad ok")

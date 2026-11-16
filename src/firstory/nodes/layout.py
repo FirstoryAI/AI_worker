@@ -816,7 +816,7 @@ class _WordScene:
     """조각을 놓을 때 보는 것 (모두 px)"""
     kind: str                                          # face | object
     source: tuple[float, float, float, float]          # 근원 칸 x0, y0, x1, y1
-    chars: list[tuple[float, float, float, float]]     # 모든 캐릭터 칸 (겹치면 안 됨)
+    chars: list[tuple[float, float, float, float]]     # 모든 캐릭터 칸, CHAR_PAD만큼 키운 것 (겹치면 안 됨, #108)
     others: list[tuple[float, float, float, float]]    # 근원보다 가까우면 안 되는 캐릭터 칸
     blocks: list[tuple[float, float, float, float]]    # 글 덩어리 x, y, w, h (_gap_ok 모양)
 
@@ -913,7 +913,9 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
     for b in blocks:
         bw, bh = block_size(b.paragraphs)
         block_px.append((b.x / 100 * W, b.y / 100 * H, bw, bh))
-    sc = _WordScene(kind=spot["kind"], source=source, chars=chars, others=others, blocks=block_px)
+    pad = W * CHAR_PAD   # 캐릭터를 절대 가리지 않게: 칸은 윤곽에 붙어 오니 사방으로 여유를 둔다 (#108)
+    sc = _WordScene(kind=spot["kind"], source=source, chars=[(c[0] - pad, c[1] - pad, c[2] + pad, c[3] + pad) for c in chars],
+                    others=others, blocks=block_px)
 
     parts = split_word(word)
     whole = word.replace(" ", "")
