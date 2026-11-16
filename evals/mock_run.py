@@ -60,6 +60,18 @@ while "__interrupt__" in r:
 print("interrupts:", seen)
 assert seen == ["interview", "interview", "interview", "confirm", "review", "review"], seen  # images 재생성 → render → review 다시
 assert r["status"] == "completed" and len(r["guide"].prompts) == 2 and r["guide"].synopsis
+# 장면 설명은 AI가 아니라 코드가 본문 질문을 그대로 인용해 만든다 (#105)
+assert [q.scene_note for q in r["guide"].prompts] == [
+    "“포포는 어떤 기분이었을까요?”라는 질문으로 아이와 함께 주인공의 마음을 헤아려 볼 수 있어요.",
+    "“내일 포포는 뭐라고 말하고 싶을까요?”라는 질문으로 아이와 함께 다음에 일어날 일을 상상해 볼 수 있어요."], r["guide"].prompts
+from firstory.nodes.story import scene_note
+from firstory.schemas import GuidePrompt, ReadingGuide
+assert scene_note(GuidePrompt(id="q", after_page=3, purpose="empathy",
+                              text="성은 무너지고 미루 마음은 **콩콩** 뛰었어요. 미루는 왜 큰소리를 냈을까요?")) \
+    == "“미루는 왜 큰소리를 냈을까요?”라는 질문으로 아이와 함께 주인공의 마음을 헤아려 볼 수 있어요."
+assert scene_note(GuidePrompt(id="q", after_page=3, purpose="perspective", text="보보는 무슨 생각을 했을까요? 말해 볼까요.")) \
+    .startswith("“보보는 무슨 생각을 했을까요?”라는")   # 물음 문장이 끝이 아니어도 물음 문장을 인용
+assert "scene_note" not in str(ReadingGuide.model_json_schema())   # AI에게는 쓰라고 하지 않는다
 assert r["tone"] == "warm"   # 확인 재개 값의 tone이 state에 남음
 nodes = [c.node for c in r["cost"]]
 assert nodes.count("illustrate:page3") == 2 and nodes.count("illustrate:page1") == 1, nodes  # 3페이지만 다시 그림
