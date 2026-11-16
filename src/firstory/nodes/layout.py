@@ -447,21 +447,33 @@ def _sanitize_spots(spots, n: int) -> list[dict]:
     return out
 
 
-def _sanitize_word(spot) -> dict | None:
-    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": [(이름, 칸 %)]} (#102).
-    근원 칸이 이상하거나 종류가 face·object가 아니면 None. 이상한 캐릭터 칸은 그 칸만 뺀다."""
+Chars = list[tuple[str, tuple[float, float, float, float]]]   # (이름, % 칸 x0, y0, x1, y1)
+
+
+def _sanitize_chars(chars) -> Chars:
+    """AI 캐릭터 칸 목록 → [(이름, 칸 %)]. 이상한 칸은 그 칸만 뺀다 (#102, #104)"""
+    out: Chars = []
+    try:
+        items = list(chars or [])
+    except TypeError:
+        return out
+    for c in items:
+        box = _sanitize_box(getattr(c, "box", None))
+        if box is not None:
+            out.append((str(getattr(c, "name", "") or ""), box))
+    return out
+
+
+def _sanitize_word(spot, chars: Chars) -> dict | None:
+    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": 맨 위 캐릭터 칸} (#102, #104).
+    근원 칸이 이상하거나 종류가 face·object가 아니면 None."""
     if spot is None:
         return None
     kind = getattr(spot, "source_kind", None)
     source = _sanitize_box(getattr(spot, "source_box", None))
     if kind not in ("face", "object") or source is None:
         return None
-    chars = []
-    for c in getattr(spot, "characters", None) or []:
-        box = _sanitize_box(getattr(c, "box", None))
-        if box is not None:
-            chars.append((str(getattr(c, "name", "") or ""), box))
-    return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": chars}
+    return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": list(chars)}
 
 
 def _sanitize_box(box) -> tuple[float, float, float, float] | None:
@@ -494,31 +506,36 @@ def with_grid(image: bytes) -> bytes:
     return buf.getvalue()
 
 
-def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = False
-               ) -> tuple[list[dict], dict | None, list[CostEntry]]:
-    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 근원·캐릭터 칸 (_sanitize_word, sfx가 있을 때만).
-    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다.
-    sfx가 없으면 지금(#92 전) 호출과 똑같다."""
+def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = True
+               ) -> tuple[list[dict], Chars, dict | None, list[CostEntry]]:
+    """그림과 덩어리 → (AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 캐릭터 칸 (#104),
+    의성어 근원 답 (_sanitize_word, sfx가 있을 때만), 비용).
+    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 자리 [] — 호출한 쪽이 기본 자리로 간다.
+    grid면 그림에 10% 눈금을 그려 보낸다(그리다 터지면 원래 그림)."""
     if not blocks:
-        return [], None, []
+        return [], [], None, []
     sizes = []
     for i, b in enumerate(blocks, 1):
         w, h = block_size(b)
         sizes.append(f"{i}번 덩어리: 가로 약 {w / W * 100:.0f}%, 세로 약 {h / H * 100:.0f}%")
-    system = prompt("text_place", sizes="\n".join(sizes))
-    user = f"덩어리 {len(blocks)}개의 자리를 읽는 순서대로 답하세요."
+    if grid:
+        try:
+            image = with_grid(image)
+        except Exception as e:  # noqa: BLE001 — 눈금이 자리 찾기를 막지 않는다
+            log.warning("눈금 그리기 실패 → 원래 그림으로: %s", type(e).__name__)
+            grid = False
+    system = prompt("text_place", sizes="\n".join(sizes), grid=GRID_NOTE if grid else "")
+    user = f"덩어리 {len(blocks)}개의 자리와 캐릭터 칸을 답하세요. 자리는 읽는 순서대로."
     schema = TextPlacement
     if sfx is not None:
-        try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리는 그대로 받는다)
+        try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리·칸은 그대로 받는다)
             sys_w = system + "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
-                                              cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
-                                              grid=GRID_NOTE if grid else "")
-            img_w = with_grid(image) if grid else image
+                                              cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)")
         except Exception as e:  # noqa: BLE001
             log.warning("의성어 자리 묻기 준비 실패 → 의성어 없이: %s", type(e).__name__)
             sfx = None
         else:
-            system, image = sys_w, img_w
+            system = sys_w
             user += " 의성어 자리도 답하세요."
             schema = TextPlacementWithWord
     try:
@@ -533,12 +550,13 @@ def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, g
         )
     except Exception as e:  # 글·그림 내용은 로그에 남기지 않는다
         log.warning("자리 찾기 호출 실패 → 기본 자리: %s", type(e).__name__)
-        return [], None, []
+        return [], [], None, []
     spots = _sanitize_spots(getattr(answer, "blocks", None), len(blocks))
     if not spots:
         log.warning("자리 찾기 답이 맞지 않음 → 기본 자리")
-    word = _sanitize_word(getattr(answer, "sound_word", None)) if sfx is not None else None
-    return spots, word, [cost]
+    chars = _sanitize_chars(getattr(answer, "characters", None))
+    word = _sanitize_word(getattr(answer, "sound_word", None), chars) if sfx is not None else None
+    return spots, chars, word, [cost]
 
 
 # ── 의성어·의태어 (#92) ──

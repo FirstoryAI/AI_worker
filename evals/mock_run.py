@@ -992,7 +992,7 @@ assert any("의성어 2개" in x for x in logged) and not any("톡" in x or "쿵
 # 글 자리 때문에 다시 그렸는데 새 그림으로 답을 못 받으면 처음 그림의 말 자리를 쓰지 않는다 (None)
 answers = iter([
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[])),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40))),
 ])
 
 
@@ -1012,15 +1012,15 @@ assert sw_ is None, sw_
 # 다시 그린 그림으로 답을 받으면 그 답의 자리를 쓴다
 answers = iter([
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[])),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40))),
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=20, y0=50, x1=26, y1=60), characters=[])),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=20, y0=50, x1=26, y1=60))),
 ])
 tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png((0, 0, 100, 100)), ask)
 assert sw_ is not None and len(sw_.pieces) == 1 and sw_.pieces[0].x < 50 and sw_.pieces[0].y < 50, sw_   # 두 번째(다시 그린 그림) 답의 근원 위
 # AI가 캐릭터 칸을 하나도 안 주면 쪽 번호만 경고 (실험에서 null·겹침 원인을 알아보려고)
 answers = iter([TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                                      sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[]))])
+                                      sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40)))])
 logged.clear()
 logging.getLogger("firstory.illustrate").addHandler(h)
 il._arrange(3, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], None, ask)

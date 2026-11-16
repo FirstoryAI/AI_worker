@@ -359,7 +359,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     try:
         def fit(img: bytes, busy: Busy, bl: list[Block]):
             nonlocal last_word
-            spots, word, pcosts = place_page(img, bl, sfx, grid=sfx is not None)
+            spots, _chars, word, pcosts = place_page(img, bl, sfx)
             for c in pcosts:
                 c.node = f"layout:place:page{order}"
             costs.extend(pcosts)

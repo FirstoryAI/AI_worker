@@ -17,7 +17,7 @@ from firstory.nodes.layout import (  # noqa: E402
     Busy, block_size, build_blocks, calmest, calmest_pick, side_of, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
 )
 from firstory import llm, mock  # noqa: E402
-from firstory.schemas import BlockSpot, TextChunking, TextPlacement  # noqa: E402
+from firstory.schemas import BlockSpot, CharacterBox, OwnerBox, TextChunking, TextPlacement  # noqa: E402
 
 # ── 줄 나누기 ──
 # 대사 하나는 한 줄 (#77): 따옴표 안의 마침표·줄바꿈에서는 자르지 않는다
@@ -305,10 +305,11 @@ blk_a = [["첫째 줄이에요.", "둘째 줄이에요."]]
 blk_b = [["셋째 줄이에요."]]
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark"), BlockSpot(x=55.5, y=70, color="light")])))
-spots, _, costs = place_page(img, [blk_a, blk_b])
+spots, chars0, _, costs = place_page(img, [blk_a, blk_b])
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}, {"x": 55.5, "y": 70.0, "color": "light"}], spots
-assert [c.node for c in costs] == ["layout:place"]
-assert calls[0]["schema"] is TextPlacement and calls[0]["image"] == img and "{{" not in calls[0]["system"]
+assert chars0 == [] and [c.node for c in costs] == ["layout:place"]
+assert calls[0]["schema"] is TextPlacement and "{{" not in calls[0]["system"]
+assert calls[0]["image"] != img and "눈금" in calls[0]["system"] and "characters" in calls[0]["system"]   # 모든 쪽에 눈금·캐릭터 칸 (#104)
 assert "1번 덩어리" in calls[0]["system"] and "2번 덩어리" in calls[0]["system"]
 w1, h1 = block_size(blk_a)
 assert f"가로 약 {w1 / W * 100:.0f}%" in calls[0]["system"] and f"세로 약 {h1 / H * 100:.0f}%" in calls[0]["system"]
@@ -330,16 +331,33 @@ assert place_page(img, [blk_a, blk_b])[0] == []                                 
 llm.set_structured_override(fake_with(TextPlacement(blocks=[])))
 assert place_page(img, [blk_a])[0] == []
 llm.set_structured_override(fake_with(RuntimeError("글자 내용이 들어 있어도 로그엔 안 남는다")))
-assert place_page(img, [blk_a]) == ([], None, [])                                                          # 예외 → []
+assert place_page(img, [blk_a]) == ([], [], None, [])                                                          # 예외 → []
 llm.set_structured_override(fake_with(lambda kw: type("Bad", (), {"blocks": [type("S", (), {"x": "abc", "y": None, "color": "dark"})()]})()))
 assert place_page(img, [blk_a])[0] == []                                                             # 숫자 아님
-assert place_page(img, []) == ([], None, [])                                                               # 덩어리 없으면 부르지 않음
+assert place_page(img, []) == ([], [], None, [])                                                               # 덩어리 없으면 부르지 않음
+
+# 캐릭터 칸 (#104): 맨 위 characters를 모든 쪽에서 받는다. 이상한 칸은 그 칸만 뺀다
+_ob = lambda *v: OwnerBox(x0=v[0], y0=v[1], x1=v[2], y1=v[3])  # noqa: E731
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")],
+                                                    characters=[CharacterBox(name="초코", box=_ob(35, 30, 60, 85))])))
+assert place_page(img, [blk_a])[1] == [("초코", (35.0, 30.0, 60.0, 85.0))]
+llm.set_structured_override(fake_with(TextPlacement.model_construct(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=[
+    CharacterBox.model_construct(name="x", box=_ob(60, 10, 50, 20)), CharacterBox.model_construct(name="y", box=_ob(10, 10, 20, 180)),
+    CharacterBox(name="모아", box=_ob(10, 30, 30, 85))])))
+assert place_page(img, [blk_a])[1] == [("모아", (10.0, 30.0, 30.0, 85.0))]
+llm.set_structured_override(fake_with(TextPlacement.model_construct(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+assert place_page(img, [blk_a])[1] == []                                                                    # characters 없음
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
+place_page(img, [blk_a], grid=False)
+assert calls[0]["image"] == img and "눈금" not in calls[0]["system"]
 
 # mock 모드 배선: 진짜 fake_structured 가 두 스키마를 모두 답한다
 llm.set_structured_override(mock.fake_structured)
 ls, cks, _ = chunk_page(text)
 assert cks == [[ls]], cks
 assert place_page(img, [blk_a, blk_b])[0] == [{"x": 5.0, "y": 7.0, "color": "dark"}] * 2
+assert place_page(img, [blk_a])[1] == []   # mock: 별표 없는 쪽은 칸 없음
 llm.set_structured_override(None)
 
 # structured_image 가 Responses API 에 input_image(data URL, detail high)를 싣는다 (진짜 호출 경로, 클라이언트만 가짜)
@@ -429,19 +447,20 @@ assert len(short_look("x" * 300)) == 120
 # place_page: 별표 없는 쪽은 지금 호출 그대로
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
-spots, wspot, costs = place_page(img, [blk_a])
+spots, _, wspot, costs = place_page(img, [blk_a])
 assert wspot is None and calls[0]["schema"] is TextPlacement and "의성어" not in calls[0]["system"]
 sys0, user0 = calls[0]["system"], calls[0]["user"]
 
 # 별표 있는 쪽: 의성어 단락 + 의성어 스키마. AI는 근원·캐릭터 칸만 답한다 (#102)
 ask = SfxAsk(word="데굴데굴", text="초코는 옆에서 자동차를 **데굴데굴** 굴렸어요.", cast=[("초코", "A small hedgehog")])
 ob = lambda *v: OwnerBox(x0=v[0], y0=v[1], x1=v[2], y1=v[3])  # noqa: E731
-good = WordSpot(owner="초코", source_kind="object", source_box=ob(40, 70, 48, 78),
-                characters=[CharacterBox(name="초코", box=ob(35, 30, 60, 85)), CharacterBox(name="모아", box=ob(10, 30, 30, 85))])
+good = WordSpot(owner="초코", source_kind="object", source_box=ob(40, 70, 48, 78))
+good_chars = [CharacterBox(name="초코", box=ob(35, 30, 60, 85)), CharacterBox(name="모아", box=ob(10, 30, 30, 85))]
 calls.clear()
-llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=good)))
-spots, wspot, costs = place_page(img, [blk_a], ask)
+llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=good_chars, sound_word=good)))
+spots, wchars, wspot, costs = place_page(img, [blk_a], ask)
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and [c.node for c in costs] == ["layout:place"]
+assert wchars == wspot["chars"]                                                  # 의성어도 맨 위 칸을 쓴다 (#104)
 assert wspot == {"owner": "초코", "kind": "object", "source": (40.0, 70.0, 48.0, 78.0),
                  "chars": [("초코", (35.0, 30.0, 60.0, 85.0)), ("모아", (10.0, 30.0, 30.0, 85.0))]}, wspot
 assert calls[0]["schema"] is TextPlacementWithWord
@@ -451,23 +470,23 @@ assert "말 크기" not in sysmsg
 assert sysmsg.startswith(sys0) and calls[0]["user"].startswith(user0)   # 지금 지시 뒤에 붙일 뿐
 
 
-def wplaced(spot):
+def wplaced(spot, chars=good_chars):
     llm.set_structured_override(fake_with(TextPlacementWithWord.model_construct(
-        blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=spot)))
-    return place_page(img, [blk_a], ask)[1]
+        blocks=[BlockSpot(x=6, y=8, color="dark")], characters=chars, sound_word=spot)))
+    return place_page(img, [blk_a], ask)[2]
 
 
-bad_char = good.model_copy(update={"characters": [CharacterBox.model_construct(name="x", box=ob(60, 10, 50, 20)), good.characters[1]]})
-assert wplaced(bad_char)["chars"] == [("모아", (10.0, 30.0, 30.0, 85.0))]                       # 뒤집힌 칸만 뺀다
-assert wplaced(good.model_copy(update={"characters": []}))["chars"] == []
+bad_char = [CharacterBox.model_construct(name="x", box=ob(60, 10, 50, 20)), good_chars[1]]
+assert wplaced(good, bad_char)["chars"] == [("모아", (10.0, 30.0, 30.0, 85.0))]                 # 뒤집힌 칸만 뺀다
+assert wplaced(good, [])["chars"] == []
 assert wplaced(good.model_copy(update={"source_box": ob(50, 10, 40, 20)})) is None              # 근원 칸이 뒤집힘
 assert wplaced(good.model_copy(update={"source_box": OwnerBox.model_construct(x0=50, y0=float("nan"), x1=60, y1=80)})) is None
 assert wplaced(good.model_copy(update={"source_box": ob(50, 30, 60, 180)})) is None              # 0~100 밖
-assert wplaced(WordSpot.model_construct(owner="a", source_kind="hand", source_box=ob(1, 1, 2, 2), characters=[])) is None
-assert wplaced(WordSpot.model_construct(owner="a", source_kind="face", characters=[])) is None   # 근원 칸 없음
+assert wplaced(WordSpot.model_construct(owner="a", source_kind="hand", source_box=ob(1, 1, 2, 2))) is None
+assert wplaced(WordSpot.model_construct(owner="a", source_kind="face")) is None   # 근원 칸 없음
 assert wplaced(None) is None
 llm.set_structured_override(fake_with(RuntimeError("boom")))
-assert place_page(img, [blk_a], ask)[:2] == ([], None)
+assert place_page(img, [blk_a], ask)[:3] == ([], [], None)
 
 
 # ── 조각 놓기 place_word (#102) ──
@@ -555,32 +574,40 @@ fold = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (47.
 assert fold is None or all(abs(p.x - 50) * W / 100 >= piece_size(p.text)[0] / 2 + W * SFX_FOLD / 100 - 1 for p in fold.pieces), fold
 dark = Busy(png(Image.new("RGB", (W, H), (20, 20, 30))))
 assert place_word(dark, "엉엉", face, []).color == "#F0661E"
-# 눈금: grid=True면 의성어 쪽 그림에 10% 눈금을 그려 보내고 지시에 알린다. 별표 없는 쪽은 그림 그대로
+# 눈금: 기본(grid=True)이면 별표 있는 쪽·없는 쪽 모두 10% 눈금을 그려 보내고 지시에 알린다 (#104). grid=False면 그림 그대로
 calls.clear()
-llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], sound_word=good)))
-place_page(img, [blk_a], ask, grid=True)
-assert calls[0]["image"] != img and "눈금" in calls[0]["system"]
+llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=good_chars, sound_word=good)))
+place_page(img, [blk_a], ask)
+assert calls[0]["image"] != img and calls[0]["system"].count("눈금") >= 1
 gi = Image.open(io.BytesIO(calls[0]["image"]))
 assert gi.size == (W, H)
 calls.clear()
-place_page(img, [blk_a], ask)
+place_page(img, [blk_a], ask, grid=False)
 assert calls[0]["image"] == img and "눈금" not in calls[0]["system"]
-calls.clear()
-llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
-place_page(img, [blk_a], None, grid=True)
-assert calls[0]["image"] == img and calls[0]["system"] == sys0
-# 의성어 준비(크기 재기·지시·눈금)가 터지면 의성어 없이 예전 호출로 — 글 자리는 그대로 받는다 (리뷰 #3)
+# 눈금 그리기가 터지면 눈금 없이 원래 그림으로 묻는다 — 칸·의성어는 그대로 받는다
 import firstory.nodes.layout as _lay  # noqa: E402
 _orig_wg = _lay.with_grid
 _lay.with_grid = lambda image: (_ for _ in ()).throw(RuntimeError("grid"))
 calls.clear()
-llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")])))
 try:
-    spots, wspot, _ = place_page(img, [blk_a], ask, grid=True)
+    spots, wchars, wspot, _ = place_page(img, [blk_a], ask)
 finally:
     _lay.with_grid = _orig_wg
-assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None
-assert calls[0]["schema"] is TextPlacement and calls[0]["system"] == sys0 and calls[0]["image"] == img
+assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is not None and len(wchars) == 2
+assert calls[0]["schema"] is TextPlacementWithWord and calls[0]["image"] == img and "눈금" not in calls[0]["system"]
+# 의성어 지시 준비가 터지면 의성어 없이 — 글 자리·칸은 그대로 받는다 (리뷰 #3)
+_orig_pr = _lay.prompt
+_lay.prompt = lambda name, **kw: (_ for _ in ()).throw(RuntimeError("p")) if name == "text_place_word" else _orig_pr(name, **kw)
+calls.clear()
+llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=good_chars)))
+try:
+    spots, wchars, wspot, _ = place_page(img, [blk_a], ask)
+finally:
+    _lay.prompt = _orig_pr
+assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None and len(wchars) == 2
+assert calls[0]["schema"] is TextPlacement
+llm.set_structured_override(mock.fake_structured)
+assert place_page(img, [blk_a], ask)[1] != []   # mock: 의성어 쪽은 맨 위 칸
 print("sound word ok")
 
 

@@ -339,11 +339,6 @@ class BlockSpot(BaseModel):
     color: Literal["dark", "light"]
 
 
-class TextPlacement(BaseModel):
-    """자리 찾기 답. 읽는 순서대로 덩어리마다 하나"""
-    blocks: list[BlockSpot]
-
-
 class OwnerBox(BaseModel):
     """소리 주인을 감싸는 네모 칸 (그림 폭·높이 대비 %)"""
     x0: float = Field(description="왼쪽 끝 %")
@@ -363,7 +358,13 @@ class WordSpot(BaseModel):
     owner: str = Field(description="소리·움직임의 근원 이름(인물 또는 물건). 근원이 그림에 없으면 반응하는 인물")
     source_kind: Literal["face", "object"] = Field(description="근원이 캐릭터 얼굴(머리)이면 face, 물건이면 object")
     source_box: OwnerBox = Field(description="소리·움직임이 나는 곳을 윤곽에 붙게 감싸는 칸: face면 얼굴(머리), object면 그 물건")
-    characters: list[CharacterBox] = Field(description="그림에 보이는 모든 캐릭터의 몸 칸. 물건을 든 캐릭터도 넣는다")
+
+
+class TextPlacement(BaseModel):
+    """자리 찾기 답. 읽는 순서대로 덩어리마다 하나 + 그림에 보이는 캐릭터 칸 (#104)"""
+    blocks: list[BlockSpot]
+    characters: list[CharacterBox] = Field(default_factory=list,
+                                           description="그림에 보이는 모든 캐릭터의 몸 칸. 글은 이 칸을 피한다. 물건을 든 캐릭터도 넣는다")
 
 
 class TextPlacementWithWord(TextPlacement):
