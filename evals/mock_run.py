@@ -367,6 +367,27 @@ assert any("gentle scene-x" in x for x in front_prompts), front_prompts
 il.set_image_override(mock.tiny_png)
 print("policy retry ok")
 
+# ── 지시문에 이어지는 동작(then·next part)이 있으면 그리기 전에 한 순간으로 다시 쓴다 (#110). 'next to'는 그대로 ──
+moment_prompts: list[str] = []
+
+
+def moment_spy(prompt, refs):
+    moment_prompts.append(prompt)
+    return mock.tiny_png(prompt, refs)
+
+
+il.set_image_override(moment_spy)
+st4 = st.model_copy(update={"pages": [StoryPage(order=1, text="t", characters_in_scene=["포포"], image_prompt="push-a, then hand-b"),
+                                      StoryPage(order=2, text="t", characters_in_scene=["포포"], image_prompt="sit next to bear")]})
+mo = il.illustrate({"story": st4, "output_prefix": "stories/c/runs/13/"})
+scenes = [x for x in moment_prompts if "Scene (" in x]
+assert any("one moment: push-a, and hand-b" in x for x in scenes) and not any("then hand-b" in x for x in scenes), scenes
+assert any("precisely): sit next to bear\n" in x for x in scenes), scenes
+assert sum(c.node == "illustrate:one_moment" for c in mo["cost"]) == 1
+assert il.SEQUENCE.search("In the next part of the same single scene") and not il.SEQUENCE.search("Sol sits next to the stroller")
+il.set_image_override(mock.tiny_png)
+print("one moment ok")
+
 # ── 시트·쪽·표지는 받은 형식대로 key 확장자를 정한다 (#32, #80) ──
 WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 "
 

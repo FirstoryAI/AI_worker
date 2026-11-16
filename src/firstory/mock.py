@@ -16,7 +16,7 @@ from .nodes import illustrate
 from .schemas import (
     AfterReading, Attempt, BeforeReading, CharacterSheet, GuidePrompt, InterviewSummary, InterviewTurnResult,
     JudgeScore, ParentUpdate, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
-    SoftenedScene, StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
+    OneMomentScene, SoftenedScene, StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
     BlockSpot, TextChunking, TextPlacement, TextPlacementWithWord, WordSpot, OwnerBox, CharacterBox,
 )
 
@@ -66,6 +66,8 @@ def fake_structured(*, node, model, schema, system, user, image=None):
                                      sound_word=WordSpot(owner="mock", source_kind="face", source_box=OwnerBox(x0=62, y0=30, x1=70, y1=42)))
     if schema is TextPlacement:   # 덩어리 수는 프롬프트의 "n번 덩어리" (prompts/text_place.md)
         return TextPlacement(blocks=[BlockSpot(x=5, y=7, color="dark") for _ in re.findall(r"^\d+번 덩어리", system, re.M)])
+    if schema is OneMomentScene:   # 원래 지시는 프롬프트 맨 끝 (prompts/one_moment_image_prompt.md)
+        return OneMomentScene(text="one moment: " + system.rstrip().rsplit("\n", 1)[-1].replace("then", "and"))
     if schema is SoftenedScene:   # 원래 지시는 프롬프트 맨 끝 (prompts/soften_image_prompt.md)
         return SoftenedScene(text="gentle " + system.rstrip().rsplit("\n", 1)[-1])
     if schema is StoryJudgement:

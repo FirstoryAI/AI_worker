@@ -129,6 +129,11 @@ class SoftenedScene(BaseModel):
     text: str = Field(description="순화한 장면 설명. 인물·자세·구도·분위기는 그대로. 영어로")
 
 
+class OneMomentScene(BaseModel):
+    """그림 지시에 이어지는 동작(then·next part)이 있을 때 한 순간으로 다시 쓴 장면 설명 (nodes/illustrate.py, #110)."""
+    text: str = Field(description="한 순간으로 다시 쓴 장면 설명. 맨 마지막 동작만, 앞 동작은 소품 상태로. 인물·색·빛·표정·구도는 그대로. 영어로")
+
+
 class Turn(BaseModel):
     question: str
     answer: str

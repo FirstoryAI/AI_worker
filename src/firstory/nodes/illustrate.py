@@ -20,7 +20,7 @@ from openai import BadRequestError
 from PIL import Image
 
 from ..llm import client, prompt, structured
-from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
+from ..schemas import CharacterSheet, CostEntry, Illustrations, OneMomentScene, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
 from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, blockers, build_blocks, calmest_pick, chunk_page, merge,
                      place_page, place_word, settle, short_look, sound_words, split_block, split_lines, wrap_line)
 from ..state import PipelineState
@@ -103,6 +103,30 @@ def _soften(scene: str) -> tuple[str, CostEntry]:
         user="같은 장면을 정책에 걸리지 않게 다시 쓰세요.",
         reasoning="low",
     )
+    return s.text, cost
+
+
+# 지시문에 시간이 흐르는 말이 있으면 그림이 좌우 두 장면으로 갈라진다 (#110). 'next to'처럼 자리를 말하는 next는 빼고 잡는다
+SEQUENCE = re.compile(r"\b(?:then|next part|in the next|afterwards?|after that|moments? later|a moment later|meanwhile|second moment)\b", re.I)
+
+
+def _one_moment(scene: str) -> tuple[str, Optional[CostEntry]]:
+    """이어지는 동작이 있는 지시문을 한 순간으로 다시 쓴다 (#110). 이미 만든 동화의 그림만 다시도 저장된 지시문을 그대로 쓰므로 그리기 직전에 고친다.
+    없으면 그대로, 다시 쓰기가 실패하면 원래 지시문 그대로 (그림 지시의 single_moment 줄이 남은 안전판)."""
+    if not SEQUENCE.search(scene):
+        return scene, None
+    try:
+        s, cost = structured(
+            node="illustrate:one_moment",
+            model=config.model_light,
+            schema=OneMomentScene,
+            system=prompt("one_moment_image_prompt", text=scene),
+            user="같은 장면을 한 순간으로 다시 쓰세요.",
+            reasoning="low",
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("한 순간으로 다시 쓰기 실패, 원래 지시로 그림: %s", type(e).__name__)
+        return scene, None
     return s.text, cost
 
 
@@ -505,15 +529,20 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             redraws += 1
             return True
 
-    def make_redraw(p, chars, refs, state: dict):
+    def make_redraw(p, chars, refs, state: dict, scene: Optional[str] = None):
         """자리를 못 찾은 쪽을 덩어리 크기·자리(where)에 맞춰 다시 그린다. 실행당 MAX_REDRAWS쪽까지. state(key·토큰·장수)를 고친다."""
         def redraw(bl: list[Block], where: list[str]) -> Optional[bytes]:
             if not take_redraw():
                 return None
+            sc = scene
+            if sc is None:   # 글 자리만 다시 하던 쪽: 그릴 때만 지시문을 한 순간으로 (#110)
+                sc, cost = _one_moment(p.image_prompt)
+                if cost:
+                    costs.append(cost)
             try:
                 again, tin2, tout2 = _draw(
-                    lambda scene: _edit(page_prompt(story, chars, scene, [block_size(b) for b in bl], request, where), refs),
-                    p.image_prompt, f"{img_prefix} page {p.order} redraw", costs)
+                    lambda x: _edit(page_prompt(story, chars, x, [block_size(b) for b in bl], request, where), refs),
+                    sc, f"{img_prefix} page {p.order} redraw", costs)
             except Exception as e:  # noqa: BLE001 — 못 그리면 처음 그림 그대로 기본 자리로
                 log.warning("쪽 %d: 자리를 위한 다시 그리기 실패: %s", p.order, type(e).__name__)
                 return None
@@ -535,11 +564,14 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
                 blocks = [[list(para) for para in tb.paragraphs] for tb in old_pi.text_blocks]
             else:
                 blocks = _chunk(p.order, p.text, costs, tail)   # 덩어리를 먼저 나눠야 그림에 필요한 빈 곳 크기를 안다
-            img, tin, tout = _draw(lambda scene: _edit(page_prompt(story, chars, scene, [block_size(b) for b in blocks], request), refs),
-                                   p.image_prompt, f"{img_prefix} page {p.order}", costs)
+            scene, cost = _one_moment(p.image_prompt)   # 이어지는 동작이 있으면 한 순간으로 (#110)
+            if cost:
+                costs.append(cost)
+            img, tin, tout = _draw(lambda sc: _edit(page_prompt(story, chars, sc, [block_size(b) for b in blocks], request), refs),
+                                   scene, f"{img_prefix} page {p.order}", costs)
             state = {"key": storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img),
                      "tin": tin, "tout": tout, "images": 1}
-            tbs, sw = _arrange(p.order, img, blocks, costs, make_redraw(p, chars, refs, state), _sfx(p.order, p.text, chars))
+            tbs, sw = _arrange(p.order, img, blocks, costs, make_redraw(p, chars, refs, state, scene), _sfx(p.order, p.text, chars))
             return (PageImage(order=p.order, path=state["key"], status="completed", text_blocks=tbs, sound_word=sw),
                     int((time.time() - t0) * 1000), state["tin"], state["tout"], state["images"])
         except Exception as e:  # noqa: BLE001
