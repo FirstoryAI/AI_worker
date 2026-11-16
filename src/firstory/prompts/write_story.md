@@ -129,6 +129,7 @@
 - 각 페이지:
   - `characters_in_scene`: 그 쪽 장면에 함께 있는 캐릭터 이름 모두. 본문에서 그 자리에 있는 인물은 빼지 않는다 ("아기 옆에 앉았어요"면 아기도). 말로만 나오고 그 자리에 없는 인물만 뺀다.
   - `image_prompt`: 외형은 반복하지 않는다 (참조 이미지로 따로 간다). 대신 **정확한 동작과 위치**를 쓴다. 본문이 "바퀴 하나만 담요 밖으로 내밀었다"면 그림도 정확히 그것 — "fully out of the blanket"이 아니라 "only one front wheel peeking out from under the blanket, rest of body still covered". 누가 어디에 서/앉아 있는지, 서로 얼마나 떨어져 있는지, 시선이 어디를 향하는지, 소품이 어디 있는지.
+    - **한 순간만**: 그림 한 장은 사진 한 장처럼 한 순간이다. 본문에 동작이 여럿이면("유모차를 밀었어요 … 인형을 건네주었어요") 이 쪽의 핵심 동작 하나를 골라 그 순간만 쓴다. 보통 쪽 끝의 동작이다. 앞 동작은 소품 상태로만 남긴다("the stroller now stands empty beside them"). "then", "next", "in the next part", "after that", "first … later"처럼 시간이 흐르는 말을 쓰지 않는다. 인물마다 그림에 한 번만 나온다.
     - **시간대와 빛**: 쪽마다 쓴다. 저녁·밤이면 꼭 ("evening, dark blue sky in the window, warm lamp light" / "night, dark window, bedside lamp"). 낮이면 "daytime".
     - **표정**: 본문의 마음 그대로 ("crying with tears", "angry frown, puffed cheeks"). 슬프거나 화난 장면을 웃는 얼굴로 쓰지 않는다.
     - **중요한 물건**: 이야기에 중요한 물건은 나오는 쪽마다 색과 모양을 다시 쓴다 ("the blue plate"). 쪽마다 따로 그려서, 안 쓰면 색이 바뀐다.
