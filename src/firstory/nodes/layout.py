@@ -165,6 +165,46 @@ def merge(blocks: list[Block]) -> list[Block]:
     return [[para for block in blocks for para in block]]
 
 
+SPLIT_SKEW = 2 / 3                 # split_block: 문단 경계에서 큰 쪽이 전체 줄의 이 비율을 넘으면 줄 경계로 (#104)
+
+
+def split_block(block: Block) -> list[Block] | None:
+    """자리 없는 한 덩어리 → 양쪽 면에 놓을 두 덩어리 (#104). 문단·줄 순서와 글자는 그대로.
+    문단 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽). 그 경계에서 큰 쪽이 SPLIT_SKEW를 넘거나 문단이 하나면
+    줄 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽, 끊긴 문단은 둘로). 따옴표가 열린 채 끊기는 경계는 안 된다.
+    나눌 곳이 없으면 None."""
+    rows = [(pi, line) for pi, para in enumerate(block) for line in para]
+    n = len(rows)
+    if n < 2:
+        return None
+
+    def ok(k: int) -> bool:
+        return not _quote_open(" ".join(line for _, line in rows[:k]))
+
+    def nearest(ks: list[int]) -> int | None:
+        ks = [k for k in ks if ok(k)]
+        return min(ks, key=lambda k: (abs(k - n / 2), -k)) if ks else None
+
+    para_ks = [k for k in range(1, n) if rows[k][0] != rows[k - 1][0]]
+    k = nearest(para_ks)
+    if k is None or max(k, n - k) > n * SPLIT_SKEW:
+        k = nearest(list(range(1, n)))
+    if k is None:
+        return None
+
+    def regroup(part: list[tuple[int, str]]) -> Block:
+        out: Block = []
+        prev = None
+        for pi, line in part:
+            if pi != prev:
+                out.append([])
+                prev = pi
+            out[-1].append(line)
+        return out
+
+    return [regroup(rows[:k]), regroup(rows[k:])]
+
+
 def block_size(block: Block) -> tuple[float, float]:
     """(폭 px, 높이 px), 1920×1088 기준."""
     rows = [line for para in block for line in para]

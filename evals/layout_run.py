@@ -669,3 +669,23 @@ assert all(_overlap(*_rect(s, b), _av2) == 0 for s, b in zip(_got2, [blk_a, blk_
 # 어디에도 칸을 피할 곳이 없으면 None (호출한 쪽이 다음 단계로)
 assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], blockers([("a", (0.0, 0.0, 100.0, 100.0))])) is None
 print("avoid ok")
+
+
+# ── 한 덩어리를 둘로 나누기 split_block (#104) ──
+from firstory.nodes.layout import split_block  # noqa: E402
+
+assert split_block([["a.", "b."], ["c.", "d."]]) == [[["a.", "b."]], [["c.", "d."]]]
+assert split_block([["a.", "b.", "c.", "d."]]) == [[["a.", "b."]], [["c.", "d."]]]
+assert split_block([["a.", "b.", "c."]]) == [[["a.", "b."]], [["c."]]]                     # 같으면 뒤쪽 경계
+# 문단이 쏠리면(큰 쪽이 2/3 초과) 줄 경계에서 가운데로: 본문 6줄 + 질문 1줄
+assert split_block([["1.", "2.", "3.", "4.", "5.", "6."], ["질문?"]]) == [[["1.", "2.", "3.", "4."]], [["5.", "6."], ["질문?"]]]
+# 쏠리지 않으면 문단 경계: 4줄 + 3줄
+assert split_block([["1.", "2.", "3.", "4."], ["5.", "6.", "7."]]) == [[["1.", "2.", "3.", "4."]], [["5.", "6.", "7."]]]
+# 대사(따옴표가 열린 채)에서는 나누지 않는다
+assert split_block([['"가나다', '라마바."']]) is None
+assert split_block([['가.', '"나다', '라마."']]) == [[['가.']], [['"나다', '라마."']]]
+assert split_block([["한 줄."]]) is None and split_block([]) is None
+for _b in ([["1.", "2.", "3.", "4.", "5.", "6."], ["질문?"]], [["a.", "b.", "c."]], [['가.', '"나다', '라마."']]):
+    _o = split_block(_b)
+    assert [l for blk in _o for para in blk for l in para] == [l for para in _b for l in para]   # 줄 순서·글자 그대로
+print("split block ok")
