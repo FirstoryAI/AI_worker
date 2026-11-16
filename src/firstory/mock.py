@@ -62,8 +62,8 @@ def fake_structured(*, node, model, schema, system, user, image=None):
         return TextChunking(blocks=[[list(range(len(re.findall(r"^\d+: ", system, re.M))))]])
     if schema is TextPlacementWithWord:   # 별표 말이 있는 쪽 (#92)
         return TextPlacementWithWord(blocks=[BlockSpot(x=5, y=7, color="dark") for _ in re.findall(r"^\d+번 덩어리", system, re.M)],
-                                     sound_word=WordSpot(owner="mock", source_kind="face", source_box=OwnerBox(x0=62, y0=30, x1=70, y1=42),
-                                                                        characters=[CharacterBox(name="mock", box=OwnerBox(x0=58, y0=30, x1=74, y1=88))]))
+                                     characters=[CharacterBox(name="mock", box=OwnerBox(x0=58, y0=30, x1=74, y1=88))],
+                                     sound_word=WordSpot(owner="mock", source_kind="face", source_box=OwnerBox(x0=62, y0=30, x1=70, y1=42)))
     if schema is TextPlacement:   # 덩어리 수는 프롬프트의 "n번 덩어리" (prompts/text_place.md)
         return TextPlacement(blocks=[BlockSpot(x=5, y=7, color="dark") for _ in re.findall(r"^\d+번 덩어리", system, re.M)])
     if schema is SoftenedScene:   # 원래 지시는 프롬프트 맨 끝 (prompts/soften_image_prompt.md)

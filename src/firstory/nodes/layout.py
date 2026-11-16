@@ -31,6 +31,9 @@ BUSY_LIMIT = 8.0                   # 복잡도(RGB 표준편차) 통과 기준
 BUSY_PAD = 0.03                    # 복잡도를 재는 둘레 (그림 폭 대비)
 GAP = 0.02                         # 덩어리 사이 최소 간격 (그림 폭 대비)
 MAX_REDRAWS = 2                    # 한 번 실행에서 다시 그리는 쪽 상한
+CHAR_PAD = 0.015                   # 글이 피하는 캐릭터 칸을 사방으로 키우는 폭 (그림 폭 대비, #104)
+OVERLAP_COST = 1.0                 # calmest: 캐릭터 몸(키우기 전 칸)과 겹친 넓이(px²)당 점수 — 한 줄만 조금 닿아도 복잡도보다 크다
+MARGIN_COST = 0.005                # calmest: 키운 여백에만 걸친 넓이(px²)당 점수 — 한 줄이 여백에 걸친 약 2,000px² ≈ 복잡도 10
 DEFAULT_SPOT = (5.0, 7.0, "dark")  # 마지막 안전판: 왼쪽 면 위 (그림을 못 읽거나 놓을 곳이 아예 없을 때만)
 DARK_TEXT = (0x4A, 0x4A, 0x4A)     # 화면의 진한 글자색 (프론트 StoryTextBlocks)
 WHITE_BIAS = 0.9                   # 흰 글자 대비가 진한 글자 대비의 이 배 이상이면 흰 글자 (비슷하면 흰 글자가 더 잘 읽힌다)
@@ -163,6 +166,48 @@ def merge(blocks: list[Block]) -> list[Block]:
     return [[para for block in blocks for para in block]]
 
 
+_SENTENCE_STOP = re.compile(r'[.?!…]["”’\']*$')   # split_block: 문장이 끝난 줄 (wrap_line이 감은 줄 사이는 아님)
+SPLIT_SKEW = 2 / 3                 # split_block: 문단 경계에서 큰 쪽이 전체 줄의 이 비율을 넘으면 줄 경계로 (#104)
+
+
+def split_block(block: Block) -> list[Block] | None:
+    """자리 없는 한 덩어리 → 양쪽 면에 놓을 두 덩어리 (#104). 문단·줄 순서와 글자는 그대로.
+    문단 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽). 그 경계에서 큰 쪽이 SPLIT_SKEW를 넘거나 문단이 하나면
+    줄 경계 중 가운데에 가장 가까운 곳(같으면 뒤쪽, 끊긴 문단은 둘로). 따옴표가 열린 채 끊기는 경계, 문장 중간(감긴 줄 사이)은 안 된다.
+    나눌 곳이 없으면 None."""
+    rows = [(pi, line) for pi, para in enumerate(block) for line in para]
+    n = len(rows)
+    if n < 2:
+        return None
+
+    def ok(k: int) -> bool:   # 앞 줄이 문장 끝이고 대사가 열려 있지 않다
+        return bool(_SENTENCE_STOP.search(rows[k - 1][1].rstrip().removesuffix("**"))) and not _quote_open(
+            " ".join(line for _, line in rows[:k]))
+
+    def nearest(ks: list[int]) -> int | None:
+        ks = [k for k in ks if ok(k)]
+        return min(ks, key=lambda k: (abs(k - n / 2), -k)) if ks else None
+
+    para_ks = [k for k in range(1, n) if rows[k][0] != rows[k - 1][0]]
+    k = nearest(para_ks)
+    if k is None or max(k, n - k) > n * SPLIT_SKEW:
+        k = nearest(list(range(1, n)))
+    if k is None:
+        return None
+
+    def regroup(part: list[tuple[int, str]]) -> Block:
+        out: Block = []
+        prev = None
+        for pi, line in part:
+            if pi != prev:
+                out.append([])
+                prev = pi
+            out[-1].append(line)
+        return out
+
+    return [regroup(rows[:k]), regroup(rows[k:])]
+
+
 def block_size(block: Block) -> tuple[float, float]:
     """(폭 px, 높이 px), 1920×1088 기준."""
     rows = [line for para in block for line in para]
@@ -279,6 +324,49 @@ def _order_ok(x: float, y: float, bw: float, placed: list[tuple[float, float, fl
     return all((_page(x, bw), y) > (_page(px, pw), py) for px, py, pw, _ in placed)
 
 
+Rect = tuple[float, float, float, float]   # px x0, y0, x1, y1
+
+
+def blockers(chars: "Chars") -> list[Rect]:
+    """캐릭터 칸(%) → 글이 피할 px 칸. 사방으로 그림 폭의 CHAR_PAD씩 키운다 (#104)"""
+    p = W * CHAR_PAD
+    return [(b[0] / 100 * W - p, b[1] / 100 * H - p, b[2] / 100 * W + p, b[3] / 100 * H + p) for _, b in chars]
+
+
+def _overlap(x: float, y: float, bw: float, bh: float, avoid) -> float:
+    """덩어리(x, y, bw, bh)와 칸들이 겹친 넓이 합 (px²)"""
+    total = 0.0
+    for x0, y0, x1, y1 in avoid:
+        w = min(x + bw, x1) - max(x, x0)
+        h = min(y + bh, y1) - max(y, y0)
+        if w > 0 and h > 0:
+            total += w * h
+    return total
+
+
+def rows_of(block: Block) -> list[tuple[float, float, float]]:
+    """덩어리의 줄마다 (위끝 dy, 실제 글자 폭, 줄 높이) px. 글은 왼쪽 정렬이라 줄 오른쪽 끝은 줄마다 다르다"""
+    out, dy = [], 0.0
+    for i, para in enumerate(block):
+        if i:
+            dy += PARA_GAP * LINE_PX
+        for line in para:
+            out.append((dy, text_width(line), LINE_PX))
+            dy += LINE_PX
+    return out
+
+
+def _unpad(avoid) -> list[Rect]:
+    """blockers로 키운 칸 → 캐릭터 몸 칸 (px)"""
+    p = W * CHAR_PAD
+    return [(x0 + p, y0 + p, x1 - p, y1 - p) for x0, y0, x1, y1 in avoid]
+
+
+def _overlap_rows(x: float, y: float, rows, avoid) -> float:
+    """덩어리를 (x, y)에 놓았을 때 줄마다 실제 글자 상자가 칸들과 겹친 넓이 합 (px²)"""
+    return sum(_overlap(x, y + dy, w, h, avoid) for dy, w, h in rows)
+
+
 def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
     pad = W * BUSY_PAD
     return busy.at(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
@@ -286,9 +374,12 @@ def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
 
 def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: float, bh: float,
              placed: list[tuple[float, float, float, float]], limit: float,
-             move_cost: float = MOVE_COST) -> tuple[float, float] | None:
-    """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳"""
+             move_cost: float = MOVE_COST, avoid=(), strict: bool = True, rows=None) -> tuple[float, float] | None:
+    """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳.
+    strict면 캐릭터 칸(avoid)과 겹치는 자리는 버리고, 아니면 겹친 넓이만큼 점수를 더한다 (#104).
+    rows(rows_of)를 주면 겹침은 줄마다 실제 글자 폭으로 잰다 — 덩어리 네모로 재면 긴 줄 하나 때문에 빈 벽을 버린다"""
     best: tuple[float, tuple[float, float]] | None = None
+    real = _unpad(avoid)
     for page in pages:
         lo, hi = _x_range(page, bw)
         for ylo, yhi in _y_bands(bh):
@@ -297,21 +388,27 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
                     x, y = float(x), float(y)
                     if not (_order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)):
                         continue
+                    over = (_overlap_rows(x, y, rows, avoid) if rows is not None else _overlap(x, y, bw, bh, avoid)) if avoid else 0.0
+                    if strict and over > 0:
+                        continue
                     std = _score(busy, x, y, bw, bh)
                     if std > limit:
                         continue
                     score = std + move_cost * math.hypot(x - near[0], y - near[1])
+                    if over:   # 몸에 닿은 넓이는 크게, 여백에만 걸친 넓이는 작게 — 조용한 벽이 복잡한 물건 위보다 낫게
+                        body = _overlap_rows(x, y, rows, real) if rows is not None else _overlap(x, y, bw, bh, real)
+                        score += OVERLAP_COST * body + MARGIN_COST * (over - body)
                     if best is None or score < best[0]:
                         best = (score, (x, y))
     return best[1] if best else None
 
 
 def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
-            placed: list[tuple[float, float, float, float]], page: int | None = None) -> tuple[float, float] | None:
+            placed: list[tuple[float, float, float, float]], page: int | None = None, avoid=(), rows=None) -> tuple[float, float] | None:
     """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳. page를 주면 그 면에서만"""
     home = _page(near[0], bw)
     for page in ((home, 1 - home) if page is None else (page,)):
-        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT)
+        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT, avoid=avoid, rows=rows)
         if found:
             return found
     return None
@@ -336,17 +433,18 @@ def luminance(rgb: tuple[float, float, float]) -> float:
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
-def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
+def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
     """settle도 다시 그리기도 자리를 못 찾았을 때: 복잡도 기준은 빼고 여백·띠·읽는 순서·간격만 지켜
-    두 면을 통틀어 가장 덜 복잡한 곳(2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만, #95). 그림을 안 보는 기본 자리보다 늘 낫거나 같다.
-    글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
+    두 면을 통틀어 (캐릭터 칸과 겹친 넓이, 복잡도)가 가장 작은 곳(2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만, #95, #104).
+    그림을 안 보는 기본 자리보다 늘 낫거나 같다. 글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
     near = (DEFAULT_SPOT[0] / 100 * W, DEFAULT_SPOT[1] / 100 * H)   # 복잡도가 (거의) 같을 때만 왼쪽 위 쪽으로
     placed: list[tuple[float, float, float, float]] = []
     out: list[dict] = []
     for i, block in enumerate(blocks):
         bw, bh = block_size(block)
         side = side_of(i, len(blocks))
-        found = _best_on(busy, (0, 1) if side is None else (side,), near, bw, bh, placed, math.inf, TIE_COST)
+        found = _best_on(busy, (0, 1) if side is None else (side,), near, bw, bh, placed, math.inf, TIE_COST,
+                         avoid=avoid, strict=False, rows=rows_of(block))
         if found is None:
             return None
         x, y = found
@@ -355,28 +453,44 @@ def calmest(busy: Busy, blocks: list[Block]) -> list[dict] | None:
     return out
 
 
-def _worst(busy: Busy, blocks: list[Block], spots: list[dict]) -> float:
-    """자리들 중 가장 복잡한 곳의 복잡도"""
-    return max(_score(busy, s["x"] / 100 * W, s["y"] / 100 * H, *block_size(b)) for b, s in zip(blocks, spots))
+def _cost(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> tuple[float, float]:
+    """(캐릭터 몸과 겹친 넓이 합, 가장 복잡한 자리의 복잡도 + 여백에만 걸친 넓이 × MARGIN_COST). 겹침은 줄마다"""
+    real = _unpad(avoid)
+    body = pad = 0.0
+    worst = 0.0
+    for b, s in zip(blocks, spots):
+        x, y = s["x"] / 100 * W, s["y"] / 100 * H
+        rows = rows_of(b)
+        body += _overlap_rows(x, y, rows, real)
+        pad += _overlap_rows(x, y, rows, avoid)
+        worst = max(worst, _score(busy, x, y, *block_size(b)))
+    return body, worst + MARGIN_COST * (pad - body)
 
 
-def calmest_pick(busy: Busy, blocks: list[Block]) -> tuple[list[Block], list[dict]] | None:
-    """조용한 곳이 없을 때의 (덩어리, 자리). 2덩어리면 양쪽에 나눈 calmest와 합친 한 덩어리 calmest 중 덜 복잡한 쪽:
-    나눈 쪽은 두 자리 중 더 복잡한 값으로 보고, 같으면 나눈다 (#95). 1덩어리는 calmest 그대로. 놓을 곳이 없으면 None."""
-    split = calmest(busy, blocks)
-    if len(blocks) != 2:
-        return (blocks, split) if split is not None else None
-    one = merge(blocks)
-    alone = calmest(busy, one)
-    if split is None:
-        return (one, alone) if alone is not None else None
-    if alone is not None and _worst(busy, one, alone) < _worst(busy, blocks, split):
-        return one, alone
-    return blocks, split
+def calmest_pick(busy: Busy, blocks: list[Block], avoid=()) -> tuple[list[Block], list[dict]] | None:
+    """조용한 곳이 없을 때의 (덩어리, 자리). 후보는 받은 덩어리 그대로, 2덩어리면 합친 한 덩어리, 1덩어리면 split_block으로 나눈 둘.
+    _cost (겹친 넓이, 가장 복잡한 자리)가 가장 작은 후보. 같으면 앞 후보 — 2덩어리는 나눈 쪽, 1덩어리는 그대로 (#95, #104).
+    놓을 곳이 없으면 None."""
+    cands = [blocks]
+    if len(blocks) == 2:
+        cands.append(merge(blocks))
+    elif len(blocks) == 1:
+        parts = split_block(blocks[0])
+        if parts is not None:
+            cands.append(parts)
+    best: tuple[tuple[float, float], list[Block], list[dict]] | None = None
+    for bl in cands:
+        spots = calmest(busy, bl, avoid)
+        if spots is None:
+            continue
+        cost = _cost(busy, bl, spots, avoid)
+        if best is None or cost < best[0]:
+            best = (cost, bl, spots)
+    return (best[1], best[2]) if best else None
 
 
-def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | None:
-    """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격을 확인해 안 되면 옮긴다.
+def settle(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> list[dict] | None:
+    """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격·캐릭터 칸(avoid, #104)을 확인해 안 되면 옮긴다.
     2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만 밀고 찾는다 (#95).
     덩어리마다 {"x": %, "y": %, "color"}. 글자색은 AI 답이 아니라 마지막 자리의 밝기로 (text_color). 하나라도 자리가 없으면 None."""
     placed: list[tuple[float, float, float, float]] = []
@@ -387,9 +501,9 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict]) -> list[dict] | N
         side = side_of(i, len(blocks))
         x, y = _push(*_to_px(spot), bw, bh, side)
         ok = (_in_band(y, bh) and _order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)
-              and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
+              and _overlap_rows(x, y, rows_of(block), avoid) == 0 and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
         if not ok:
-            found = _search(busy, (x, y), bw, bh, placed, side)
+            found = _search(busy, (x, y), bw, bh, placed, side, avoid, rows_of(block))
             if found is None:
                 return None
             x, y = found
@@ -447,21 +561,33 @@ def _sanitize_spots(spots, n: int) -> list[dict]:
     return out
 
 
-def _sanitize_word(spot) -> dict | None:
-    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": [(이름, 칸 %)]} (#102).
-    근원 칸이 이상하거나 종류가 face·object가 아니면 None. 이상한 캐릭터 칸은 그 칸만 뺀다."""
+Chars = list[tuple[str, tuple[float, float, float, float]]]   # (이름, % 칸 x0, y0, x1, y1)
+
+
+def _sanitize_chars(chars) -> Chars:
+    """AI 캐릭터 칸 목록 → [(이름, 칸 %)]. 이상한 칸은 그 칸만 뺀다 (#102, #104)"""
+    out: Chars = []
+    try:
+        items = list(chars or [])
+    except TypeError:
+        return out
+    for c in items:
+        box = _sanitize_box(getattr(c, "box", None))
+        if box is not None:
+            out.append((str(getattr(c, "name", "") or ""), box))
+    return out
+
+
+def _sanitize_word(spot, chars: Chars) -> dict | None:
+    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": 맨 위 캐릭터 칸} (#102, #104).
+    근원 칸이 이상하거나 종류가 face·object가 아니면 None."""
     if spot is None:
         return None
     kind = getattr(spot, "source_kind", None)
     source = _sanitize_box(getattr(spot, "source_box", None))
     if kind not in ("face", "object") or source is None:
         return None
-    chars = []
-    for c in getattr(spot, "characters", None) or []:
-        box = _sanitize_box(getattr(c, "box", None))
-        if box is not None:
-            chars.append((str(getattr(c, "name", "") or ""), box))
-    return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": chars}
+    return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": list(chars)}
 
 
 def _sanitize_box(box) -> tuple[float, float, float, float] | None:
@@ -494,31 +620,36 @@ def with_grid(image: bytes) -> bytes:
     return buf.getvalue()
 
 
-def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = False
-               ) -> tuple[list[dict], dict | None, list[CostEntry]]:
-    """그림과 덩어리 → AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 의성어 근원·캐릭터 칸 (_sanitize_word, sfx가 있을 때만).
-    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 [] — 호출한 쪽이 기본 자리로 간다.
-    sfx가 없으면 지금(#92 전) 호출과 똑같다."""
+def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, grid: bool = True
+               ) -> tuple[list[dict], Chars, dict | None, list[CostEntry]]:
+    """그림과 덩어리 → (AI가 고른 자리 [{"x": %, "y": %, "color"}] (읽는 순서), 캐릭터 칸 (#104),
+    의성어 근원 답 (_sanitize_word, sfx가 있을 때만), 비용).
+    settle() 전의 날것이다. 답이 이상하거나 호출이 실패하면 자리 [] — 호출한 쪽이 기본 자리로 간다.
+    grid면 그림에 10% 눈금을 그려 보낸다(그리다 터지면 원래 그림)."""
     if not blocks:
-        return [], None, []
+        return [], [], None, []
     sizes = []
     for i, b in enumerate(blocks, 1):
         w, h = block_size(b)
         sizes.append(f"{i}번 덩어리: 가로 약 {w / W * 100:.0f}%, 세로 약 {h / H * 100:.0f}%")
-    system = prompt("text_place", sizes="\n".join(sizes))
-    user = f"덩어리 {len(blocks)}개의 자리를 읽는 순서대로 답하세요."
+    if grid:
+        try:
+            image = with_grid(image)
+        except Exception as e:  # noqa: BLE001 — 눈금이 자리 찾기를 막지 않는다
+            log.warning("눈금 그리기 실패 → 원래 그림으로: %s", type(e).__name__)
+            grid = False
+    system = prompt("text_place", sizes="\n".join(sizes), grid=GRID_NOTE if grid else "")
+    user = f"덩어리 {len(blocks)}개의 자리와 캐릭터 칸을 답하세요. 자리는 읽는 순서대로."
     schema = TextPlacement
     if sfx is not None:
-        try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리는 그대로 받는다)
+        try:   # 의성어 준비가 터지면 의성어 없이 예전 호출로 (글 자리·칸은 그대로 받는다)
             sys_w = system + "\n\n" + prompt("text_place_word", word=sfx.word, text=sfx.text,
-                                              cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)",
-                                              grid=GRID_NOTE if grid else "")
-            img_w = with_grid(image) if grid else image
+                                              cast="\n".join(f"- {n}: {look}" for n, look in sfx.cast) or "- (없음)")
         except Exception as e:  # noqa: BLE001
             log.warning("의성어 자리 묻기 준비 실패 → 의성어 없이: %s", type(e).__name__)
             sfx = None
         else:
-            system, image = sys_w, img_w
+            system = sys_w
             user += " 의성어 자리도 답하세요."
             schema = TextPlacementWithWord
     try:
@@ -533,12 +664,13 @@ def place_page(image: bytes, blocks: list[Block], sfx: "SfxAsk | None" = None, g
         )
     except Exception as e:  # 글·그림 내용은 로그에 남기지 않는다
         log.warning("자리 찾기 호출 실패 → 기본 자리: %s", type(e).__name__)
-        return [], None, []
+        return [], [], None, []
     spots = _sanitize_spots(getattr(answer, "blocks", None), len(blocks))
     if not spots:
         log.warning("자리 찾기 답이 맞지 않음 → 기본 자리")
-    word = _sanitize_word(getattr(answer, "sound_word", None)) if sfx is not None else None
-    return spots, word, [cost]
+    chars = _sanitize_chars(getattr(answer, "characters", None))
+    word = _sanitize_word(getattr(answer, "sound_word", None), chars) if sfx is not None else None
+    return spots, chars, word, [cost]
 
 
 # ── 의성어·의태어 (#92) ──

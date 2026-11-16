@@ -817,7 +817,7 @@ print("redraw cap / default spot ok:", dict(page_calls))
 # 8-7) 두 덩어리는 양쪽에 자리가 없고 합친 한 덩어리는 있으면 합친 걸로 간다 — 다시 그리지 않는다 (settle을 그렇게 흉내 낸다)
 one_page = st8.model_copy(update={"pages": st8.pages[:1]})
 orig_settle = layout.settle
-il.settle = lambda busy, blocks, spots: None if len(blocks) > 1 else orig_settle(busy, blocks, spots)
+il.settle = lambda busy, blocks, spots, avoid=(): None if len(blocks) > 1 else orig_settle(busy, blocks, spots, avoid)
 page_calls.clear()
 places.clear()
 redrawn: list[str] = []
@@ -826,7 +826,7 @@ m = il.illustrate({"story": one_page, "output_prefix": "stories/t/runs/3/"})["il
 assert places == [2, 1] and page_calls["x"] == 1, (places, page_calls)           # 합쳐서 찾았고 다시 그리지 않았다
 assert len(m.text_blocks) == 1 and len(m.text_blocks[0].paragraphs) == 2          # 문단은 그대로
 # 8-7-1) 나눠도 합쳐도 자리가 없으면 왼쪽 위·오른쪽 위로 다시 그려 나눠서·합쳐서 다시 찾고, 그래도 없으면 덜 복잡한 쪽 (#95)
-il.settle = lambda busy, blocks, spots: None
+il.settle = lambda busy, blocks, spots, avoid=(): None
 page_calls.clear()
 places.clear()
 redrawn.clear()
@@ -1004,7 +1004,7 @@ assert any("의성어 2개" in x for x in logged) and not any("톡" in x or "쿵
 # 글 자리 때문에 다시 그렸는데 새 그림으로 답을 못 받으면 처음 그림의 말 자리를 쓰지 않는다 (None)
 answers = iter([
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[])),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40))),
 ])
 
 
@@ -1024,15 +1024,15 @@ assert sw_ is None, sw_
 # 다시 그린 그림으로 답을 받으면 그 답의 자리를 쓴다
 answers = iter([
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[])),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40))),
     TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=20, y0=50, x1=26, y1=60), characters=[])),
+                          sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=20, y0=50, x1=26, y1=60))),
 ])
 tbs_, sw_ = il._arrange(1, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], lambda bl, where: striped_png((0, 0, 100, 100)), ask)
 assert sw_ is not None and len(sw_.pieces) == 1 and sw_.pieces[0].x < 50 and sw_.pieces[0].y < 50, sw_   # 두 번째(다시 그린 그림) 답의 근원 위
 # AI가 캐릭터 칸을 하나도 안 주면 쪽 번호만 경고 (실험에서 null·겹침 원인을 알아보려고)
 answers = iter([TextPlacementWithWord(blocks=[mock.BlockSpot(x=5, y=7, color="dark")],
-                                      sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40), characters=[]))])
+                                      sound_word=mock.WordSpot(owner="포포", source_kind="face", source_box=mock.OwnerBox(x0=70, y0=30, x1=76, y1=40)))])
 logged.clear()
 logging.getLogger("firstory.illustrate").addHandler(h)
 il._arrange(3, striped_png(), [[["포포가 깡충 뛰었어요."]]], [], None, ask)
@@ -1058,6 +1058,77 @@ assert nw.sound_word is None and any("쪽 1" in x and "의성어 자리 없음" 
 assert not any("톡" in x for x in logged), logged
 llm.set_structured_override(recording_structured)
 print("sound word ok")
+
+# 8-14) 글은 캐릭터 칸을 피하고, 자리가 없으면 한 덩어리를 양쪽으로 나눈다 (#104)
+import re as _re  # noqa: E402
+
+white_png = striped_png((0, 0, 100, 100))
+b7 = [[[f"미루가 블록을 {i}번 쌓았어요." for i in range(1, 8)]]]   # 덩어리 1개 = 문단 1개 7줄
+
+
+def chars_seq(*seq):
+    """자리 찾기 호출마다 seq의 캐릭터 칸(%)을 차례로 답한다(마지막 것을 되풀이). 덩어리 자리는 늘 (5, 7)"""
+    it, last = iter(seq), [seq[-1]]
+
+    def fn(**kw):
+        if kw["node"] != "layout:place":
+            return mock.fake_structured(**kw)
+        last[0] = next(it, last[0])
+        n = len(_re.findall(r"^\d+번 덩어리", kw["system"], _re.M))
+        return TextPlacement(blocks=[mock.BlockSpot(x=5, y=7, color="dark")] * n,
+                             characters=[mock.CharacterBox(name=f"c{i}", box=mock.OwnerBox(x0=a, y0=b, x1=c, y1=d))
+                                         for i, (a, b, c, d) in enumerate(last[0])])
+    return fn
+
+
+redraws: list = []
+
+
+def redraw_to(img):
+    def f(bl, where):
+        redraws.append(where)
+        return img
+    return f
+
+
+def over(tbs, chars):
+    av = layout.blockers([("c", c) for c in chars])
+    return sum(layout._overlap(t.x / 100 * layout.W, t.y / 100 * layout.H, *layout.block_size(t.paragraphs), av) for t in tbs)
+
+
+# 7줄 한 덩어리는 어느 위 띠에서도 칸에 닿는다 → 나눠서 양쪽 면, 다시 그리기 없이
+split_chars = [(0, 45, 50, 100), (50, 50, 100, 100)]
+llm.set_structured_override(chars_seq(split_chars))
+redraws.clear()
+tbs_, _ = il._arrange(1, white_png, b7, [], redraw_to(white_png))
+assert len(tbs_) == 2 and tbs_[0].x < 50 <= tbs_[1].x and over(tbs_, split_chars) == 0 and redraws == [], tbs_
+assert [l for t in tbs_ for para in t.paragraphs for l in para] == [l for para in b7[0] for l in para]
+# 나눠도 안 들어가면 다시 그리기
+llm.set_structured_override(chars_seq([(0, 15, 100, 100)]))
+redraws.clear()
+tbs_, _ = il._arrange(1, white_png, b7, [], redraw_to(white_png))
+assert len(redraws) == 1 and tbs_, tbs_
+# Review Focus 1: 그림 전체가 칸이어도 늘 유효한 자리
+llm.set_structured_override(chars_seq([(0, 0, 100, 100)]))
+tbs_, _ = il._arrange(1, white_png, b7, [], redraw_to(white_png))
+assert tbs_ and all(0 <= t.x <= 100 and 0 <= t.y <= 100 for t in tbs_), tbs_
+# Review Focus 2: 다시 그린 그림에는 그 그림 답의 칸만 쓴다 (처음 그림의 칸이 남지 않는다)
+llm.set_structured_override(chars_seq([(0, 0, 100, 100)], []))
+redraws.clear()
+tbs_, _ = il._arrange(1, white_png, [[["포포가 깡충 뛰었어요."]]], [], redraw_to(white_png))
+assert len(redraws) == 1 and (tbs_[0].x, tbs_[0].y) == (5.0, 7.0), tbs_
+# Review Focus 5: 칸이 없으면 지금처럼 AI 자리 그대로
+llm.set_structured_override(chars_seq([]))
+redraws.clear()
+tbs_, _ = il._arrange(1, white_png, b7, [], redraw_to(white_png))
+assert len(tbs_) == 1 and (tbs_[0].x, tbs_[0].y) == (5.0, 7.0) and redraws == [], tbs_
+# 칸이 없어도 한 덩어리가 들어갈 곳이 없으면 나눠서 양쪽 면 — 다시 그리기를 아낀다 (리뷰 판단: 설계 4번은 칸 여부와 상관없음)
+llm.set_structured_override(chars_seq([]))
+redraws.clear()
+tbs_, _ = il._arrange(1, striped_png((0, 0, 100, 40)), b7, [], redraw_to(white_png))
+assert len(tbs_) == 2 and tbs_[0].x < 50 <= tbs_[1].x and redraws == [], tbs_
+llm.set_structured_override(recording_structured)
+print("avoid characters ok")
 
 # 8-x) 가이드 질문은 그 쪽 마지막 덩어리의 맨 밑 새 문단 (#100). 원고·덩어리 나누기 AI에는 질문이 없다
 from firstory.schemas import AfterReading, BeforeReading, GuidePrompt, ReadingGuide  # noqa: E402

@@ -89,7 +89,7 @@ def main():
         ask = SfxAsk(word=word, text=pg["text"], cast=pg["cast"])
         blocks = [b.paragraphs for b in pg["old"]]
         t0 = time.time()
-        spots, wspot, costs = place_page(image, blocks, ask, grid=args.grid)
+        spots, _, wspot, costs = place_page(image, blocks, ask, grid=args.grid)
         ms = int((time.time() - t0) * 1000)
         tin += sum(c.input_tokens for c in costs)
         tout += sum(c.output_tokens for c in costs)

@@ -21,8 +21,8 @@ from PIL import Image
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
-from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, build_blocks, calmest_pick, chunk_page, merge,
-                     place_page, place_word, settle, short_look, sound_words, split_lines, wrap_line)
+from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, blockers, build_blocks, calmest_pick, chunk_page, merge,
+                     place_page, place_word, settle, short_look, sound_words, split_block, split_lines, wrap_line)
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -356,24 +356,36 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
     got: Optional[list[dict]] = None
     last_word: Optional[tuple[Busy, Optional[dict]]] = None   # (그 답을 받은 그림, 의성어 답)
     cur: Optional[Busy] = None   # 쪽에 남는 그림(다시 그렸으면 다시 그린 것)의 복잡도
+    avoid: list = []             # 글이 피할 캐릭터 칸 (px) — avoid_of 그림에 대한 첫 답의 칸 (#104)
+    avoid_of: Optional[Busy] = None
     try:
         def fit(img: bytes, busy: Busy, bl: list[Block]):
-            nonlocal last_word
-            spots, word, pcosts = place_page(img, bl, sfx, grid=sfx is not None)
+            nonlocal last_word, avoid, avoid_of
+            spots, chars, word, pcosts = place_page(img, bl, sfx)
             for c in pcosts:
                 c.node = f"layout:place:page{order}"
             costs.extend(pcosts)
+            if avoid_of is not busy:   # 그림마다 첫 답의 칸만 쓴다
+                avoid_of, avoid = busy, blockers(chars)
+                if not chars:   # 쪽 번호만
+                    log.warning("쪽 %d: 캐릭터 칸 없음 → 글은 복잡도만 보고 놓음", order)
             last_word = (busy, word)
-            return settle(busy, bl, spots), spots
+            return settle(busy, bl, spots, avoid), spots
 
         def place(img: bytes, busy: Busy):
-            """양쪽에 나눠서 → 안 되면 합쳐서 한 군데 (#95). (덩어리, 자리, 나눈 자리 답)"""
+            """양쪽에 나눠서 → 안 되면 합쳐서 한 군데 (#95) → 한 덩어리면 코드로 둘로 나눠 양쪽 면 (#104). (덩어리, 자리, 처음 자리 답)"""
             got, spots = fit(img, busy, blocks)
             if got is None and len(blocks) == 2:
                 one = merge(blocks)
                 alone, _ = fit(img, busy, one)
                 if alone is not None:
                     return one, alone, spots
+            if got is None and len(blocks) == 1:
+                parts = split_block(blocks[0])
+                if parts is not None:
+                    both = settle(busy, parts, [], avoid)
+                    if both is not None:
+                        return parts, both, spots
             return blocks, got, spots
 
         busy = cur = Busy(image)
@@ -394,7 +406,7 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
         got = None
     if got is None and cur is not None:   # 기준을 넘는 곳뿐이면 그중 가장 조용한 곳 (#71)
         try:
-            picked = calmest_pick(cur, blocks)
+            picked = calmest_pick(cur, blocks, avoid if avoid_of is cur else ())
             if picked is not None:
                 blocks, got = picked
                 log.warning("쪽 %d: 조용한 글 자리가 없어 가장 덜 복잡한 곳에 둠", order)
