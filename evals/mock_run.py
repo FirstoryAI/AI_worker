@@ -848,11 +848,13 @@ assert places == [2, 1] and page_calls["x"] == 1, (places, page_calls)          
 assert len(m.text_blocks) == 1 and len(m.text_blocks[0].paragraphs) == 2          # 문단은 그대로
 # 8-7-1) 나눠도 합쳐도 자리가 없으면 왼쪽 위·오른쪽 위로 다시 그려 나눠서·합쳐서 다시 찾고, 그래도 없으면 덜 복잡한 쪽 (#95)
 il.settle = lambda busy, blocks, spots, avoid=(): None
+il.REDRAW_BUSY = -1.0   # 단색 가짜 그림은 calmest가 조용해 #113 문턱에서 다시 그리지 않는다 → 이 시험에서만 문턱을 끈다
 page_calls.clear()
 places.clear()
 redrawn.clear()
 m2 = il.illustrate({"story": one_page, "output_prefix": "stories/t/runs/5/"})["illustrations"].pages[0]
 il.settle = orig_settle
+il.REDRAW_BUSY = layout.REDRAW_BUSY
 assert places == [2, 1, 2, 1] and page_calls["x"] == 2, (places, page_calls)
 assert "left top" in redrawn[1] and "right top" in redrawn[1], redrawn[1][-400:]
 assert len(m2.text_blocks) == 2 and m2.text_blocks[0].x < 50 <= m2.text_blocks[1].x, m2.text_blocks   # 단색 그림이라 같음 → 나눈다
@@ -1148,6 +1150,32 @@ llm.set_structured_override(chars_seq([]))
 redraws.clear()
 tbs_, _ = il._arrange(1, striped_png((0, 0, 100, 40)), b7, [], redraw_to(white_png))
 assert len(tbs_) == 2 and tbs_[0].x < 50 <= tbs_[1].x and redraws == [], tbs_
+
+
+def faint_png(diff: int) -> bytes:
+    """흰 바탕에 옅은 회색(255-diff) 세로 줄무늬 — 복잡도 ≈ diff × 0.33 (striped_png와 같은 간격)"""
+    img = Image.new("RGB", (layout.W, layout.H), "white")
+    d = ImageDraw.Draw(img)
+    for x in range(0, layout.W, 24):
+        d.rectangle([x, 0, x + 11, layout.H], fill=(255 - diff,) * 3)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+# #113: 자리 기준(BUSY_LIMIT)은 넘지만 문턱(REDRAW_BUSY) 이하이고 몸 겹침이 없으면 다시 그리지 않는다
+faint = faint_png(30)
+assert layout.BUSY_LIMIT < layout._score(layout.Busy(faint), 100, 80, *layout.block_size(b7[0])) <= layout.REDRAW_BUSY
+llm.set_structured_override(chars_seq([]))
+redraws.clear()
+tbs_, _ = il._arrange(1, faint, b7, [], redraw_to(white_png))
+assert redraws == [] and tbs_, (redraws, tbs_)
+# 문턱을 넘으면 지금처럼 다시 그린다
+loud = faint_png(60)
+assert layout._score(layout.Busy(loud), 100, 80, *layout.block_size(b7[0])) > layout.REDRAW_BUSY
+redraws.clear()
+tbs_, _ = il._arrange(1, loud, b7, [], redraw_to(white_png))
+assert len(redraws) == 1, redraws
 llm.set_structured_override(recording_structured)
 print("avoid characters ok")
 
