@@ -21,7 +21,7 @@ from PIL import Image
 
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, OneMomentScene, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
-from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, W, Busy, Block, SfxAsk, block_size, blockers, build_blocks, calmest_pick, chunk_page, merge,
+from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, REDRAW_BUSY, W, _cost, Busy, Block, SfxAsk, block_size, blockers, build_blocks, calmest_pick, chunk_page, merge,
                      place_page, place_word, settle, short_look, sound_words, split_block, split_lines, wrap_line)
 from ..state import PipelineState
 
@@ -425,6 +425,14 @@ def _arrange(order: int, image: Optional[bytes], blocks: list[Block], costs: lis
 
         busy = cur = Busy(image)
         placed, got, spots = place(image, busy)
+        if got is None and redraw:   # 몸 겹침 없고 문턱 이하로 조용한 자리가 있으면 다시 그리지 않는다 (#113)
+            here = avoid if avoid_of is busy else ()
+            picked = calmest_pick(busy, blocks, here)
+            if picked is not None:
+                body, worst = _cost(busy, picked[0], picked[1], here)
+                if body == 0 and worst <= REDRAW_BUSY:
+                    log.info("쪽 %d: 다시 그리지 않고 조용한 자리 (복잡도 %.1f)", order, worst)
+                    placed, got = picked
         if got is None and redraw:
             where = ["left top", "right top"] if len(blocks) == 2 else [
                 f"{_side(spots[i] if i < len(spots) else None, b, i)} top" for i, b in enumerate(blocks)]
