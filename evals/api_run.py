@@ -221,6 +221,19 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     ok(start(t))
     sens = ok(answer(t, {"answer": "[[SENSITIVE]] 할머니가 아프세요"}))
     assert sens["turn"] == 2 and sens["safety"]["level"] == "SENSITIVE", sens
+    # 막은 주제(blocked_topics)면 되돌린다 (#115). 고쳐 쓴 답은 새 답으로 받는다
+    t = str(uuid.uuid4())
+    first = ok(start(t))
+    held = ok(answer(t, {"answer": "[[SEPARATION]] 강아지가 떠났어요", "blocked_topics": ["separation"]}))
+    assert held["turn"] == 1 and held["question"] == first["question"] and held["safety"]["topic"] == "separation", held
+    assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+    fixed = ok(answer(t, {"answer": "안아 줬어요", "blocked_topics": ["separation"]}))
+    assert fixed["turn"] == 2 and fixed["safety"]["topic"] is None and [x.answer for x in turns_of(t)] == ["안아 줬어요"]
+    # 목록에 없으면 되돌리지 않는다 (다시 열었을 때)
+    t = str(uuid.uuid4())
+    ok(start(t))
+    went = ok(answer(t, {"answer": "[[SEPARATION]] 강아지가 떠났어요"}))
+    assert went["turn"] == 2 and went["safety"]["topic"] == "separation", went
 
     # 검사가 실패하면 되돌린 뒤 오류 → 같은 답을 다시 보내면 처음부터 깨끗하게
     def safety_fails_once(**kw):
