@@ -792,3 +792,39 @@ for _w, _s in _scenes:
     _sw = place_word(_wbusy, _w, _s, [])
     assert _clear_of(_sw, [b for _, b in _s["chars"]]), (_w, _s, _sw)
 print("sound word pad ok")
+
+
+# ── 손 동작(쓰담쓰담·토닥토닥·콩콩 맞대기)은 손이 닿는 곳이 근원 (#119) ──
+# 11/17 샘플 4쪽: AI가 쓰다듬는 쪽 얼굴(face)로 답해 어른 얼굴 위끝 = 그림 맨 위(8~10%)로 갔다.
+# 손은 두 몸 칸 사이에 묻혀 지금 반지름(15%)으로는 자리가 없다 → touch: 한 조각, 손 칸에서 몸 칸 밖 가장 가까운 곳(반지름 25%), 없으면 None
+from firstory.nodes.layout import _rect_dist  # noqa: E402
+
+assert WordSpot(owner="손", source_kind="touch", source_box=ob(41, 60, 62, 73)).source_kind == "touch"
+_t = wplaced(WordSpot(owner="손", source_kind="touch", source_box=ob(41, 60, 62, 73)))
+assert _t and _t["kind"] == "touch" and _t["source"] == (41.0, 60.0, 62.0, 73.0), _t
+_pw = prompt("text_place_word", word="쓰담쓰담", text="엄마가 미로를 **쓰담쓰담** 했어요.", cast="- (없음)")
+assert "touch" in _pw and "쓰담쓰담" in _pw and "손" in _pw
+llm.set_structured_override(mock.fake_structured)
+# 견줄 상대: 손과 겹치는 캐릭터(쓰다듬는 쪽·받는 쪽)는 모두 뺀다
+_hand = (800.0, 650.0, 1000.0, 750.0)
+assert _others("touch", _hand, [(700.0, 300.0, 1250.0, 1000.0), (900.0, 100.0, 1700.0, 1000.0), (100.0, 100.0, 400.0, 900.0)]) == [(100.0, 100.0, 400.0, 900.0)]
+assert _lay.SFX_TOUCH_RADIUS == 0.25
+_touch_scenes = [   # (말, 손 칸, 캐릭터 칸) — 캐릭터 칸은 11/17 진짜 답, 손 칸은 그림을 보고 잡음 (out/sound-word-top-1117)
+    ("쓰담쓰담", (41.0, 60.0, 62.0, 73.0), [("하람", (51.0, 10.0, 90.0, 95.0)), ("미루", (38.0, 35.0, 63.0, 80.0))]),
+    ("쓰담쓰담", (54.0, 49.0, 60.0, 57.0), [("나루", (39.0, 31.0, 61.0, 83.0)), ("미소", (60.0, 10.0, 92.0, 92.0))]),
+    ("쓰담쓰담", (57.0, 39.0, 65.0, 47.0), [("엄마 토끼", (57.0, 14.0, 91.0, 92.0)), ("미로", (47.0, 37.0, 65.0, 92.0))]),
+    ("콩콩", (67.0, 58.0, 73.0, 67.0), [("모아", (70.0, 6.0, 93.0, 96.0)), ("코알라", (48.0, 47.0, 76.0, 92.0)), ("엄마", (69.0, 8.0, 92.0, 93.0))]),
+]
+for _w, _src, _chars in _touch_scenes:
+    _sw = place_word(white, _w, {"owner": "손", "kind": "touch", "source": _src, "chars": _chars}, [])
+    assert _sw and [(p.text, p.side) for p in _sw.pieces] == [(_w, "center")], (_w, _sw)   # 반복 말도 한 조각
+    _p = _sw.pieces[0]
+    assert _p.y >= 20, (_w, _sw)                                                        # 그림 맨 위로 안 간다
+    _pw_, _ph_ = piece_size(_w)
+    _d = _rect_dist((_p.x / 100 * W, _p.y / 100 * H), tuple(v / 100 * (W if i % 2 == 0 else H) for i, v in enumerate(_src)))
+    assert _d <= W * _lay.SFX_TOUCH_RADIUS, (_w, _d)                                          # 손에서 반지름 안
+    assert _clear_of(_sw, [b for _, b in _chars]), (_w, _sw)                             # 몸은 가리지 않는다
+# 손 둘레가 모두 몸이면 안 띄운다
+_crowd = [("a", (5.0, 5.0, 48.0, 95.0)), ("b", (52.0, 5.0, 95.0, 95.0))]
+assert place_word(white, "토닥토닥", {"owner": "손", "kind": "touch", "source": (40.0, 40.0, 45.0, 45.0), "chars": _crowd}, []) is None
+print("sound word touch ok")

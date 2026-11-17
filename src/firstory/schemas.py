@@ -362,8 +362,9 @@ class CharacterBox(BaseModel):
 class WordSpot(BaseModel):
     """의성어 근원과 캐릭터 칸. 자리는 코드가 정한다 (#102)"""
     owner: str = Field(description="소리·움직임의 근원 이름(인물 또는 물건). 근원이 그림에 없으면 반응하는 인물")
-    source_kind: Literal["face", "object"] = Field(description="근원이 캐릭터 얼굴(머리)이면 face, 물건이면 object")
-    source_box: OwnerBox = Field(description="소리·움직임이 나는 곳을 윤곽에 붙게 감싸는 칸: face면 얼굴(머리), object면 그 물건")
+    source_kind: Literal["face", "object", "touch"] = Field(
+        description="근원이 캐릭터 얼굴(머리)이면 face, 물건이면 object, 손으로 하는 동작(쓰다듬기·토닥이기·손 맞대기)이면 touch (#119)")
+    source_box: OwnerBox = Field(description="소리·움직임이 나는 곳을 윤곽에 붙게 감싸는 칸: face면 얼굴(머리), object면 그 물건, touch면 손이 닿는 곳")
 
 
 class TextPlacement(BaseModel):
