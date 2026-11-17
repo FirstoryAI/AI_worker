@@ -42,7 +42,7 @@ def fake_structured(*, node, model, schema, system, user, image=None):
                                    status="sufficient", reason="다 채워짐")
     if schema is SafetyJudgement:   # 판단할 글은 user에 있다 (nodes/safety.py)
         s = fake_safety([user])
-        return SafetyJudgement(basis="mock 표시", level=s.level, category=s.category, reason=s.reason)
+        return SafetyJudgement(basis="mock 표시", level=s.level, category=s.category, reason=s.reason, topic=s.topic)
     if schema is InterviewSummary:
         return InterviewSummary(summary="이 부모는 아이 마음을 먼저 받아주고 싶어하며, 친구를 나쁘게 만들고 싶지 않다.",
                                 parent_summary="속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요.",
@@ -114,12 +114,16 @@ _SAFETY_MARKS = [
 ]
 
 
+# 이별·죽음 표시. level은 바꾸지 않고 topic만 붙인다 (Spring FakeAiClient와 같은 규칙)
+_SEPARATION_MARK = "[[SEPARATION]]"
+
+
 def fake_safety(texts: list[str]) -> SafetyResult:
     joined = "\n".join(texts)
-    for mark, result in _SAFETY_MARKS:
-        if mark in joined:
-            return result.model_copy()
-    return SafetyResult(level="OK")
+    result = next((r.model_copy() for mark, r in _SAFETY_MARKS if mark in joined), SafetyResult(level="OK"))
+    if _SEPARATION_MARK in joined:
+        result.topic = "separation"
+    return result
 
 
 def enable() -> None:

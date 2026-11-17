@@ -39,13 +39,14 @@ def judge(source: SafetySource, texts: list[str], question: Optional[str] = None
 
 
 def _tidy(source: SafetySource, j: SafetyJudgement) -> SafetyResult:
-    """스펙 4장 형식으로: OK면 category·reason 없음, category는 REVISE·CRISIS에만, 완성 본문에는 SENSITIVE 없음."""
+    """스펙 4장 형식으로: OK면 category·reason 없음, category는 REVISE·CRISIS에만, 완성 본문에는 SENSITIVE 없음.
+    topic은 level과 따로라 OK·완성 본문에서도 남긴다."""
     level = "OK" if source == "output" and j.level == "SENSITIVE" else j.level
     if level == "OK":
-        return SafetyResult(level="OK")
+        return SafetyResult(level="OK", topic=j.topic)
     category = (j.category or "other") if level in ("REVISE", "CRISIS") else None
     reason = (j.reason or "").strip() or _FALLBACK_REASON[level]
-    return SafetyResult(level=level, category=category, reason=reason)
+    return SafetyResult(level=level, category=category, reason=reason, topic=j.topic)
 
 
 def safety_output(state: PipelineState) -> dict:

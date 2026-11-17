@@ -64,7 +64,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
         r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": list(texts), **extra})
         assert r.status_code == 200, r.text
         s = r.json()["safety"]
-        assert set(s) == {"level", "category", "reason"}, s
+        assert set(s) == {"level", "category", "reason", "topic"}, s
         return s["level"]
 
     assert level("어린이집에서 친구가 밀쳐서 넘어졌어요.") == "OK"
@@ -119,7 +119,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     q2 = ok(answer(tid, {"answer": "안아 줬어요"}))
     assert q2["type"] == "question" and q2["turn"] == 2, q2
-    assert q2["safety"] == {"level": "OK", "category": None, "reason": None}, q2   # 답마다 위기 신호 판단을 같이 준다 (#83). 시작에는 없다
+    assert q2["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, q2   # 답마다 위기 신호 판단을 같이 준다 (#83). 시작에는 없다
     assert "safety" not in q1
     assert q2["context_update"] == {"parent": {"response": "안아줌", "concern": "뭐라고 말할지 모르겠음"}}, q2
     # 빈 카드·겹치는 카드를 빼고 4개까지
@@ -135,7 +135,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert again["turn"] == 5 and again["question"] == iv.READY_QUESTION, again
     done = ok(answer(tid, {"answer": iv.READY_GO}))
     assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context", "safety"} and done["type"] == "confirm", done
-    assert done["safety"] == {"level": "OK", "category": None, "reason": None}, done
+    assert done["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, done
     assert done["end_reason"] == "sufficient"
     assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
     assert done["situation_summary"] == "어린이집에서 친구가 블록을 먼저 가져가서 아이가 울었어요."
@@ -190,7 +190,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert server._graph.get_state(server._cfg(tid3)).next == ("interview_step",)
     retried = ok(answer(tid3, {"answer": "안아 줬어요"}))
     assert retried["type"] == "question" and retried["turn"] == 2, retried
-    assert retried["safety"] == {"level": "OK", "category": None, "reason": None}, retried   # 이어서 할 때 받아 둔 답을 다시 검사한다
+    assert retried["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, retried   # 이어서 할 때 받아 둔 답을 다시 검사한다
     assert len(server._graph.get_state(server._cfg(tid3)).values["interview_turns"]) == 1
     mock.enable()
 
@@ -221,6 +221,19 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     ok(start(t))
     sens = ok(answer(t, {"answer": "[[SENSITIVE]] 할머니가 아프세요"}))
     assert sens["turn"] == 2 and sens["safety"]["level"] == "SENSITIVE", sens
+    # 막은 주제(blocked_topics)면 되돌린다 (#115). 고쳐 쓴 답은 새 답으로 받는다
+    t = str(uuid.uuid4())
+    first = ok(start(t))
+    held = ok(answer(t, {"answer": "[[SEPARATION]] 강아지가 떠났어요", "blocked_topics": ["separation"]}))
+    assert held["turn"] == 1 and held["question"] == first["question"] and held["safety"]["topic"] == "separation", held
+    assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+    fixed = ok(answer(t, {"answer": "안아 줬어요", "blocked_topics": ["separation"]}))
+    assert fixed["turn"] == 2 and fixed["safety"]["topic"] is None and [x.answer for x in turns_of(t)] == ["안아 줬어요"]
+    # 목록에 없으면 되돌리지 않는다 (다시 열었을 때)
+    t = str(uuid.uuid4())
+    ok(start(t))
+    went = ok(answer(t, {"answer": "[[SEPARATION]] 강아지가 떠났어요"}))
+    assert went["turn"] == 2 and went["safety"]["topic"] == "separation", went
 
     # 검사가 실패하면 되돌린 뒤 오류 → 같은 답을 다시 보내면 처음부터 깨끗하게
     def safety_fails_once(**kw):
@@ -354,7 +367,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert res["front_cover_path"] == f"{prefix}images/front-cover.png" and storage.exists(res["front_cover_path"])   # 쪽 크기 (#88)
     assert res["back_cover_path"] == f"{prefix}images/back-cover.png" and storage.exists(res["back_cover_path"])
     assert res["cost"]["image_count"] == config.page_count + 5 and res["cost"]["input_tokens"] == 0, res["cost"]   # 쪽 + 시트 2 + 표지 3 (정사각형·앞·뒤)
-    assert res["safety"] == {"level": "OK", "category": None, "reason": None}
+    assert res["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}
     assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
     err(c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")
 
@@ -643,7 +656,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     accepted(c.post(f"/v1/threads/{tid7}/generate", headers=H, json=run_body()))
     assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
     out = result(tid7)
-    assert out["safety"] == {"level": "REVISE", "category": "other", "reason": safety._FALLBACK_REASON["REVISE"]}, out["safety"]
+    assert out["safety"] == {"level": "REVISE", "category": "other", "reason": safety._FALLBACK_REASON["REVISE"], "topic": None}, out["safety"]
     assert len(judged) == 1 and judged[0].startswith("제목: ") and "\n1쪽: " in judged[0], judged
     accepted(review(tid7, **regen("images", 2, out["checkpoint_id"], pages=[2])))
     assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
@@ -659,6 +672,23 @@ assert safety._tidy("output", j) == SafetyResult(level="OK")
 assert safety._tidy("form", j) == SafetyResult(level="SENSITIVE", category=None, reason="무거운 주제예요")
 assert safety._tidy("form", SafetyJudgement(basis="t", level="OK", category="other", reason="x")) == SafetyResult(level="OK")
 print("output safety ok")
+
+# 이별·죽음 topic: level과 따로, OK·완성 본문에서도 남긴다 (#115)
+j = SafetyJudgement(basis="t", level="OK", category=None, reason=None, topic="separation")
+assert safety._tidy("form", j) == SafetyResult(level="OK", topic="separation")
+j = SafetyJudgement(basis="t", level="SENSITIVE", category=None, reason="r", topic="separation")
+assert safety._tidy("output", j) == SafetyResult(level="OK", topic="separation")
+assert safety._tidy("form", j) == SafetyResult(level="SENSITIVE", reason="r", topic="separation")
+assert mock.fake_safety(["[[SEPARATION]] 강아지가"]) == SafetyResult(level="OK", topic="separation")
+assert mock.fake_safety(["[[REVISE]] [[SEPARATION]]"]).topic == "separation"
+assert mock.fake_safety(["[[REVISE]] [[SEPARATION]]"]).level == "REVISE"
+assert mock.fake_safety(["그냥 글"]).topic is None
+with TestClient(server.app) as c:
+    r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["[[SEPARATION]] 할머니"]})
+    assert r.status_code == 200 and r.json()["safety"]["topic"] == "separation", r.text
+    r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["그냥 글"]})
+    assert r.json()["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, r.text
+print("safety topic ok")
 
 # ── mock이 아니면: /health는 mock false, /safety/check는 판단 노드로 (여기서는 LLM 대신 가짜 응답) ──
 real = server.config

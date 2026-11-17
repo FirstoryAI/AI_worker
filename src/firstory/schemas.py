@@ -426,6 +426,8 @@ class CostEntry(BaseModel):
 
 
 SafetyLevel = Literal["OK", "SENSITIVE", "REVISE", "CRISIS"]
+# 서버가 막을 수 있는 주제 (#115). 지금은 이별·죽음 하나
+SafetyTopic = Literal["separation"]
 SafetySource = Literal["form", "interview_answer", "regen_feedback", "output"]   # output: 완성 동화 본문
 # REVISE·CRISIS일 때만 붙는다 (API 스펙 4장, D4)
 SafetyCategory = Literal[
@@ -446,6 +448,7 @@ class SafetyResult(BaseModel):
     level: SafetyLevel
     category: Optional[str] = None   # SafetyCategory. REVISE·CRISIS일 때만
     reason: Optional[str] = None
+    topic: Optional[str] = None      # SafetyTopic. 이별·죽음 이야기면 separation (level과 따로, Spring이 막는다)
 
 
 class SafetyJudgement(BaseModel):
@@ -454,6 +457,7 @@ class SafetyJudgement(BaseModel):
     level: SafetyLevel
     category: Optional[SafetyCategory] = Field(None, description="REVISE·CRISIS일 때만. OK·SENSITIVE면 null")
     reason: Optional[str] = Field(None, description="부모에게 그대로 보일 해요체 한 문장. OK면 null")
+    topic: Optional[SafetyTopic] = Field(None, description="이별·죽음 이야기면 separation, 아니면 null. level과 따로 매긴다")
 
 
 StoryStatus = Literal["requested", "generating_text", "reviewing", "generating_images", "completed", "failed"]

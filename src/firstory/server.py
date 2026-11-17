@@ -212,6 +212,7 @@ def interview_start(thread_id: str, body: InterviewStartRequest) -> dict:
 class InterviewAnswerRequest(BaseModel):
     answer: Optional[str] = Field(None, min_length=1)
     skip: bool = False
+    blocked_topics: list[str] = []   # 위기 신호 판단의 topic이 이 안에 있으면 답을 받기 전으로 되돌린다 (#115, Spring 설정)
 
     @model_validator(mode="after")
     def _one(self):
@@ -220,7 +221,8 @@ class InterviewAnswerRequest(BaseModel):
         return self
 
 
-# 인터뷰 답변의 위기 신호 검사는 다음 질문 만들기와 동시에 돌린다 (#83). 판정이 이 level이면 답을 받기 전으로 되돌린다
+# 인터뷰 답변의 위기 신호 검사는 다음 질문 만들기와 동시에 돌린다 (#83). 판정이 이 level이거나
+# topic이 요청의 blocked_topics에 있으면 답을 받기 전으로 되돌린다 (#115)
 _safety_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="interview-safety")
 _REWIND_LEVELS = {"REVISE", "CRISIS"}
 
@@ -246,7 +248,8 @@ def _rewind(thread_id: str, turns_before: int) -> dict:
 @app.post("/v1/threads/{thread_id}/interview/answer")
 def interview_answer(thread_id: str, body: InterviewAnswerRequest) -> dict:
     """답이 있으면 위기 신호 검사와 다음 질문 만들기를 동시에 하고 응답에 safety를 담는다 (건너뛰기는 null).
-    REVISE·CRISIS면 답을 받기 전으로 되돌리고 같은 질문을 돌려준다. 검사가 실패하면 되돌린 뒤 오류."""
+    REVISE·CRISIS이거나 topic이 blocked_topics에 있으면 답을 받기 전으로 되돌리고 같은 질문을 돌려준다.
+    검사가 실패하면 되돌린 뒤 오류."""
     with _thread_lock(thread_id):
         cfg = _cfg(thread_id)
         snap = _graph.get_state(cfg)
@@ -254,19 +257,20 @@ def interview_answer(thread_id: str, body: InterviewAnswerRequest) -> dict:
             raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
         before = snap.values["context"]
         turns = snap.values.get("interview_turns", [])
+        blocked = frozenset(body.blocked_topics)
         if snap.next in _INTERVIEW_HALFWAY:   # 지난번 답변은 이미 받았다. 실패한 노드부터 잇고, 받아 둔 답은 다시 검사
             last = turns[-1] if turns else None
             check = _check_answer(last.question, last.answer) if last and last.answer != "[skip]" else None
-            return _answer_reply(thread_id, before, len(turns) - 1, check, lambda: _graph.invoke(None, cfg))
+            return _answer_reply(thread_id, before, len(turns) - 1, check, blocked, lambda: _graph.invoke(None, cfg))
         if snap.next != ("interview_answer",):
             raise ApiError(409, "INVALID_STATE", "인터뷰 질문에서 멈춰 있지 않습니다")
         check = None if body.skip else _check_answer(snap.values["pending_question"], body.answer)
         resume = Command(resume="skip" if body.skip else body.answer)
-        return _answer_reply(thread_id, before, len(turns), check, lambda: _graph.invoke(resume, cfg))
+        return _answer_reply(thread_id, before, len(turns), check, blocked, lambda: _graph.invoke(resume, cfg))
 
 
 def _answer_reply(thread_id: str, before: StoryInputContext, turns_before: int,
-                  check: Optional[tuple[Future, float]], run) -> dict:
+                  check: Optional[tuple[Future, float]], blocked: frozenset[str], run) -> dict:
     t0 = time.time()
     result = run()   # 실패하면 그래프는 그 노드 앞에 멈춰 있다. 같은 답이 다시 오면 위에서 잇고 다시 검사한다
     t_interview = time.time() - t0
@@ -279,9 +283,9 @@ def _answer_reply(thread_id: str, before: StoryInputContext, turns_before: int,
         log.exception("인터뷰 답변 위기 신호 검사 실패 → 답을 받기 전으로 되돌림 (thread %s)", thread_id)
         _rewind(thread_id, turns_before)
         raise ApiError(500, "INTERNAL_ERROR", "위기 신호 검사에 실패했습니다. 같은 답을 다시 보내 주세요")
-    log.info("interview/answer %s: 인터뷰 %.1fs, 위기 신호 %s (검사 시작부터 %.1fs)",
-             thread_id, t_interview, verdict.level, time.time() - started)
-    if verdict.level in _REWIND_LEVELS:
+    log.info("interview/answer %s: 인터뷰 %.1fs, 위기 신호 %s topic %s (검사 시작부터 %.1fs)",
+             thread_id, t_interview, verdict.level, verdict.topic, time.time() - started)
+    if verdict.level in _REWIND_LEVELS or verdict.topic in blocked:
         return {**_rewind(thread_id, turns_before), "safety": verdict.model_dump(mode="json")}
     return {**_interview_reply(before, result), "safety": verdict.model_dump(mode="json")}
 

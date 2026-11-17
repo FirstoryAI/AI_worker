@@ -33,7 +33,7 @@ uv run python evals/mock_run.py
 # FastAPI 서버 — Spring 백엔드가 부르는 내부 API. 모든 요청에 X-Internal-Token 헤더
 FIRSTORY_INTERNAL_TOKEN=local-test-token FIRSTORY_MOCK=true uv run uvicorn firstory.server:app --port 8000 --http h11
 uv run python evals/api_run.py                                # 서버 배선 확인 (인증, 오류 형식, mock)
-uv run python evals/safety_eval.py                            # 위기 신호 판단 품질 (진짜 OpenAI, 사례 31개)
+uv run python evals/safety_eval.py                            # 위기 신호 판단 품질 (진짜 OpenAI, 사례 40개)
 uv run python evals/s3_storage_check.py                       # S3 저장소 배선 확인 (AWS 호출 없음)
 ```
 
@@ -56,7 +56,7 @@ curl -H 'X-Internal-Token: local-test-token' localhost:8000/health   # {"status"
 
 위기 신호(G2)는 `src/firstory/nodes/safety.py` 하나가 판단한다. `/v1/safety/check`(폼, 다시 만들기 메모), 인터뷰 답변(`interview/answer`가 다음 질문 만들기와 동시에 판단하고 응답의 `safety`로 준다. REVISE·CRISIS면 답을 받기 전으로 되돌린다)과 완성 본문(`safety_output` 노드, `/result`의 `safety`)이 같은 프롬프트(`prompts/safety_check.md`)를 쓴다. 판단만 하고, 횟수를 세고 막는 건 Spring이 한다.
 
-`FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). 위기 신호는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`.
+`FIRSTORY_MOCK=true`면 OpenAI를 부르지 않고 가짜 응답으로 돈다 (`src/firstory/mock.py`). 위기 신호는 글에 `[[SENSITIVE]]`·`[[REVISE]]`·`[[CRISIS]]`가 있으면 그 level, 없으면 `OK`. `[[SEPARATION]]`이 있으면 level은 그대로 두고 `topic: separation`(이별·죽음)을 붙인다.
 
 실행마다 `out/<타임스탬프>/`에 `00-context.json … 05-illustrations.json`, `images/`, `book.html`, `99-cost.json`이 남고,
 그래프 상태는 `out/checkpoints.db`(SQLite, `FIRSTORY_CHECKPOINT_DB`로 바꿀 수 있음)에 저장됨. LangSmith 켜져 있으면 smith.langchain.com 프로젝트 `firstory-pipeline`에 트레이스가 올라감.
