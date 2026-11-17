@@ -13,7 +13,7 @@
 
 - **Python + LangGraph** — 플로우를 그래프로 선언. 인터뷰 루프, 사람 입력 대기(interrupt), 병렬 실행, 상태 저장·재개가 기본 제공
 - **LangSmith** — 모든 LLM 호출이 자동 기록됨. "이 동화 왜 이렇게 나왔지?"를 노드별로 추적
-- **OpenAI** — 텍스트 `gpt-5.5` / `gpt-5.4-mini`, 이미지 `gpt-image-2.5-flare`
+- **OpenAI** — 텍스트 `gpt-6.1-terra` / `gpt-5.4` / `gpt-5.4-mini` (생성 중 호출은 flex 요금), 이미지 `gpt-image-2.5-flare`
 - **SQLite** — 그래프 상태 체크포인트 (`FIRSTORY_CHECKPOINT_DB`, 기본 `out/checkpoints.db`). 나중에 Postgres로 교체
 - **Streamlit** — 입력↔출력 확인용 뷰어. 버리는 물건, 진짜 프론트 아님
 
@@ -48,7 +48,7 @@ form_input ─▶ interview(루프) ─▶ ⏸ 확인 ─▶ design_story ─▶
 - **캐릭터 일관성**: 인물마다 기준 그림(시트) → 10쪽 전부 같은 캐릭터로 나옴
 - **부모가 바란 장면**: 부모가 "소리 질러서 미안"이라고 하면 곁의 어른이 큰 소리를 내고 사과하는 장면이 들어감 (`must_show`)
 - **소요 시간**: 한 편 약 3분 반 (글 단계 약 1분 30초~1분 45초, 그림 단계 약 1분 40초~1분 50초). 인터뷰 자동 답변, 3편 동시 실행 기준
-- **비용**: 한 편 약 $0.45~0.6 (1,400원 환율 기준 약 600~850원). **텍스트가 절반**(약 $0.26~0.30, 대부분 `design_story`·`write_story`의 gpt-5.5 출력), 그림 12~13장 약 $0.17~0.31 (화질 low). `99-cost.json` 토큰 × OpenAI 공식 단가, 캐시 할인 미반영
+- **비용**: 11/18 한 편 약 1,424원(gpt-5.5·보통 요금) → flex로 967원, 글 모델을 gpt-6.1-terra로 바꿔 약 750원 어림 (#121). 아래는 옛 값: 한 편 약 $0.45~0.6 (1,400원 환율 기준 약 600~850원). **텍스트가 절반**(약 $0.26~0.30, 대부분 `design_story`·`write_story`의 gpt-5.5 출력), 그림 12~13장 약 $0.17~0.31 (화질 low). `99-cost.json` 토큰 × OpenAI 공식 단가, 캐시 할인 미반영
 - **위기 신호(G2)**: 부모 글과 완성 본문을 OK·SENSITIVE·REVISE·CRISIS로 판단 (`nodes/safety.py`). level과 따로 이별·죽음 이야기면 `topic: separation`을 붙이고, Spring이 막을 주제면 거른다. 인터뷰 답변은 요청의 `blocked_topics`에 걸리면 답을 받기 전으로 되돌린다 (#115). 평가 사례 40개 level·category·topic 모두 맞음 (11/17, `evals/safety_eval.py`)
 - **아직 안 한 것**: 생성 후 검수 노드, 독서 가이드 성향 맞춤, 독서 후 회고 저장, 캐릭터 시트 재사용
 
