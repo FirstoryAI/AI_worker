@@ -17,9 +17,10 @@ def _env(name: str, default: str) -> str:
 class Config:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     model_light: str = _env("MODEL_LIGHT", "gpt-5.4-mini")
-    model_main: str = _env("MODEL_MAIN", "gpt-5.5")
+    model_main: str = _env("MODEL_MAIN", "gpt-6.1-terra")   # 글 설계·쓰기·다듬기·가이드. gpt-5.5의 약 1/6 값 (#121)
     model_interview: str = _env("MODEL_INTERVIEW", "gpt-5.4")   # 인터뷰 다음 질문. mini는 말이 미묘하게 어긋나 5.4 (#82)
     model_judge: str = _env("MODEL_JUDGE", _env("MODEL_MAIN", "gpt-5.5"))   # 프롬프트 실험 채점용 (lab.py)
+    service_tier: str = _env("OPENAI_SERVICE_TIER", "flex").lower()   # flex면 생성 중 텍스트 호출을 반값 flex로, 기다리는 호출은 보통 요금 (llm.py, #121). default면 끔
     image_model: str = _env("IMAGE_MODEL", "gpt-image-2.5-flare")  # gpt-image-2는 Deprecated, 값·토큰 같고 약 35% 빠름 (#93)
     image_quality: str = _env("IMAGE_QUALITY", "low")
     image_size: str = _env("IMAGE_SIZE", "1920x1088")  # 16:9. 가로·세로 모두 16의 배수여야 해서 1080 대신 1088

@@ -9,17 +9,19 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional, Type, TypeVar
 
-from openai import OpenAI
+from openai import APITimeoutError, InternalServerError, OpenAI, RateLimitError
 from pydantic import BaseModel
 
 from .config import config
 from .schemas import CostEntry
 
 T = TypeVar("T", bound=BaseModel)
+log = logging.getLogger("firstory.llm")
 
 _PROMPTS = Path(__file__).parent / "prompts"
 
@@ -66,6 +68,16 @@ def set_structured_override(fn: Optional[StructuredFn]) -> None:
     _override = fn
 
 
+# 부모가 화면에서 답을 기다리는 호출. 이것만 보통 요금, 나머지(생성 중 글·글 자리·그림 지시)는 flex (#121)
+_REALTIME_NODES = {"interview", "interview_summary", "safety_check"}
+_FLEX_TIMEOUT = 900   # flex는 늦게 올 수 있어 OpenAI가 기본(10분)보다 길게 권함
+_FLEX_FALLBACK = (RateLimitError, APITimeoutError, InternalServerError)   # 자리 없음(429)·시간 초과·5xx면 보통 요금으로 한 번 더
+
+
+def _use_flex(node: str) -> bool:
+    return config.service_tier == "flex" and node not in _REALTIME_NODES
+
+
 def _parse(
     *, node: str, model: str, schema: Type[T], input: list[dict], reasoning: Optional[str]
 ) -> tuple[T, CostEntry]:
@@ -73,7 +85,15 @@ def _parse(
     kwargs: dict[str, Any] = {}
     if reasoning:
         kwargs["reasoning"] = {"effort": reasoning}
-    res = client().responses.parse(model=model, input=input, text_format=schema, **kwargs)
+    res = None
+    if _use_flex(node):
+        try:
+            res = client().responses.parse(model=model, input=input, text_format=schema,
+                                           service_tier="flex", timeout=_FLEX_TIMEOUT, **kwargs)
+        except _FLEX_FALLBACK as e:
+            log.warning("[%s] flex 실패, 보통 요금으로 다시: %s", node, e)
+    if res is None:
+        res = client().responses.parse(model=model, input=input, text_format=schema, **kwargs)
     parsed = res.output_parsed
     if parsed is None:
         raise RuntimeError(f"[{node}] 모델이 스키마에 맞는 응답을 주지 않았습니다.")
