@@ -74,8 +74,8 @@ _FLEX_TIMEOUT = 900   # flex는 늦게 올 수 있어 OpenAI가 기본(10분)보
 _FLEX_FALLBACK = (RateLimitError, APITimeoutError, InternalServerError)   # 자리 없음(429)·시간 초과·5xx면 보통 요금으로 한 번 더
 
 
-def _use_flex(node: str) -> bool:
-    return config.service_tier == "flex" and node not in _REALTIME_NODES
+def _use_flex(node: str, model: str) -> bool:
+    return config.service_tier == "flex" and node not in _REALTIME_NODES and model not in config.flex_skip_models
 
 
 def _parse(
@@ -86,7 +86,7 @@ def _parse(
     if reasoning:
         kwargs["reasoning"] = {"effort": reasoning}
     res = None
-    if _use_flex(node):
+    if _use_flex(node, model):
         try:
             res = client().responses.parse(model=model, input=input, text_format=schema,
                                            service_tier="flex", timeout=_FLEX_TIMEOUT, **kwargs)
