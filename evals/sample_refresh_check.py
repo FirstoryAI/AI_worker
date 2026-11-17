@@ -100,4 +100,34 @@ _pw, _ph = piece_size("쓰담쓰담")
 assert piece_boxes({"text": "쓰담쓰담", "color": "#000000", "pieces": [{"text": "쓰담쓰담", "x": 50.0, "y": 25.0, "side": "CENTER"}]}) == [
     (W * 0.5 - _pw / 2, H * 0.25 - _ph / 2, _pw, _ph)]
 
+# 내보낸 뒤(샘플동화-1106 있음)에는 원본을 백업에서 읽고, 다시 그리지 않은 쪽 그림은 백업에서 되돌린다 (리뷰 Important 1)
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+import sample_refresh as sr  # noqa: E402
+
+_saved = (sr.SAMPLES, sr.BACKUP, sr.ZIP, sr.OUT, sr.RESULT)
+_src = sr.BACKUP if sr.BACKUP.exists() else sr.SAMPLES
+with tempfile.TemporaryDirectory() as _d:
+    _d = Path(_d)
+    sr.SAMPLES, sr.BACKUP, sr.ZIP, sr.OUT = _d / "샘플동화", _d / "샘플동화-1106", _d / "z.zip", _d / "out"
+    sr.RESULT = sr.OUT / "result.json"
+    try:
+        shutil.copytree(_src / "tantrum", sr.BACKUP / "tantrum")
+        shutil.copytree(_src / "tantrum", sr.SAMPLES / "tantrum")
+        _st = json.loads((sr.SAMPLES / "tantrum" / "story.json").read_text(encoding="utf-8"))
+        _st["title"] = "내보낸 뒤 바뀐 제목"
+        (sr.SAMPLES / "tantrum" / "story.json").write_text(json.dumps(_st, ensure_ascii=False), encoding="utf-8")
+        (sr.SAMPLES / "tantrum" / "page-01.webp").write_bytes(b"redrawn-before")
+        assert sr._story("tantrum")["title"] != "내보낸 뒤 바뀐 제목"            # 원본은 백업
+        _orig = sr._story("tantrum")
+        sr.OUT.mkdir()
+        sr._save_result({"cards": {"tantrum": {"pages": {str(p["pageNo"]): {"textBlocks": p["textBlocks"], "soundWord": None, "redrawn": False}
+                                                         for p in _orig["pages"]}}}})
+        sr.export(None)
+        assert (sr.SAMPLES / "tantrum" / "page-01.webp").read_bytes() == (sr.BACKUP / "tantrum" / "page-01.webp").read_bytes()
+        assert json.loads((sr.SAMPLES / "tantrum" / "story.json").read_text(encoding="utf-8"))["title"] == _orig["title"]
+    finally:
+        sr.SAMPLES, sr.BACKUP, sr.ZIP, sr.OUT, sr.RESULT = _saved
+
 print("sample refresh check ok")

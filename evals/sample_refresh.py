@@ -66,8 +66,13 @@ def _old_paras(page: dict) -> Paras:
     return [b["paragraphs"] for b in page.get("textBlocks") or []]
 
 
+def _root() -> Path:
+    """원본(11/6) 글·그림이 있는 곳. 한 번 내보낸 뒤에는 샘플동화/가 새 버전이라 백업(샘플동화-1106)에서 읽는다"""
+    return BACKUP if BACKUP.exists() else SAMPLES
+
+
 def _cards(only: str | None) -> list[str]:
-    names = sorted(p.parent.name for p in SAMPLES.glob("*/story.json"))
+    names = sorted(p.parent.name for p in _root().glob("*/story.json"))
     if only:
         want = only.split(",")
         names = [n for n in names if n in want]
@@ -75,7 +80,7 @@ def _cards(only: str | None) -> list[str]:
 
 
 def _story(card: str) -> dict:
-    return json.loads((SAMPLES / card / "story.json").read_text(encoding="utf-8"))
+    return json.loads((_root() / card / "story.json").read_text(encoding="utf-8"))
 
 
 def _load_result() -> dict:
@@ -119,7 +124,7 @@ def place(args) -> None:
     for i, (card, page) in enumerate(todo):
         costs: list = []
         t0 = time.time()
-        img = SAMPLES / card / page["image"]
+        img = _root() / card / page["image"]
         entry = arrange(card, page, img.read_bytes(), costs)
         entry.update(image=str(img), redrawn=False)
         res["cards"].setdefault(card, {"pages": {}})["pages"][str(page["pageNo"])] = entry
@@ -189,7 +194,7 @@ def preview(res: dict) -> None:
         for no, e in sorted(res["cards"][card]["pages"].items(), key=lambda kv: int(kv[0])):
             n += 1
             old = old_pages[int(no)]
-            src = SAMPLES / card / old["image"]
+            src = _root() / card / old["image"]
             old_name = f"img/{card}-{src.name}"
             shutil.copy(src, OUT / old_name)
             new_name = f"img/{card}-redraw-{int(no):02d}.webp" if e.get("redrawn") else old_name
@@ -293,7 +298,7 @@ def redraw(args) -> None:
         page = next(p for p in _story(card)["pages"] if str(p["pageNo"]) == no)
         blocks = rewrap(_old_paras(page))
         where = entry.get("before", entry)["needsRedraw"] or ["left top", "right top"][:len(blocks)]
-        src = SAMPLES / card / page["image"]
+        src = _root() / card / page["image"]
         t0 = time.time()
         try:
             img, tin, tout = il._edit(redraw_prompt([layout.block_size(b) for b in blocks], where, args.note), [(src.name, src.read_bytes())])
@@ -467,10 +472,9 @@ def export(args) -> None:
         print("원본 보관:", BACKUP)
     for card in cards:
         (SAMPLES / card / "story.json").write_text(json.dumps(out[card], ensure_ascii=False, indent=2), encoding="utf-8")
-        for no, e in res["cards"][card]["pages"].items():
-            if e.get("redrawn"):
-                page = next(p for p in out[card]["pages"] if str(p["pageNo"]) == no)
-                shutil.copy(e["redrawImage"], SAMPLES / card / page["image"])
+        for no, e in res["cards"][card]["pages"].items():   # 다시 그린 쪽은 새 그림, 나머지는 원본 그림으로 (되돌린 쪽 포함)
+            page = next(p for p in out[card]["pages"] if str(p["pageNo"]) == no)
+            shutil.copy(e["redrawImage"] if e.get("redrawn") else BACKUP / card / page["image"], SAMPLES / card / page["image"])
     with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED) as z:   # 카드 폴더만 (화면 기록·.DS_Store 빼고)
         for card in cards:
             for f in sorted((SAMPLES / card).iterdir()):
