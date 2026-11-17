@@ -133,7 +133,7 @@ assert not storage.exists(f"{base}/2/images/page-01.png") and not any(
 assert storage.exists(f"{base}/1/images/page-03.png")   # 이전 실행 파일은 남는다
 book = storage.local_path(f"{base}/2/book.html").read_text(encoding="utf-8")
 assert 'src="../1/images/page-01.png"' in book and 'src="images/page-03.png"' in book
-assert 'data-label="앞표지"><div class="scene"><img src="../1/images/front-cover.png"' in book and 'data-label="뒤표지"' in book   # 앞·뒤표지 (#88, 모양 #122)
+assert 'data-label="앞표지"><div class="scene book-cover"><img src="../1/images/cover.png"' in book and 'data-label="뒤표지"' in book   # 앞표지 = 정사각형 (#88, #122, #125)
 
 # 글 다시 → mock 작가가 1쪽만 고쳐 그 쪽 장면이 바뀐다. 1쪽 그림만 runs/3에 새로, 나머지 쪽과 시트는 v2의 key 그대로
 r = graph.invoke(Command(resume={"action": "regenerate", "scope": "text", "feedback": "더 짧게",
@@ -224,10 +224,25 @@ st = StoryText(title="A", characters=[CharacterSheet(name="포포", role="protag
                style_guide="s", pages=[StoryPage(order=i, text="t", characters_in_scene=["포포"], image_prompt="p") for i in (1, 2)])
 c1 = il.illustrate({"story": st, "output_prefix": "stories/c/runs/1/"})["illustrations"]
 assert c1.cover == "stories/c/runs/1/images/cover.png" and c1.cover_title == "A"
-# 처음: 앞·뒤표지도 이번 실행 key (쪽 크기, #88)
-assert c1.front_cover == "stories/c/runs/1/images/front-cover.png" and c1.back_cover == "stories/c/runs/1/images/back-cover.png"
-assert [c.node for c in il.illustrate({"story": st, "output_prefix": "stories/c/runs/9/"})["cost"]].count("illustrate:front_cover") == 1
-# 앞표지는 정사각형 + 시트를 참고 (refs 수 = 캐릭터 + 1), 뒤표지는 시트만
+# 처음: 앞표지는 따로 그리지 않고 정사각형 표지 key, 뒤표지는 이번 실행 key (#88, #125)
+assert c1.front_cover == c1.cover and c1.back_cover == "stories/c/runs/1/images/back-cover.png"
+assert sorted(c.node for c in il.illustrate({"story": st, "output_prefix": "stories/c/runs/9/"})["cost"]
+              if "cover" in c.node) == ["illustrate:back_cover", "illustrate:cover"]
+# 뒤표지는 정사각형 표지와 같은 크기 (#125)
+sizes = {}
+_orig_edit = il._edit
+
+
+def size_spy(prompt, refs, size=None):
+    sizes.setdefault(prompt.split(". ")[0], size)
+    return _orig_edit(prompt, refs, size=size)
+
+
+il._edit = size_spy
+il.illustrate({"story": st, "output_prefix": "stories/c/runs/14/"})
+il._edit = _orig_edit
+assert sizes["Back cover of a children's picture book"] == config.cover_size == "1024x1024", sizes
+# 뒤표지는 시트만 참고
 seen = {}
 
 
@@ -238,7 +253,6 @@ def spy(prompt, refs):
 
 il.set_image_override(spy)
 il.illustrate({"story": st, "output_prefix": "stories/c/runs/8/"})
-assert seen["Wide front cover of a children's picture book"] == len(st.characters) + 1, seen
 assert seen["Back cover of a children's picture book"] == len(st.characters), seen
 # 뒤표지는 빈 바탕에 주인공 혼자 작게: 등장인물이 여럿이어도 주인공 시트만, 마지막 장면은 넣지 않는다
 back_prompts: list[tuple[str, int]] = []
@@ -262,12 +276,12 @@ retitled = il.illustrate({"story": st.model_copy(update={"title": "B"}), "illust
                           "output_prefix": "stories/c/runs/3/"})
 assert retitled["illustrations"].cover == "stories/c/runs/3/images/cover.png" and retitled["illustrations"].cover_title == "B"
 assert [p.path for p in retitled["illustrations"].pages] == [p.path for p in c1.pages]
-# 제목만 바뀜: 정사각형·앞표지 새로, 뒤표지는 이전
-assert retitled["illustrations"].front_cover == "stories/c/runs/3/images/front-cover.png"
+# 제목만 바뀜: 정사각형 새로(앞표지도 그 key), 뒤표지는 이전
+assert retitled["illustrations"].front_cover == "stories/c/runs/3/images/cover.png"
 assert retitled["illustrations"].back_cover == c1.back_cover
-assert sorted(c.node for c in retitled["cost"]) == ["illustrate:cover", "illustrate:front_cover"], retitled["cost"]
+assert sorted(c.node for c in retitled["cost"]) == ["illustrate:cover"], retitled["cost"]
 
-# 정사각형만 실패(두 번 다) → 앞표지는 시트만 참고해 그려짐
+# 정사각형만 실패(두 번 다) → 앞표지도 없음 (따로 그리지 않는다, #125), 뒤표지는 그려짐
 def no_square(prompt, refs):
     if prompt.startswith("Front cover"):
         raise RuntimeError("정사각형 실패 흉내")
@@ -278,8 +292,8 @@ def no_square(prompt, refs):
 seen.clear()
 il.set_image_override(no_square)
 r = il.illustrate({"story": st, "output_prefix": "stories/c/runs/5/"})
-assert r["illustrations"].cover is None and r["illustrations"].front_cover == "stories/c/runs/5/images/front-cover.png"
-assert seen["Wide front cover of a children's picture book"] == len(st.characters), seen
+assert r["illustrations"].cover is None and r["illustrations"].front_cover is None
+assert r["illustrations"].back_cover == "stories/c/runs/5/images/back-cover.png"
 
 # 표지가 한 번 실패하면 한 번 더 그린다
 calls = {"n": 0}
@@ -297,10 +311,15 @@ il.set_image_override(flaky_back)
 assert il.illustrate({"story": st, "output_prefix": "stories/c/runs/6/"})["illustrations"].back_cover and calls["n"] == 2
 il.set_image_override(mock.tiny_png)
 
-# 앞·뒤표지가 없는 이전 실행(배포 전 동화) + 글 다시(장면·제목 그대로) → 두 표지만
+# 앞·뒤표지가 없는 이전 실행(배포 전 동화) + 글 다시(장면·제목 그대로) → 뒤표지만 그리고 앞표지는 정사각형 key
 old = c1.model_copy(update={"front_cover": None, "back_cover": None})
 o = il.illustrate({"story": st, "illustrations": old, "redraw_pages": [], "output_prefix": "stories/c/runs/7/"})
-assert sorted(c.node for c in o["cost"]) == ["illustrate:back_cover", "illustrate:front_cover"], o["cost"]
+assert sorted(c.node for c in o["cost"]) == ["illustrate:back_cover"], o["cost"]
+assert o["illustrations"].front_cover == c1.cover
+# 가로 앞표지가 있는 이전 실행(#125 전 동화) + 글 다시 → 아무것도 안 그리고 앞표지만 정사각형 key로
+wide = c1.model_copy(update={"front_cover": "stories/c/runs/1/images/front-cover.png"})
+w = il.illustrate({"story": st, "illustrations": wide, "redraw_pages": [], "output_prefix": "stories/c/runs/15/"})
+assert w["cost"] == [] and w["illustrations"].front_cover == c1.cover and w["illustrations"].back_cover == c1.back_cover
 assert o["illustrations"].cover == c1.cover and [p.path for p in o["illustrations"].pages] == [p.path for p in c1.pages]
 
 # 그림만 다시(일부 쪽): 마지막 쪽(2)을 다시 그려도 표지 셋 그대로 (뒤표지는 마지막 장면과 상관없다, #90)
@@ -319,7 +338,7 @@ def no_cover(prompt, refs):
 il.set_image_override(no_cover)
 failed = il.illustrate({"story": st, "output_prefix": "stories/c/runs/4/"})["illustrations"]
 assert failed.cover is None and failed.cover_title is None and all(p.status == "completed" for p in failed.pages)
-assert failed.front_cover and failed.back_cover   # 정사각형이 없어도 앞·뒤표지는 그린다
+assert failed.front_cover is None and failed.back_cover   # 정사각형이 없으면 앞표지도 없다 (#125). 뒤표지는 그린다
 print("cover ok")
 
 # ── 그림이 콘텐츠 정책에 막히면 장면을 순화해 한 번 더 (#37). 순화해도 막히면 그 쪽만 failed ──
@@ -344,27 +363,6 @@ assert sum(c.node == "illustrate:soften" for c in blocked["cost"]) == 2
 assert blocked["illustrations"].cover                                                      # 다른 그림은 그대로
 il.set_image_override(mock.tiny_png)
 
-# 앞표지가 정책에 막히면 순화한 장면으로 다시 그린다 (정사각형이 없어 장면 줄을 쓰는 경우, #88 리뷰)
-front_prompts: list[str] = []
-
-
-def front_policy(prompt, refs):
-    if prompt.startswith("Front cover"):
-        raise RuntimeError("정사각형 실패 흉내")
-    if prompt.startswith("Wide front cover"):
-        front_prompts.append(prompt)
-        if "scene-x" in prompt and "gentle" not in prompt:
-            raise il.PolicyBlocked("safety system 흉내")
-    return mock.tiny_png(prompt, refs)
-
-
-il.set_image_override(front_policy)
-st3 = st.model_copy(update={"pages": [StoryPage(order=1, text="t", characters_in_scene=["포포"], image_prompt="scene-x"),
-                                      StoryPage(order=2, text="t", characters_in_scene=["포포"], image_prompt="p")]})
-fp = il.illustrate({"story": st3, "output_prefix": "stories/c/runs/12/"})["illustrations"]
-assert fp.front_cover == "stories/c/runs/12/images/front-cover.png", front_prompts
-assert any("gentle scene-x" in x for x in front_prompts), front_prompts
-il.set_image_override(mock.tiny_png)
 print("policy retry ok")
 
 # ── 지시문에 이어지는 동작(then·next part)이 있으면 그리기 전에 한 순간으로 다시 쓴다 (#110). 'next to'는 그대로 ──

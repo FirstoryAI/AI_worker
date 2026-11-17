@@ -98,7 +98,7 @@ def build_html(state: PipelineState) -> str:
     pages = {p.order: p for p in (ill.pages if ill else [])}
     img = {o: src(p.path) for o, p in pages.items() if p.status == "completed" and p.path}
     cover = src(ill.cover) if ill and ill.cover else None
-    front = src(ill.front_cover) if ill and ill.front_cover else None   # 앞·뒤표지는 쪽과 같은 크기 (#88)
+    front = src(ill.front_cover) if ill and ill.front_cover else None   # 앞표지 = 정사각형 표지, 뒤표지도 정사각형 (#125). 옛 동화는 가로
     back = src(ill.back_cover) if ill and ill.back_cover else None
     sheet = src(ill.character_sheet_path) if ill and ill.character_sheet_path else None
     synopsis = guide.synopsis if guide else ""
@@ -120,7 +120,7 @@ def build_html(state: PipelineState) -> str:
     </section>"""]
     if front:
         slides.append(f"""
-    <section class="slide" data-label="앞표지"><div class="scene"><img src="{_e(front)}" alt=""></div></section>""")
+    <section class="slide" data-label="앞표지"><div class="scene book-cover"><img src="{_e(front)}" alt=""></div></section>""")
     for p in story.pages:
         pi = pages.get(p.order)
         has_img = p.order in img
@@ -141,7 +141,7 @@ def build_html(state: PipelineState) -> str:
     </section>""")
     if back:
         slides.append(f"""
-    <section class="slide" data-label="뒤표지"><div class="scene"><img src="{_e(back)}" alt=""></div></section>""")
+    <section class="slide" data-label="뒤표지"><div class="scene book-cover"><img src="{_e(back)}" alt=""></div></section>""")
 
     g = guide
     panel = ""
@@ -192,6 +192,8 @@ def build_html(state: PipelineState) -> str:
 /* 그림 칸 (StoryFlipPage .flipSceneImage): 가로 기준 cqw */
 .scene{{position:relative;width:100%;aspect-ratio:{_aspect()};container-type:inline-size;overflow:hidden;border-radius:6px;background:var(--paper);box-shadow:0 12px 40px rgb(0 0 0 / 35%)}}
 .scene>img{{display:block;width:100%;height:100%;object-fit:cover}}
+/* 앞·뒤표지 (StoryReader .coverBook): 정사각형, 가로 그림(옛 동화)은 가운데를 잘라 보여 줌 */
+.scene.book-cover{{width:min(620px,100%);margin:0 auto;aspect-ratio:1}}
 .ph{{display:flex;width:100%;height:100%;align-items:center;justify-content:center;padding:32px;color:var(--dim);font-size:14px;line-height:1.6;background:var(--soft)}}
 /* StoryTextBlocks */
 .blocks{{position:absolute;inset:0;pointer-events:none}}

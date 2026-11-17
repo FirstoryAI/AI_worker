@@ -229,30 +229,8 @@ def _reference_lines(story: StoryText, first: int = 1) -> list[str]:
     return [f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}" for i, c in enumerate(story.characters, first)]
 
 
-def front_cover_prompt(story: StoryText, with_square: bool, scene: Optional[str] = None) -> str:
-    """앞표지 (쪽과 같은 가로 그림, 제목 포함). with_square면 첫 참고 그림이 같은 책의 정사각형 표지다 (#88).
-    scene은 정사각형이 없을 때 쓰는 장면(정책에 막혀 순화했으면 그 문장)."""
-    n = len(story.characters) + (1 if with_square else 0)
-    lines = [f"Wide front cover of a children's picture book. {n} reference image(s) are attached, in this order:"]
-    if with_square:
-        lines += ["  Reference 1 = the square cover of this same book.",
-                  *_reference_lines(story, 2),
-                  "Keep the square cover's scene, composition, characters and title lettering, and extend it to a wide 16:9 cover "
-                  "by widening the background to the left and right. Do not crop or squeeze the characters."]
-    else:
-        lines += [*_reference_lines(story),
-                  "The protagonist is the clear focus, warm and inviting, in a simple setting that hints at the story.",
-                  f"Story setting (for mood only): {scene if scene is not None else story.pages[0].image_prompt if story.pages else ''}"]
-    lines += [
-        "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add other characters.",
-        f"Style: {story.style_guide}",
-        f'Put the book title in Korean at the top in large, rounded, hand-lettered style, spelled exactly: "{story.title}". No other text, no borders.',
-    ]
-    return "\n".join(lines)
-
-
 def back_cover_prompt(story: StoryText) -> str:
-    """뒤표지 (쪽과 같은 가로 그림, 글자 없음). 실제 그림책 뒤표지처럼 빈 바탕에 주인공 혼자 작게 그린 마무리 한 컷.
+    """뒤표지 (정사각형 표지와 같은 크기, 글자 없음, #125). 실제 그림책 뒤표지처럼 빈 바탕에 주인공 혼자 작게 그린 마무리 한 컷.
     마지막 쪽 장면을 다시 그리지 않는다 (10쪽과 겹친다). 참고 그림은 주인공 시트 한 장 (#88)."""
     hero = story.protagonist()
     lines = [f"Back cover of a children's picture book. 1 reference image is attached:",
@@ -633,31 +611,16 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         return draw_cover("illustrate:cover", "cover", lambda scene: cover_prompt(story, scene), setting,
                           sheet_refs, config.cover_size)
 
-    def front_cover(square_key: Optional[str]):   # 정사각형 표지를 참고해 넓힌다. 없으면 시트만
-        square = None
-        if square_key:
-            try:
-                square = _ref(storage.read_bytes(square_key))
-            except Exception as e:  # noqa: BLE001
-                log.warning("앞표지: 정사각형 표지를 읽지 못함: %s", type(e).__name__)
-        refs = ([("square-cover.png", square)] if square else []) + sheet_refs
-        return draw_cover("illustrate:front_cover", "front-cover", lambda scene: front_cover_prompt(story, square is not None, scene),
-                          setting, refs, config.image_size)
-
     def back_cover():   # 주인공 혼자 작게 (참고 그림은 주인공 시트만)
         hero = story.protagonist().name
         return draw_cover("illustrate:back_cover", "back-cover", lambda _: back_cover_prompt(story), "",
-                          [(f"{_safe(hero)}.png", ref_bytes[hero])], config.image_size)
+                          [(f"{_safe(hero)}.png", ref_bytes[hero])], config.cover_size)
 
     redraw_cover = only_pages is None or not ill.cover or ill.cover_title != story.title
-    redraw_front = redraw_cover or not ill.front_cover
     redraw_back = only_pages is None or not ill.back_cover   # 주인공 혼자 그린 그림이라 쪽과 상관없다 (#90)
     with ThreadPoolExecutor(max_workers=max(1, config.image_concurrency)) as ex:
         cover_job = ex.submit(cover) if redraw_cover else None
         back_job = ex.submit(back_cover) if redraw_back else None
-        # 앞표지는 정사각형이 끝난 뒤 (그 그림을 참고). 정사각형을 다시 그리지 않으면 이전 정사각형을 참고
-        front_job = (ex.submit(lambda: front_cover(cover_job.result()[0] if cover_job else ill.cover))
-                     if redraw_front else None)
         drawn = {p.order for p in targets}
         stale = [p for p in story.pages if p.order not in drawn and p.order in by_order
                  and _stale(p, by_order[p.order], questions.get(p.order, []))]
@@ -672,13 +635,13 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             key, cost = cover_job.result()
             ill.cover, ill.cover_title = key, story.title if key else None
             costs.append(cost)
-        if front_job:
-            ill.front_cover, cost = front_job.result()
-            costs.append(cost)
         if back_job:
             ill.back_cover, cost = back_job.result()
             costs.append(cost)
 
+    # 앞표지는 따로 그리지 않고 정사각형 표지를 그대로 쓴다 (프론트가 앞표지 자리에 정사각형을 보여 준다, #125).
+    # Spring·프론트는 앞·뒤표지 key가 둘 다 있어야 책에 표지를 붙이므로 key는 채워 둔다
+    ill.front_cover = ill.cover
     ill.pages = [by_order[o] for o in sorted(by_order)]
     return ill, costs
 
@@ -699,7 +662,7 @@ def illustrate(state: PipelineState) -> dict:
     by_order = {pi.order: pi for pi in prev.pages}
     relayout = any(p.order in by_order and _stale(p, by_order[p.order], qs.get(p.order, [])) for p in story.pages)
     if (not pages and not relayout and prev.cover and prev.cover_title == story.title
-            and prev.front_cover and prev.back_cover):   # 글·장면·제목·표지 다 그대로 — 전부 이전 실행 것
+            and prev.front_cover == prev.cover and prev.back_cover):   # 글·장면·제목·표지 다 그대로 — 전부 이전 실행 것
         return {"illustrations": prev, "cost": [], "redraw_pages": None}
     ill, costs = _run(story, prefix, only_pages=pages, prev=prev, questions=qs)
     return {"illustrations": ill, "cost": costs, "redraw_pages": None}
