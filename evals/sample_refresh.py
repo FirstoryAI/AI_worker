@@ -359,6 +359,28 @@ def nudge(args) -> None:
     preview(res)
 
 
+def piece_boxes(sw: dict) -> list[tuple[float, float, float, float]]:
+    """의성어 조각 가운데(%) → 조각 상자 (px x, y, w, h), layout.place_word와 같은 크기"""
+    out = []
+    for p in sw["pieces"]:
+        pw, ph = layout.piece_size(p["text"])
+        cx, cy = p["x"] / 100 * W, p["y"] / 100 * H
+        out.append((cx - pw / 2, cy - ph / 2, pw, ph))
+    return out
+
+
+def recolor(args) -> None:
+    """모든 의성어 색을 지금 layout.pick_color(#117)로 다시 고른다 (자리 그대로, AI 호출 없음)"""
+    res = _load_result()
+    for card in res["cards"].values():
+        for e in card["pages"].values():
+            if e["soundWord"]:
+                busy = layout.Busy(Path(e.get("redrawImage") or e["image"]).read_bytes())
+                e["soundWord"] = {**e["soundWord"], "color": layout.pick_color(busy, piece_boxes(e["soundWord"]), e["soundWord"]["text"])}
+    _save_result(res)
+    preview(res)
+
+
 def revert(args) -> None:
     res = _load_result()
     for card, no in _keys(args.pages):
@@ -474,9 +496,10 @@ def main():
     m.add_argument("--page", required=True)
     m.add_argument("--at")
     m.add_argument("--blocks")
+    sub.add_parser("recolor")
     sub.add_parser("export")
     args = ap.parse_args()
-    {"place": place, "redraw": redraw, "revert": revert, "nudge": nudge, "export": export}[args.cmd](args)
+    {"place": place, "redraw": redraw, "revert": revert, "nudge": nudge, "recolor": recolor, "export": export}[args.cmd](args)
 
 
 if __name__ == "__main__":

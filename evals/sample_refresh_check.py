@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "evals"))
 
-from firstory.nodes.layout import MAX_LINE, W, sound_words, text_width  # noqa: E402
+from firstory.nodes.layout import H, MAX_LINE, W, piece_size, sound_words, text_width  # noqa: E402
 from firstory.schemas import SoundPiece, SoundWord, TextBlock  # noqa: E402
-from sample_refresh import SAMPLES, check_story, move_blocks, move_pieces, export_story, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
+from sample_refresh import SAMPLES, check_story, move_blocks, move_pieces, piece_boxes, export_story, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
 
 old_story = json.loads((SAMPLES / "tantrum" / "story.json").read_text(encoding="utf-8"))
 old = [b["paragraphs"] for b in old_story["pages"][0]["textBlocks"]]
@@ -94,5 +94,10 @@ try:
     raise AssertionError("count")
 except ValueError:
     pass
+
+# 다시 칠하기: 조각 가운데(%) → 조각 상자(px x, y, w, h)
+_pw, _ph = piece_size("쓰담쓰담")
+assert piece_boxes({"text": "쓰담쓰담", "color": "#000000", "pieces": [{"text": "쓰담쓰담", "x": 50.0, "y": 25.0, "side": "CENTER"}]}) == [
+    (W * 0.5 - _pw / 2, H * 0.25 - _ph / 2, _pw, _ph)]
 
 print("sample refresh check ok")
