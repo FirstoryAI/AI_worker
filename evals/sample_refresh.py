@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from firstory.nodes import illustrate as il  # noqa: E402
 from firstory.nodes import layout  # noqa: E402
-from firstory.nodes.layout import FONT_PATH, FONT_RATIO, H, PIECE_RATIO, W, SfxAsk, sound_words, wrap_line  # noqa: E402
+from firstory.nodes.layout import FONT_PATH, FONT_RATIO, H, W, SfxAsk, sound_words, wrap_line  # noqa: E402
 from firstory.schemas import SoundWord, TextBlock  # noqa: E402
 
 FIRSTORY = ROOT.parent
@@ -136,29 +136,51 @@ def place(args) -> None:
     print(OUT / "index.html", f"tokens in={tin} out={tout}")
 
 
-# ── 미리보기 ──
+# ── 미리보기 (배포된 프론트 main의 StoryTextBlocks·SoundWord와 같은 모양) ──
+FRONT = FIRSTORY / "Frontend_MainPage"
+TILTS = [-9, 6, -4, 8]                                   # SoundWord.jsx
+RISES = [0.05, -0.09, 0.07, -0.05]
+SIDE_ROTATE = {"LEFT": -10, "RIGHT": 10, "CENTER": -6}
+
+
+def _front_font() -> None:
+    """의성어 히피체를 프론트 origin/main에서 꺼내 미리보기 폴더에 둔다 (프론트 작업 폴더는 건드리지 않음)"""
+    import subprocess
+    dst = OUT / "hippie.woff2"
+    if dst.exists():
+        return
+    got = subprocess.run(["git", "-C", str(FRONT), "show", "origin/main:src/assets/fonts/Hippie-KS.woff2"], capture_output=True)
+    if got.returncode == 0:
+        dst.write_bytes(got.stdout)
+
+
 def _blocks_html(blocks: list[dict]) -> str:
+    """StoryTextBlocks: 줄마다 한 줄, 본문의 **말**은 별표만 지우고 다른 글과 같게 (StoryText)"""
     out = []
     for b in blocks:
-        paras = "".join(f'<p>{"<br>".join(_bold(l) for l in para)}</p>' for para in b["paragraphs"])
-        out.append(f'<div class="tb {b["color"].lower()}" style="left:{b["x"]}%;top:{b["y"]}%">{paras}</div>')
+        paras = "".join('<p>' + "".join(f'<span class="ln">{html.escape(re.sub(r"[*][*](.+?)[*][*]", r"\1", l))}</span>' for l in para) + '</p>'
+                        for para in b["paragraphs"])
+        out.append(f'<div class="tb" data-color="{b["color"].upper()}" style="left:{b["x"]}%;top:{b["y"]}%">{paras}</div>')
     return "".join(out)
 
 
-def _bold(line: str) -> str:
-    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", html.escape(line))
-
-
 def _word_html(w: dict | None) -> str:
+    """SoundWord: 글자마다 기울기·오르내림·커짐, 조각은 side로 기울임"""
     if not w:
         return ""
-    return "".join(f'<span class="sw" style="left:{p["x"]}%;top:{p["y"]}%;color:{w["color"]}">{html.escape(p["text"])}</span>'
-                   for p in w["pieces"])
+    out = []
+    for p in w["pieces"]:
+        chars = "".join(f'<span class="ch" style="--tilt:{TILTS[i % 4]}deg;--rise:{RISES[i % 4]}em;--grow:{1 + min(i, 5) * 0.04:g}">'
+                        f'{html.escape(c)}</span>' for i, c in enumerate(p["text"]))
+        out.append(f'<span class="sw" style="left:{p["x"]}%;top:{p["y"]}%;--tone:{w["color"]};'
+                   f'--rotate:{SIDE_ROTATE.get(p["side"].upper(), -6)}deg">{chars}</span>')
+    return "".join(out)
 
 
 def preview(res: dict) -> None:
     (OUT / "img").mkdir(parents=True, exist_ok=True)
     shutil.copy(FONT_PATH, OUT / "font.woff2")
+    _front_font()
     rows, n, no_room, has_w, miss_w, redrawn = [], 0, 0, 0, 0, 0
     for card in sorted(res["cards"]):
         story = _story(card)
@@ -189,8 +211,8 @@ def preview(res: dict) -> None:
             rows.append(f"""
 <section><div class="meta"><label><input type="checkbox" value="{key}"> <b>{int(no)}쪽</b> 다시 그리기</label> {' '.join(flags)}</div>
 <div class="pair">
-  <figure><div class="pg"><img src="{old_name}">{_blocks_html(old.get('textBlocks') or [])}</div><figcaption>지금 (11/6 배치, 글자 2.35%로 보면 잘림)</figcaption></figure>
-  <figure><div class="pg"><img src="{new_name}">{_blocks_html(e['textBlocks'])}{_word_html(e['soundWord'])}</div><figcaption>새 배치{' + 의성어' if e['soundWord'] else ''}</figcaption></figure>
+  <figure><div class="pg"><img src="{old_name}">{_blocks_html(old.get('textBlocks') or [])}</div><figcaption>지금 홈에 나오는 모습 (11/6 배치)</figcaption></figure>
+  <figure><div class="pg"><img src="{new_name}">{_blocks_html(e['textBlocks'])}{_word_html(e['soundWord'])}</div><figcaption>새 배치 (배포된 프론트 모양){' + 의성어' if e['soundWord'] else ''}</figcaption></figure>
 </div></section>""")
     tok = res.get("tokens", {"in": 0, "out": 0})
     head = f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>샘플 동화 새 배치</title>
@@ -203,16 +225,22 @@ section{{margin:0 0 24px}} .meta{{font-size:14px;margin:4px 0 8px}}
 .flag.warn{{background:#ffe1d6;color:#a3360c}} .flag.ok{{background:#dff3e2;color:#1d6b2c}} .flag.new{{background:#dfe9ff;color:#1d3f8f}}
 .pair{{display:grid;grid-template-columns:1fr 1fr;gap:12px}} figure{{margin:0}} figcaption{{font-size:12px;color:#666;margin-top:4px}}
 @media (max-width:700px){{.pair{{grid-template-columns:1fr}}}}
-.pg{{position:relative;container-type:inline-size;aspect-ratio:{W}/{H};overflow:hidden}} .pg img{{width:100%;height:100%;object-fit:cover;display:block}}
-.tb{{position:absolute;font-family:K;font-size:{FONT_RATIO * 100:g}cqw;line-height:1.55;white-space:nowrap}} .tb p{{margin:0 0 .93em}}
-.tb.dark{{color:#4a4a4a}} .tb.light{{color:#fff}}
-.sw{{position:absolute;transform:translate(-50%,-50%);font-family:K;font-weight:700;font-size:{PIECE_RATIO * 100:g}cqw;white-space:nowrap}}
+@font-face{{font-family:Hippie;src:url(hippie.woff2)}}
+.pg{{position:relative;container-type:inline-size;aspect-ratio:{W}/{H};overflow:hidden;background:#fffcef}} .pg img{{width:100%;height:100%;object-fit:cover;display:block}}
+.pg::after{{content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;background:rgb(93 66 36 / 18%);box-shadow:0 0 12px rgb(93 66 36 / 25%)}}
+.tb{{position:absolute;color:#4a4a4a;font-family:K,sans-serif;font-size:{FONT_RATIO * 100:g}cqw;line-height:1.55;text-align:left;white-space:nowrap}}
+.tb[data-color=LIGHT]{{color:#fff;text-shadow:0 1px 3px rgb(0 0 0 / 30%)}}
+.tb p{{margin:0 0 .6em}} .tb p:last-child{{margin-bottom:0}} .tb .ln{{display:block}}
+.sw{{position:absolute;z-index:1;display:flex;align-items:center;color:var(--tone,#7a4bd0);font-family:Hippie,K,sans-serif;font-size:3cqw;line-height:1;
+  white-space:nowrap;transform:translate(-50%,-50%) rotate(var(--rotate,-6deg))}}
+.sw .ch{{display:inline-block;margin:0 -.02em;text-shadow:0 .05em .1em rgb(40 25 10 / 22%);
+  transform:translateY(var(--rise,0)) rotate(var(--tilt,0deg)) scale(var(--grow,1));transform-origin:50% 70%}}
 #pick{{position:sticky;top:0;background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px;z-index:2}}
 #pick textarea{{width:100%;box-sizing:border-box;font-family:monospace}}
 </style>
 <h1>샘플 동화 새 배치 미리보기</h1>
 <p>{n}쪽 · 자리 없음 {no_room} · 다시 그림 {redrawn} · 의성어 있음 {has_w} / 빠짐 {miss_w} · 토큰 입력 {tok['in']} / 출력 {tok['out']}</p>
-<p>왼쪽은 11/6 배치를 지금 글자 크기로 그린 것, 오른쪽은 새 배치예요. 다시 그릴 쪽에 체크하면 아래 칸에 목록이 생겨요.</p>
+<p>둘 다 배포된 프론트(main)의 글 덩어리·의성어 모양 그대로예요(글자 2.35cqw 꾹꾹체, 의성어 3cqw 히피체, 가운데 선은 책 접히는 곳). 왼쪽은 지금 홈에 나오는 11/6 배치, 오른쪽은 새 배치예요. 다시 그릴 쪽에 체크하면 아래 칸에 목록이 생겨요.</p>
 <div id="pick">다시 그릴 쪽 (<span id="cnt">0</span>쪽, 약 <span id="won">0</span>원): <textarea id="sel" rows="2" readonly></textarea></div>
 <script>
 document.addEventListener('change', () => {{
