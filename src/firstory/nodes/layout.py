@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import math
@@ -694,15 +695,15 @@ def short_look(visual_description: str) -> str:
 
 
 PIECE_RATIO = 0.025                # 의성어 조각 글자 크기 = 그림 폭의 2.5% (#102, 손글씨 예시 비율)
-PALETTE: list[tuple[str, tuple[int, int, int]]] = [   # 의성어 색 후보. 순서 = 동점일 때 우선 (#102)
-    ("#7B4FD6", (0x7B, 0x4F, 0xD6)),   # 보라
-    ("#F0661E", (0xF0, 0x66, 0x1E)),   # 주황
-    ("#E03E4E", (0xE0, 0x3E, 0x4E)),   # 빨강
-    ("#2D6BD9", (0x2D, 0x6B, 0xD9)),   # 파랑
-    ("#2A9D55", (0x2A, 0x9D, 0x55)),   # 초록
-    ("#FFFFFF", (0xFF, 0xFF, 0xFF)),   # 흰색
-    ("#4A4A4A", (0x4A, 0x4A, 0x4A)),   # 진한 회색
+HUES: list[tuple[str, tuple[int, int, int]]] = [   # 의성어 색. 처음 팔레트(#102)와 색상은 같고 밝기만 0.10으로 진하게 (#117)
+    ("#6735D0", (0x67, 0x35, 0xD0)),   # 보라
+    ("#993B0A", (0x99, 0x3B, 0x0A)),   # 주황
+    ("#AE1C2A", (0xAE, 0x1C, 0x2A)),   # 빨강
+    ("#2055B1", (0x20, 0x55, 0xB1)),   # 파랑
+    ("#1B6537", (0x1B, 0x65, 0x37)),   # 초록
 ]
+WHITE = ("#FFFFFF", (0xFF, 0xFF, 0xFF))   # 어두운 바탕
+GRAY = ("#4A4A4A", (0x4A, 0x4A, 0x4A))    # 진한 5색·흰색 모두 안 될 때
 MIN_CONTRAST = 3.0                 # 의성어 색 후보가 되는 WCAG 대비
 
 
@@ -748,16 +749,22 @@ def delta_e(a: tuple[float, float, float], b: tuple[float, float, float]) -> flo
     return math.dist(_lab(a), _lab(b))
 
 
-def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]]) -> str:
-    """조각 상자들(px x, y, w, h) 둘레 배경과 가장 잘 구별되는 팔레트 색 하나 (#102).
-    모든 배경과 대비 3:1 이상인 색 중 ΔE 최솟값이 가장 큰 색, 없으면 대비 최솟값이 가장 큰 색. 동점은 팔레트 순서."""
+def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]], word: str) -> str:
+    """조각 상자들(px x, y, w, h) 둘레 배경에서 읽히는 색 하나 (#102, #117).
+    말(md5)로 HUES 시작 색을 정해 차례로 보고, 모든 조각 배경과 대비 3:1 이상인 첫 색. 같은 말은 같은 색.
+    다 안 되면 흰색 → 진한 회색, 그래도 없으면 대비 최솟값이 가장 큰 색."""
     pad = W * BUSY_PAD
     bgs = [busy.mean_rgb(x - pad, y - pad, w + 2 * pad, h + 2 * pad) for x, y, w, h in boxes]
-    rows = [(hexc, min(contrast(rgb, bg) for bg in bgs), min(delta_e(rgb, bg) for bg in bgs)) for hexc, rgb in PALETTE]
-    ok = [r for r in rows if r[1] >= MIN_CONTRAST]
-    if ok:
-        return max(ok, key=lambda r: r[2])[0]   # max는 동점이면 앞의 것
-    return max(rows, key=lambda r: r[1])[0]
+    start = hashlib.md5(word.encode("utf-8")).digest()[0] % len(HUES)
+    order = HUES[start:] + HUES[:start] + [WHITE, GRAY]
+
+    def worst(rgb: tuple[int, int, int]) -> float:
+        return min(contrast(rgb, bg) for bg in bgs)
+
+    for hexc, rgb in order:
+        if worst(rgb) >= MIN_CONTRAST:
+            return hexc
+    return max(order, key=lambda c: worst(c[1]))[0]
 
 
 def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float, float, float, float]]) -> bool:
@@ -936,7 +943,7 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
     for t, cx, cy, _ in placed:
         pw, ph = piece_size(t)
         rects.append((cx - pw / 2, cy - ph / 2, pw, ph))
-    return SoundWord(text=word, color=pick_color(busy, rects),
+    return SoundWord(text=word, color=pick_color(busy, rects, word),
                      pieces=[SoundPiece(text=t, x=round(cx / W * 100, 1), y=round(cy / H * 100, 1), side=side)
                              for t, cx, cy, side in placed],
                      owner=spot.get("owner") or None)

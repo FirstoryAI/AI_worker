@@ -497,7 +497,7 @@ sw = place_word(white, "데굴데굴", face, tb)
 l, r = sw.pieces
 assert [p.text for p in sw.pieces] == ["데굴", "데굴"] and (l.side, r.side) == ("left", "right"), sw
 assert l.x < 20 < 30 < r.x and l.y <= 35 and r.y <= 35, sw             # 근원 양옆, 얼굴 위끝 이하 (#108 여유 뒤엔 대칭이 아닐 수 있음)
-assert sw.color == "#7B4FD6" and sw.text == "데굴데굴" and sw.owner == "모아"
+assert sw.color == "#2055B1" and sw.text == "데굴데굴" and sw.owner == "모아"
 assert all(p.x == round(p.x, 1) and p.y == round(p.y, 1) for p in sw.pieces)
 one = place_word(white, "엉엉", face, tb)
 assert [p.side for p in one.pieces] == ["center"] and one.pieces[0].y < 30, one   # 몸 칸 위
@@ -574,7 +574,7 @@ assert _others("face", _face, []) == [] and _others("object", _car, [_leg]) == [
 fold = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (47.0, 40.0, 53.0, 50.0), "chars": []}, [])
 assert fold is None or all(abs(p.x - 50) * W / 100 >= piece_size(p.text)[0] / 2 + W * SFX_FOLD / 100 - 1 for p in fold.pieces), fold
 dark = Busy(png(Image.new("RGB", (W, H), (20, 20, 30))))
-assert place_word(dark, "엉엉", face, []).color == "#F0661E"
+assert place_word(dark, "엉엉", face, []).color == "#FFFFFF"
 # 눈금: 기본(grid=True)이면 별표 있는 쪽·없는 쪽 모두 10% 눈금을 그려 보내고 지시에 알린다 (#104). grid=False면 그림 그대로
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=good_chars, sound_word=good)))
@@ -631,11 +631,21 @@ def _solid(rgb):
 
 
 _box = [(800.0, 400.0, 100.0, 60.0)]
-assert pick_color(_solid((255, 255, 255)), _box) == "#7B4FD6"
-assert pick_color(_solid((32, 32, 32)), _box) == "#F0661E"
-assert pick_color(_solid((240, 225, 190)), _box) == "#7B4FD6"
-assert pick_color(_solid((170, 190, 230)), _box) == "#4A4A4A"
-assert pick_color(_solid((255, 255, 255)), _box * 2) == "#7B4FD6"   # 두 조각 = 같은 한 색
+# #117: 진한 5색은 밝은 바탕(흰·크림·하늘)에서 모두 대비 3:1 이상, 말로 시작 색을 정해 돌려 쓴다
+from firstory.nodes.layout import HUES  # noqa: E402
+assert len(HUES) == 5
+for _bg in ((255, 255, 255), (240, 225, 190), (170, 190, 230)):
+    assert all(contrast(rgb, _bg) >= 3 for _, rgb in HUES), _bg
+_words = ["쓰담쓰담", "엉엉", "콩콩", "쏙", "훌쩍훌쩍", "토닥토닥", "방긋", "톡", "냠냠", "데굴데굴"]
+_white = _solid((255, 255, 255))
+_picked = [pick_color(_white, _box, w) for w in _words]
+assert all(c in [h for h, _ in HUES] for c in _picked), _picked
+assert len(set(_picked)) >= 4, _picked                                                   # 말마다 여러 색
+assert [pick_color(_white, _box, w) for w in _words] == _picked                          # 같은 말은 같은 색
+assert pick_color(_solid((240, 225, 190)), _box, "쓰담쓰담") == pick_color(_white, _box, "쓰담쓰담")   # 밝은 바탕이면 바탕이 달라도
+assert pick_color(_solid((32, 32, 32)), _box, "엉엉") == "#FFFFFF"                        # 어두운 바탕은 흰색
+assert pick_color(_solid((140, 160, 205)), _box, "엉엉") == "#4A4A4A"                     # 진한 5색·흰색 모두 3:1 미만이면 진한 회색
+assert pick_color(_white, _box * 2, "데굴데굴") == pick_color(_white, _box, "데굴데굴")    # 두 조각 = 같은 한 색
 print("split color ok")
 
 
