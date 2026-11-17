@@ -40,6 +40,8 @@ assert to_front([], None) == ([], None)
 # 다시 그리기 지시: 같은 장면·인물 + 덩어리 크기·자리
 p = redraw_prompt([(700.0, 300.0)], ["left top"])
 assert "same characters" in p and "toward the left top" in p, p
+assert "evening" in redraw_prompt([(700.0, 300.0)], ["left top"], "It is evening.") and "Change only this" in redraw_prompt([(1.0, 1.0)], ["left top"], "It is evening.")
+assert "Change only this" not in p
 
 # 내보내기: 바뀌는 건 textBlocks·soundWord뿐, 검사가 망가진 값을 잡는다
 pages = {str(pg["pageNo"]): {"textBlocks": [{**b, "paragraphs": rewrap([b["paragraphs"]])[0]} for b in pg["textBlocks"]],

@@ -254,9 +254,11 @@ document.addEventListener('change', () => {{
 
 
 # ── redraw / revert ──
-def redraw_prompt(sizes: list[tuple[float, float]], where: list[str]) -> str:
-    """첨부한 쪽 그림을 같은 장면·인물·화풍으로, 글 들어갈 빈 곳만 남겨 다시 그리는 지시 (원래 그림 지시·시트가 없다)"""
-    return ("Redraw the attached picture-book page. Keep the same scene, the same characters (same species, colors, markings, "
+def redraw_prompt(sizes: list[tuple[float, float]], where: list[str], note: str | None = None) -> str:
+    """첨부한 쪽 그림을 같은 장면·인물·화풍으로, 글 들어갈 빈 곳만 남겨 다시 그리는 지시 (원래 그림 지시·시트가 없다).
+    note: 사용자 피드백으로 바꿀 것 하나 (예: 저녁 장면). 그것만 바꾼다"""
+    extra = f"Change only this, keep everything else (this overrides anything below): {note}\n" if note else ""
+    return extra + ("Redraw the attached picture-book page. Keep the same scene, the same characters (same species, colors, markings, "
             "proportions, outfits and facial expressions), the same objects, the same time of day and light, and the same art style. "
             "Keep the composition as close to the original as possible; only move things as much as needed to open up the space below. "
             "Full-bleed illustration, no text, no speech bubbles, no borders.\n" + il.layout_prompt(sizes, where))
@@ -294,7 +296,7 @@ def redraw(args) -> None:
         src = SAMPLES / card / page["image"]
         t0 = time.time()
         try:
-            img, tin, tout = il._edit(redraw_prompt([layout.block_size(b) for b in blocks], where), [(src.name, src.read_bytes())])
+            img, tin, tout = il._edit(redraw_prompt([layout.block_size(b) for b in blocks], where, args.note), [(src.name, src.read_bytes())])
         except Exception as e:  # noqa: BLE001 — 한 장 실패가 나머지를 막지 않는다
             print(f"{card} {no}쪽 다시 그리기 실패: {type(e).__name__}", flush=True)
             continue
@@ -429,6 +431,7 @@ def main():
     r = sub.add_parser("redraw")
     r.add_argument("--pages", required=True)
     r.add_argument("--mock", action="store_true")
+    r.add_argument("--note", help="이번에 고른 쪽 모두에 넣을 바꿀 것 (영어, 예: 저녁 장면)")
     v = sub.add_parser("revert")
     v.add_argument("--pages", required=True)
     sub.add_parser("export")
