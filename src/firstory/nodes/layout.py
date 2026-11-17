@@ -49,6 +49,7 @@ TIE_COST = 1e-5                    # calmest: 거리는 복잡도가 같을 때�
 SFX_LINE_H = 1.2                   # 의성어 조각 상자 높이 = 글자 크기 배수
 SFX_EDGE_X, SFX_EDGE_Y, SFX_FOLD = 3, 4, 2   # 의성어 좌우 여백, 위·아래 여백, 접히는 선 여백 (%)
 SFX_RADIUS = 0.15                  # 의성어를 밀 수 있는 반지름 (그림 폭 대비)
+SFX_TOUCH_RADIUS = 0.25            # 손 동작(touch): 손 칸에서 조각 가운데까지 최대 거리 (그림 폭 대비, #119) — 손은 두 몸 칸 사이에 묻혀 있다
 
 Block = list[list[str]]            # 덩어리 = 문단 > 줄
 
@@ -581,13 +582,13 @@ def _sanitize_chars(chars) -> Chars:
 
 
 def _sanitize_word(spot, chars: Chars) -> dict | None:
-    """AI 의성어 답 → {"owner", "kind": face|object, "source": (x0, y0, x1, y1) %, "chars": 맨 위 캐릭터 칸} (#102, #104).
-    근원 칸이 이상하거나 종류가 face·object가 아니면 None."""
+    """AI 의성어 답 → {"owner", "kind": face|object|touch, "source": (x0, y0, x1, y1) %, "chars": 맨 위 캐릭터 칸} (#102, #104, #119).
+    근원 칸이 이상하거나 종류가 face·object·touch가 아니면 None."""
     if spot is None:
         return None
     kind = getattr(spot, "source_kind", None)
     source = _sanitize_box(getattr(spot, "source_box", None))
-    if kind not in ("face", "object") or source is None:
+    if kind not in ("face", "object", "touch") or source is None:
         return None
     return {"owner": str(getattr(spot, "owner", "") or ""), "kind": kind, "source": source, "chars": list(chars)}
 
@@ -802,7 +803,10 @@ def _others(kind: str, source: tuple[float, float, float, float],
             chars: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
     """근원보다 가까우면 안 되는 캐릭터 칸 (px) (#102).
     face: 얼굴 가운데를 덮는 칸은 모두 뺀다 — 얼굴 주인과, 안긴 장면에서 그 얼굴을 품은 캐릭터(실험 11/16, 안긴 쪽 2/4).
-    object: 물건과 가장 많이 겹치는 캐릭터 하나(든 캐릭터)만 뺀다. 같으면 더 작은 칸. 물건에 살짝 걸친 다른 캐릭터는 남는다."""
+    object: 물건과 가장 많이 겹치는 캐릭터 하나(든 캐릭터)만 뺀다. 같으면 더 작은 칸. 물건에 살짝 걸친 다른 캐릭터는 남는다.
+    touch: 손 칸과 겹치는 캐릭터(손 주인과 손이 닿은 캐릭터)는 모두 뺀다 (#119)."""
+    if kind == "touch":
+        return [c for c in chars if not _overlaps(source, c)]
     if kind == "face":
         mid = ((source[0] + source[2]) / 2, (source[1] + source[3]) / 2)
         return [c for c in chars if _rect_dist(mid, c) > 0]
@@ -822,7 +826,7 @@ def _others(kind: str, source: tuple[float, float, float, float],
 @dataclass
 class _WordScene:
     """조각을 놓을 때 보는 것 (모두 px)"""
-    kind: str                                          # face | object
+    kind: str                                          # face | object | touch
     source: tuple[float, float, float, float]          # 근원 칸 x0, y0, x1, y1
     chars: list[tuple[float, float, float, float]]     # 모든 캐릭터 칸, CHAR_PAD만큼 키운 것 (겹치면 안 됨, #108)
     others: list[tuple[float, float, float, float]]    # 근원보다 가까우면 안 되는 캐릭터 칸
@@ -905,9 +909,32 @@ def _place_one(sc: _WordScene, size: tuple[float, float]) -> tuple[float, float]
     return None
 
 
+def _place_touch(sc: _WordScene, size: tuple[float, float]) -> tuple[float, float] | None:
+    """손 동작: 한 조각을 손 칸에서 가장 가까운 곳에 (#119). 손은 두 몸 칸 사이라 바로 옆은 다 막힌다 —
+    손 칸 가운데 둘레를 격자로 보고 _piece_ok인 자리 중 (손 칸까지 거리, 손 가운데까지 거리)가 가장 작은 곳.
+    손 칸까지 거리가 SFX_TOUCH_RADIUS를 넘으면 버린다. 없으면 None."""
+    pw, ph = size
+    x0, y0, x1, y1 = sc.source
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    r = W * SFX_TOUCH_RADIUS
+    n = int((r + max(x1 - x0, y1 - y0) / 2) // GRID)
+    best: tuple[tuple[float, float], tuple[float, float]] | None = None
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            x, y = cx + i * GRID, cy + j * GRID
+            d = _rect_dist((x, y), sc.source)
+            if d > r:
+                continue
+            key = (d, math.hypot(x - cx, y - cy))
+            if (best is None or key < best[0]) and _piece_ok(sc, x, y, pw, ph):
+                best = (key, (x, y))
+    return best[1] if best else None
+
+
 def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]) -> SoundWord | None:
     """근원·캐릭터 칸(_sanitize_word) → 조각 1~2개 자리와 색 (#102).
-    반복 4글자는 두 조각을 근원 양옆에, 안 되면 원래 말 한 조각으로, 그래도 안 되면 None."""
+    반복 4글자는 두 조각을 근원 양옆에, 안 되면 원래 말 한 조각으로, 그래도 안 되면 None.
+    손 동작(touch)은 늘 원래 말 한 조각을 손 칸 가까이 (_place_touch, #119)."""
     if spot is None or not word or not word.strip():
         return None
 
@@ -928,6 +955,9 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
     parts = split_word(word)
     whole = word.replace(" ", "")
     placed: list[tuple[str, float, float, str]] | None = None
+    if spot["kind"] == "touch":
+        one = _place_touch(sc, piece_size(whole))
+        return _word(busy, word, spot, [(whole, *one, "center")]) if one else None
     if len(parts) == 2:
         pw = max(piece_size(t)[0] for t in parts)
         pair = _place_pair(sc, (pw, piece_size(parts[0])[1]))
@@ -939,6 +969,11 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
             placed = [(whole, *one, "center")]
     if placed is None:
         return None
+    return _word(busy, word, spot, placed)
+
+
+def _word(busy: Busy, word: str, spot: dict, placed: list[tuple[str, float, float, str]]) -> SoundWord:
+    """조각 자리(px 가운데) → 색을 고른 SoundWord"""
     rects = []
     for t, cx, cy, _ in placed:
         pw, ph = piece_size(t)
