@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "evals"))
 
 from firstory.nodes.layout import MAX_LINE, W, sound_words, text_width  # noqa: E402
 from firstory.schemas import SoundPiece, SoundWord, TextBlock  # noqa: E402
-from sample_refresh import SAMPLES, check_story, export_story, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
+from sample_refresh import SAMPLES, check_story, move_blocks, move_pieces, export_story, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
 
 old_story = json.loads((SAMPLES / "tantrum" / "story.json").read_text(encoding="utf-8"))
 old = [b["paragraphs"] for b in old_story["pages"][0]["textBlocks"]]
@@ -72,5 +72,27 @@ assert broken(lambda b: b["pages"][wi]["soundWord"].update(pieces=[]))
 assert broken(lambda b: b["pages"][wi]["soundWord"]["pieces"][0].update(side="left"))
 assert broken(lambda b: b["pages"][wi]["soundWord"]["pieces"][0].update(text="콩"))
 assert broken(lambda b: b["pages"][wi]["soundWord"].update(text="콩", pieces=[{"text": "콩", "x": 5, "y": 5, "side": "CENTER"}]))
+
+# 손으로 옮기기: 조각 자리만 바꾸고 말·색·side는 그대로, 개수가 다르거나 0~100 밖이면 거부
+sw0 = {"text": "쓰담쓰담", "color": "#FFFFFF", "pieces": [{"text": "쓰담", "x": 45.7, "y": 10.0, "side": "LEFT"}, {"text": "쓰담", "x": 89.8, "y": 10.0, "side": "RIGHT"}]}
+moved = move_pieces(sw0, [(30.0, 50.0), (70.0, 55.5)])
+assert [(q["x"], q["y"]) for q in moved["pieces"]] == [(30.0, 50.0), (70.0, 55.5)] and moved["color"] == "#FFFFFF"
+assert [q["side"] for q in moved["pieces"]] == ["LEFT", "RIGHT"] and sw0["pieces"][0]["x"] == 45.7
+one = move_pieces(sw0, [(33.0, 60.0)])   # 두 조각 → 자리 하나면 한 조각으로 합친다 (가운데)
+assert one["pieces"] == [{"text": "쓰담쓰담", "x": 33.0, "y": 60.0, "side": "CENTER"}] and one["text"] == "쓰담쓰담"
+for bad_xy in ([(30.0, 50.0)] * 3, [(30.0, 50.0), (101.0, 5.0)]):
+    try:
+        move_pieces(sw0, bad_xy)
+        raise AssertionError(bad_xy)
+    except ValueError:
+        pass
+
+tb0 = [{"paragraphs": [["가."]], "x": 54.0, "y": 50.0, "color": "DARK"}]
+assert move_blocks(tb0, [(25.0, 6.0)]) == [{"paragraphs": [["가."]], "x": 25.0, "y": 6.0, "color": "DARK"}] and tb0[0]["x"] == 54.0
+try:
+    move_blocks(tb0, [(25.0, 6.0), (1.0, 1.0)])
+    raise AssertionError("count")
+except ValueError:
+    pass
 
 print("sample refresh check ok")

@@ -323,6 +323,42 @@ def redraw(args) -> None:
     print(OUT / "index.html", res.get("imageTokens"))
 
 
+def move_pieces(sw: dict, xys: list[tuple[float, float]]) -> dict:
+    """의성어 조각 자리만 손으로 바꾼다 (말·색·side 그대로). 자리가 하나면 한 조각(가운데)으로 합친다.
+    조각 수가 맞지 않거나 0~100 밖이면 ValueError"""
+    if len(xys) not in (1, len(sw["pieces"])) or not all(0 <= v <= 100 for xy in xys for v in xy):
+        raise ValueError("조각 수나 자리가 맞지 않음")
+    if len(xys) == 1 and len(sw["pieces"]) > 1:
+        (x, y), = xys
+        return {**sw, "pieces": [{"text": sw["text"].replace(" ", ""), "x": round(x, 1), "y": round(y, 1), "side": "CENTER"}]}
+    return {**sw, "pieces": [{**p, "x": round(x, 1), "y": round(y, 1)} for p, (x, y) in zip(sw["pieces"], xys)]}
+
+
+def move_blocks(blocks: list[dict], xys: list[tuple[float, float]]) -> list[dict]:
+    """글 덩어리 왼쪽 위 자리만 손으로 바꾼다 (글·색 그대로). 개수가 다르거나 0~100 밖이면 ValueError"""
+    if len(xys) != len(blocks) or not all(0 <= v <= 100 for xy in xys for v in xy):
+        raise ValueError("덩어리 수나 자리가 맞지 않음")
+    return [{**b, "x": round(x, 1), "y": round(y, 1)} for b, (x, y) in zip(blocks, xys)]
+
+
+def _xys(spec: str) -> list[tuple[float, float]]:
+    return [tuple(float(v) for v in xy.split(",")) for xy in spec.split(";")]
+
+
+def nudge(args) -> None:
+    """--page card:no [--at "x,y;x,y"] [--blocks "x,y"] → 그 쪽 의성어 조각·글 덩어리를 그 자리로 (샘플만, 사용자 피드백)"""
+    res = _load_result()
+    (card, no), = _keys(args.page)
+    entry = res["cards"][card]["pages"][no]
+    if args.at:
+        entry["soundWord"] = move_pieces(entry["soundWord"], _xys(args.at))
+    if args.blocks:
+        entry["textBlocks"] = move_blocks(entry["textBlocks"], _xys(args.blocks))
+    entry["nudged"] = True
+    _save_result(res)
+    preview(res)
+
+
 def revert(args) -> None:
     res = _load_result()
     for card, no in _keys(args.pages):
@@ -434,9 +470,13 @@ def main():
     r.add_argument("--note", help="이번에 고른 쪽 모두에 넣을 바꿀 것 (영어, 예: 저녁 장면)")
     v = sub.add_parser("revert")
     v.add_argument("--pages", required=True)
+    m = sub.add_parser("nudge")
+    m.add_argument("--page", required=True)
+    m.add_argument("--at")
+    m.add_argument("--blocks")
     sub.add_parser("export")
     args = ap.parse_args()
-    {"place": place, "redraw": redraw, "revert": revert, "export": export}[args.cmd](args)
+    {"place": place, "redraw": redraw, "revert": revert, "nudge": nudge, "export": export}[args.cmd](args)
 
 
 if __name__ == "__main__":
