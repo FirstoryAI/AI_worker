@@ -172,9 +172,9 @@ def preview(res: dict) -> None:
             shutil.copy(src, OUT / old_name)
             new_name = f"img/{card}-redraw-{int(no):02d}.webp" if e.get("redrawn") else old_name
             flags = []
-            if e["needsRedraw"] and not e.get("redrawn"):
+            if e["needsRedraw"]:
                 no_room += 1
-                flags.append('<span class="flag warn">자리 없음 → 가장 조용한 곳</span>')
+                flags.append(f'<span class="flag warn">{"다시 그려도 " if e.get("redrawn") else ""}자리 없음 → 가장 조용한 곳</span>')
             if e.get("redrawn"):
                 redrawn += 1
                 flags.append('<span class="flag new">다시 그림</span>')
@@ -225,6 +225,172 @@ document.addEventListener('change', () => {{
     (OUT / "index.html").write_text(head + "".join(rows), encoding="utf-8")
 
 
+# ── redraw / revert ──
+def redraw_prompt(sizes: list[tuple[float, float]], where: list[str]) -> str:
+    """첨부한 쪽 그림을 같은 장면·인물·화풍으로, 글 들어갈 빈 곳만 남겨 다시 그리는 지시 (원래 그림 지시·시트가 없다)"""
+    return ("Redraw the attached picture-book page. Keep the same scene, the same characters (same species, colors, markings, "
+            "proportions, outfits and facial expressions), the same objects, the same time of day and light, and the same art style. "
+            "Keep the composition as close to the original as possible; only move things as much as needed to open up the space below. "
+            "Full-bleed illustration, no text, no speech bubbles, no borders.\n" + il.layout_prompt(sizes, where))
+
+
+def _keys(spec: str) -> list[tuple[str, str]]:
+    out = []
+    for k in spec.split(","):
+        card, no = k.strip().split(":")
+        out.append((card, str(int(no))))
+    return out
+
+
+def _blank() -> bytes:
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (W, H), "white").save(buf, "WEBP")
+    return buf.getvalue()
+
+
+def redraw(args) -> None:
+    from PIL import Image
+    import io
+    if args.mock:
+        _mock()
+        il.set_image_override(lambda prompt, refs: _blank())
+    res = _load_result()
+    res.setdefault("tokens", {"in": 0, "out": 0})
+    for card, no in _keys(args.pages):
+        entry = res["cards"][card]["pages"][no]
+        page = next(p for p in _story(card)["pages"] if str(p["pageNo"]) == no)
+        blocks = rewrap(_old_paras(page))
+        where = entry.get("before", entry)["needsRedraw"] or ["left top", "right top"][:len(blocks)]
+        src = SAMPLES / card / page["image"]
+        t0 = time.time()
+        try:
+            img, tin, tout = il._edit(redraw_prompt([layout.block_size(b) for b in blocks], where), [(src.name, src.read_bytes())])
+        except Exception as e:  # noqa: BLE001 — 한 장 실패가 나머지를 막지 않는다
+            print(f"{card} {no}쪽 다시 그리기 실패: {type(e).__name__}", flush=True)
+            continue
+        size = Image.open(io.BytesIO(img)).size
+        if size != (W, H):
+            print(f"{card} {no}쪽: 그림 크기 {size} ≠ {(W, H)} → 옛 그림 그대로", flush=True)
+            continue
+        name = OUT / "img" / f"{card}-redraw-{int(no):02d}.webp"
+        name.parent.mkdir(parents=True, exist_ok=True)
+        Image.open(io.BytesIO(img)).save(name, "WEBP", quality=90)
+        costs: list = []
+        new = arrange(card, page, name.read_bytes(), costs)
+        new.update(image=str(src), redrawn=True, redrawImage=str(name), before=entry.get("before", entry))
+        res["cards"][card]["pages"][no] = new
+        res["tokens"]["in"] += sum(c.input_tokens for c in costs)
+        res["tokens"]["out"] += sum(c.output_tokens for c in costs)
+        res.setdefault("imageTokens", {"in": 0, "out": 0, "images": 0})
+        res["imageTokens"]["in"] += tin
+        res["imageTokens"]["out"] += tout
+        res["imageTokens"]["images"] += 1
+        _save_result(res)
+        print(f"{card} {no}쪽 다시 그림 {time.time() - t0:.1f}초{' (그래도 자리 없음)' if new['needsRedraw'] else ''}", flush=True)
+    preview(res)
+    print(OUT / "index.html", res.get("imageTokens"))
+
+
+def revert(args) -> None:
+    res = _load_result()
+    for card, no in _keys(args.pages):
+        entry = res["cards"][card]["pages"][no]
+        if entry.get("before"):
+            res["cards"][card]["pages"][no] = entry["before"]
+    _save_result(res)
+    preview(res)
+
+
+# ── export ──
+KEEP_PAGE = ("pageNo", "text", "image", "textPosition")
+HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def export_story(old: dict, pages: dict) -> dict:
+    """옛 story.json에 쪽마다 textBlocks·soundWord만 바꿔 넣는다 (나머지 칸·순서 그대로)"""
+    new = json.loads(json.dumps(old))
+    for pg in new["pages"]:
+        e = pages[str(pg["pageNo"])]
+        pg["textBlocks"] = e["textBlocks"]
+        pg["soundWord"] = e["soundWord"]
+    return new
+
+
+def check_story(old: dict, new: dict) -> list[str]:
+    """문제 목록 (비면 통과). 쪽 글은 메시지에 넣지 않는다"""
+    bad = [f"{k} 바뀜" for k in set(old) | set(new) if k != "pages" and old.get(k) != new.get(k)]
+    if len(old["pages"]) != len(new["pages"]):
+        return bad + ["쪽 수 바뀜"]
+    for o, n in zip(old["pages"], new["pages"]):
+        at = f"{o['pageNo']}쪽"
+        bad += [f"{at} {k} 바뀜" for k in KEEP_PAGE if o.get(k) != n.get(k)]
+        tbs = n.get("textBlocks") or []
+        if not 1 <= len(tbs) <= 3:
+            bad.append(f"{at} textBlocks 개수 {len(tbs)}")
+        for b in tbs:
+            if not (0 <= b["x"] <= 100 and 0 <= b["y"] <= 100) or b["color"] not in ("DARK", "LIGHT"):
+                bad.append(f"{at} textBlocks 자리·색")
+        if tbs and not same_text(_old_paras(o), [b["paragraphs"] for b in tbs]):
+            bad.append(f"{at} textBlocks 글이 원래와 다름")
+        sw = n.get("soundWord")
+        if sw is None:
+            continue
+        words = sound_words(n["text"])
+        pieces = sw.get("pieces") or []
+        if not words or sw.get("text") != words[0]:
+            bad.append(f"{at} soundWord 말이 본문 별표 말과 다름")
+        if not HEX.match(str(sw.get("color"))):
+            bad.append(f"{at} soundWord 색")
+        if not 1 <= len(pieces) <= 2:
+            bad.append(f"{at} soundWord 조각 수 {len(pieces)}")
+        for p in pieces:
+            if not p.get("text") or not (0 <= p["x"] <= 100 and 0 <= p["y"] <= 100) or p.get("side") not in ("LEFT", "RIGHT", "CENTER"):
+                bad.append(f"{at} soundWord 조각")
+        if "".join(p.get("text", "") for p in pieces) != re.sub(r"\s", "", str(sw.get("text"))):
+            bad.append(f"{at} soundWord 조각을 이으면 말과 다름")
+    return bad
+
+
+BACKUP = FIRSTORY / "샘플동화-1106"
+ZIP = FIRSTORY / "샘플동화_1117.zip"
+
+
+def export(args) -> None:
+    import zipfile
+    res = _load_result()
+    cards = _cards(None)
+    out, bad = {}, []
+    for card in cards:
+        old = _story(card)
+        got = res["cards"].get(card, {}).get("pages", {})
+        missing = [p["pageNo"] for p in old["pages"] if str(p["pageNo"]) not in got]
+        if missing:
+            bad.append(f"{card}: 배치 안 한 쪽 {missing}")
+            continue
+        out[card] = export_story(old, got)
+        bad += [f"{card} {m}" for m in check_story(old, out[card])]
+    if bad:
+        print("내보내기 멈춤 — 아무것도 쓰지 않음:\n  " + "\n  ".join(bad))
+        sys.exit(1)
+    if not BACKUP.exists():
+        shutil.copytree(SAMPLES, BACKUP)
+        print("원본 보관:", BACKUP)
+    for card in cards:
+        (SAMPLES / card / "story.json").write_text(json.dumps(out[card], ensure_ascii=False, indent=2), encoding="utf-8")
+        for no, e in res["cards"][card]["pages"].items():
+            if e.get("redrawn"):
+                page = next(p for p in out[card]["pages"] if str(p["pageNo"]) == no)
+                shutil.copy(e["redrawImage"], SAMPLES / card / page["image"])
+    with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED) as z:   # 카드 폴더만 (화면 기록·.DS_Store 빼고)
+        for card in cards:
+            for f in sorted((SAMPLES / card).iterdir()):
+                if f.suffix in (".json", ".webp"):
+                    z.write(f, f"샘플동화/{card}/{f.name}")
+    print("내보냄:", SAMPLES, ZIP, f"{ZIP.stat().st_size / 1e6:.1f}MB")
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -232,8 +398,14 @@ def main():
     p.add_argument("--mock", action="store_true")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--cards")
+    r = sub.add_parser("redraw")
+    r.add_argument("--pages", required=True)
+    r.add_argument("--mock", action="store_true")
+    v = sub.add_parser("revert")
+    v.add_argument("--pages", required=True)
+    sub.add_parser("export")
     args = ap.parse_args()
-    {"place": place}[args.cmd](args)
+    {"place": place, "redraw": redraw, "revert": revert, "export": export}[args.cmd](args)
 
 
 if __name__ == "__main__":

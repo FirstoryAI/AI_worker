@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "evals"))
 
-from firstory.nodes.layout import MAX_LINE, W, text_width  # noqa: E402
+from firstory.nodes.layout import MAX_LINE, W, sound_words, text_width  # noqa: E402
 from firstory.schemas import SoundPiece, SoundWord, TextBlock  # noqa: E402
-from sample_refresh import SAMPLES, rewrap, same_text, to_front  # noqa: E402
+from sample_refresh import SAMPLES, check_story, export_story, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
 
 old_story = json.loads((SAMPLES / "tantrum" / "story.json").read_text(encoding="utf-8"))
 old = [b["paragraphs"] for b in old_story["pages"][0]["textBlocks"]]
@@ -36,5 +36,39 @@ assert tb == [{"paragraphs": [["가."]], "x": 10.0, "y": 8.0, "color": "DARK"}],
 assert sw == {"text": "훌쩍훌쩍", "color": "#AA3300", "pieces": [
     {"text": "훌쩍", "x": 30.0, "y": 40.0, "side": "LEFT"}, {"text": "훌쩍", "x": 60.0, "y": 40.0, "side": "RIGHT"}]}, sw
 assert to_front([], None) == ([], None)
+
+# 다시 그리기 지시: 같은 장면·인물 + 덩어리 크기·자리
+p = redraw_prompt([(700.0, 300.0)], ["left top"])
+assert "same characters" in p and "toward the left top" in p, p
+
+# 내보내기: 바뀌는 건 textBlocks·soundWord뿐, 검사가 망가진 값을 잡는다
+pages = {str(pg["pageNo"]): {"textBlocks": [{**b, "paragraphs": rewrap([b["paragraphs"]])[0]} for b in pg["textBlocks"]],
+                             "soundWord": None} for pg in old_story["pages"]}
+w_page = next(pg for pg in old_story["pages"] if sound_words(pg["text"]))
+w = sound_words(w_page["text"])[0]
+pages[str(w_page["pageNo"])]["soundWord"] = {"text": w, "color": "#AA3300", "pieces": [{"text": w.replace(" ", ""), "x": 50.0, "y": 50.0, "side": "CENTER"}]}
+new = export_story(old_story, pages)
+assert check_story(old_story, new) == [], check_story(old_story, new)
+assert new["pages"][0]["soundWord"] is None or isinstance(new["pages"][0]["soundWord"], dict)
+assert {k: v for k, v in new.items() if k != "pages"} == {k: v for k, v in old_story.items() if k != "pages"}
+
+
+def broken(fn):
+    b = json.loads(json.dumps(new))
+    fn(b)
+    return check_story(old_story, b)
+
+
+assert any("text" in m for m in broken(lambda b: b["pages"][0].update(text=b["pages"][0]["text"] + "!")))
+assert any("title" in m for m in broken(lambda b: b.update(title="다른 제목")))
+assert broken(lambda b: b["pages"][0].update(textBlocks=[]))
+assert broken(lambda b: b["pages"][0]["textBlocks"][0].update(x=120))
+assert broken(lambda b: b["pages"][0]["textBlocks"][0].update(paragraphs=[["다른 글."]]))
+wi = int(w_page["pageNo"]) - 1
+assert broken(lambda b: b["pages"][wi]["soundWord"].update(color="red"))
+assert broken(lambda b: b["pages"][wi]["soundWord"].update(pieces=[]))
+assert broken(lambda b: b["pages"][wi]["soundWord"]["pieces"][0].update(side="left"))
+assert broken(lambda b: b["pages"][wi]["soundWord"]["pieces"][0].update(text="콩"))
+assert broken(lambda b: b["pages"][wi]["soundWord"].update(text="콩", pieces=[{"text": "콩", "x": 5, "y": 5, "side": "CENTER"}]))
 
 print("sample refresh check ok")
