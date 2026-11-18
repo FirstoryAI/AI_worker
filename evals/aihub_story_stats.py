@@ -22,13 +22,17 @@ _QUOTE = re.compile(r"[\"“”]")
 _REDUP = re.compile(r"([가-힣]{2})\1")            # 콩닥콩닥, 살랑살랑 — 의성어·의태어 근사치
 _POLITE = re.compile(r"(요|죠)[.!?…]*[\"”’']?$")   # ~어요/~지요
 _PLAIN = re.compile(r"다[.!?…]*[\"”’']?$")         # ~다
+_DIALOGUE = re.compile(r"[\"“][^\"”]*[\"”]")
 
 
 def _q(a: list[float]) -> dict | None:
     if not a:
         return None
     a = sorted(a)
-    pick = lambda p: a[min(len(a) - 1, int(p * len(a)))]
+
+    def pick(p: float) -> float:
+        return a[min(len(a) - 1, int(p * len(a)))]
+
     return {"n": len(a), "p10": pick(.1), "median": st.median(a), "mean": round(st.mean(a), 2), "p90": pick(.9)}
 
 
@@ -38,6 +42,23 @@ def _pct(n: int, d: int) -> float:
 
 def _has(v) -> bool:
     return bool(v and str(v).strip())
+
+
+def _ending(sent: str) -> str:
+    if _POLITE.search(sent):
+        return "polite(~요)"
+    if _PLAIN.search(sent):
+        return "plain(~다)"
+    return "other"
+
+
+def _summary_items(ps) -> list:
+    """plotSummaryInfo는 목록일 때도, 하나짜리 dict일 때도 있다."""
+    if isinstance(ps, list):
+        return ps
+    if isinstance(ps, dict):
+        return [ps]
+    return []
 
 
 def analyze(books: list[dict]) -> dict:
@@ -85,20 +106,11 @@ def analyze(books: list[dict]) -> dict:
                 redup_para += 1
             if "?" in text:
                 question_para += 1
-            narration = re.sub(r"[\"“][^\"”]*[\"”]", " ", text)  # 대사 빼고 지문만
+            narration = _DIALOGUE.sub(" ", text)  # 대사 빼고 지문만
             for sent in _SENT.findall(narration):
-                sent = sent.strip()
-                if not sent:
-                    continue
                 narr_sents += 1
-                if _POLITE.search(sent):
-                    sent_end["polite(~요)"] += 1
-                elif _PLAIN.search(sent):
-                    sent_end["plain(~다)"] += 1
-                else:
-                    sent_end["other"] += 1
-            ps = p.get("plotSummaryInfo")
-            for item in (ps if isinstance(ps, list) else [ps] if isinstance(ps, dict) else []):
+                sent_end[_ending(sent.strip())] += 1
+            for item in _summary_items(p.get("plotSummaryInfo")):
                 for f in ("classification", "readAge", "form"):
                     summary_meta[f][str(item.get(f))] += 1
         for e in seen:
@@ -153,8 +165,7 @@ def main():
         groups[topic].append(json.loads(f.read_text(encoding="utf-8")))
 
     result = {"all": analyze([b for g in groups.values() for b in g])}
-    for topic, books in groups.items():
-        result[topic] = analyze(books)
+    result.update({topic: analyze(books) for topic, books in groups.items()})
     text = json.dumps(result, ensure_ascii=False, indent=1)
     if args.out:
         args.out.write_text(text, encoding="utf-8")

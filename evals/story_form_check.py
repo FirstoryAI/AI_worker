@@ -34,11 +34,14 @@ def check(run: Path) -> dict:
         ss = [s.strip() for s in _SENT.findall(t) if s.strip()]
         sents.append(len(ss))
         words += [len(s.split()) for s in ss]
-        for s in _SENT.findall(re.sub(r"[\"“][^\"”]*[\"”]", " ", t)):
-            polite += bool(_POLITE.search(s.strip()))
-            plain += bool(_PLAIN.search(s.strip()))
-    n = len(pages)
-    pct = lambda k: round(100 * k / n, 1)
+        for s in _SENT.findall(re.sub(r"[\"“][^\"”]*[\"”]", " ", t)):   # 지문만 (따옴표 대사 빼고)
+            s = s.strip()
+            polite += bool(_POLITE.search(s))
+            plain += bool(_PLAIN.search(s))
+
+    def pct(k: int) -> float:
+        return round(100 * k / len(pages), 1)
+
     issues = []
     names = [c.get("name", "") for c in story.get("characters", [])]
     if "토리" in names or any("토리" in t for t in pages):

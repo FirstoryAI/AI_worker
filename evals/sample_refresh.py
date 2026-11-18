@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import argparse
 import html
+import io
 import json
 import re
 import shutil
+import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +36,8 @@ from firstory.schemas import SoundWord, TextBlock  # noqa: E402
 
 FIRSTORY = ROOT.parent
 SAMPLES = FIRSTORY / "샘플동화"
+BACKUP = FIRSTORY / "샘플동화-1106"
+ZIP = FIRSTORY / "샘플동화_1117.zip"
 OUT = ROOT / "out" / "sample-refresh-1117"
 RESULT = OUT / "result.json"
 
@@ -83,6 +88,10 @@ def _story(card: str) -> dict:
     return json.loads((_root() / card / "story.json").read_text(encoding="utf-8"))
 
 
+def _page(story: dict, no: str) -> dict:
+    return next(p for p in story["pages"] if str(p["pageNo"]) == no)
+
+
 def _load_result() -> dict:
     return json.loads(RESULT.read_text(encoding="utf-8")) if RESULT.exists() else {"cards": {}}
 
@@ -96,19 +105,23 @@ def _mock() -> None:
     llm.set_structured_override(mock.fake_structured)   # FIRSTORY_MOCK은 스크립트에서 안 먹는다
 
 
+def _tokens(costs: list) -> tuple[int, int]:
+    return sum(c.input_tokens for c in costs), sum(c.output_tokens for c in costs)
+
+
 def arrange(card: str, page: dict, image: bytes, costs: list) -> dict:
     """쪽 하나 자리 찾기(다시 그리지 않음). result.json의 쪽 항목"""
     blocks = rewrap(_old_paras(page))
     words = sound_words(page["text"])
-    sfx = SfxAsk(word=words[0], text=page["text"], cast=[]) if words else None
-    wanted: list = []
+    word = words[0] if words else None
+    sfx = SfxAsk(word=word, text=page["text"], cast=[]) if word else None
+    wanted: list = []   # 다시 그리기 대신 자리(where)만 적어 둔다
     tbs, sw = il._arrange(page["pageNo"], image, blocks, costs, lambda bl, where: wanted.append(where) or None, sfx)
-    new = [t.paragraphs for t in tbs]
-    if not same_text(_old_paras(page), new):
+    if not same_text(_old_paras(page), [t.paragraphs for t in tbs]):
         raise RuntimeError(f"{card} {page['pageNo']}쪽: 배치 뒤 글이 달라짐")
-    tb, word = to_front(tbs, sw)
-    return {"textBlocks": tb, "soundWord": word, "needsRedraw": wanted[0] if wanted else None,
-            "word": words[0] if words else None}
+    text_blocks, sound_word = to_front(tbs, sw)
+    return {"textBlocks": text_blocks, "soundWord": sound_word, "needsRedraw": wanted[0] if wanted else None,
+            "word": word}
 
 
 # ── place ──
@@ -128,8 +141,9 @@ def place(args) -> None:
         entry = arrange(card, page, img.read_bytes(), costs)
         entry.update(image=str(img), redrawn=False)
         res["cards"].setdefault(card, {"pages": {}})["pages"][str(page["pageNo"])] = entry
-        tin += sum(c.input_tokens for c in costs)
-        tout += sum(c.output_tokens for c in costs)
+        pin, pout = _tokens(costs)
+        tin += pin
+        tout += pout
         print(f"{i + 1}/{len(todo)} {card} {page['pageNo']}쪽 {time.time() - t0:.1f}초"
               f"{' 자리없음' if entry['needsRedraw'] else ''}{' 의성어빠짐' if entry['word'] and not entry['soundWord'] else ''}", flush=True)
         _save_result(res)   # 중간에 멈춰도 여기까지는 남는다
@@ -150,7 +164,6 @@ SIDE_ROTATE = {"LEFT": -10, "RIGHT": 10, "CENTER": -6}
 
 def _front_font() -> None:
     """의성어 히피체를 프론트 origin/main에서 꺼내 미리보기 폴더에 둔다 (프론트 작업 폴더는 건드리지 않음)"""
-    import subprocess
     dst = OUT / "hippie.woff2"
     if dst.exists():
         return
@@ -159,11 +172,15 @@ def _front_font() -> None:
         dst.write_bytes(got.stdout)
 
 
+def _unstar(line: str) -> str:
+    return re.sub(r"[*][*](.+?)[*][*]", r"\1", line)
+
+
 def _blocks_html(blocks: list[dict]) -> str:
     """StoryTextBlocks: 줄마다 한 줄, 본문의 **말**은 별표만 지우고 다른 글과 같게 (StoryText)"""
     out = []
     for b in blocks:
-        paras = "".join('<p>' + "".join(f'<span class="ln">{html.escape(re.sub(r"[*][*](.+?)[*][*]", r"\1", l))}</span>' for l in para) + '</p>'
+        paras = "".join("<p>" + "".join(f'<span class="ln">{html.escape(_unstar(l))}</span>' for l in para) + "</p>"
                         for para in b["paragraphs"])
         out.append(f'<div class="tb" data-color="{b["color"].upper()}" style="left:{b["x"]}%;top:{b["y"]}%">{paras}</div>')
     return "".join(out)
@@ -279,7 +296,6 @@ def _keys(spec: str) -> list[tuple[str, str]]:
 
 def _blank() -> bytes:
     from PIL import Image
-    import io
     buf = io.BytesIO()
     Image.new("RGB", (W, H), "white").save(buf, "WEBP")
     return buf.getvalue()
@@ -287,7 +303,6 @@ def _blank() -> bytes:
 
 def redraw(args) -> None:
     from PIL import Image
-    import io
     if args.mock:
         _mock()
         il.set_image_override(lambda prompt, refs: _blank())
@@ -295,9 +310,10 @@ def redraw(args) -> None:
     res.setdefault("tokens", {"in": 0, "out": 0})
     for card, no in _keys(args.pages):
         entry = res["cards"][card]["pages"][no]
-        page = next(p for p in _story(card)["pages"] if str(p["pageNo"]) == no)
+        before = entry.get("before", entry)   # 이미 다시 그린 쪽이면 다시 그리기 전 배치를 기준으로
+        page = _page(_story(card), no)
         blocks = rewrap(_old_paras(page))
-        where = entry.get("before", entry)["needsRedraw"] or ["left top", "right top"][:len(blocks)]
+        where = before["needsRedraw"] or ["left top", "right top"][:len(blocks)]
         src = _root() / card / page["image"]
         t0 = time.time()
         try:
@@ -305,19 +321,20 @@ def redraw(args) -> None:
         except Exception as e:  # noqa: BLE001 — 한 장 실패가 나머지를 막지 않는다
             print(f"{card} {no}쪽 다시 그리기 실패: {type(e).__name__}", flush=True)
             continue
-        size = Image.open(io.BytesIO(img)).size
-        if size != (W, H):
-            print(f"{card} {no}쪽: 그림 크기 {size} ≠ {(W, H)} → 옛 그림 그대로", flush=True)
+        picture = Image.open(io.BytesIO(img))
+        if picture.size != (W, H):
+            print(f"{card} {no}쪽: 그림 크기 {picture.size} ≠ {(W, H)} → 옛 그림 그대로", flush=True)
             continue
         name = OUT / "img" / f"{card}-redraw-{int(no):02d}.webp"
         name.parent.mkdir(parents=True, exist_ok=True)
-        Image.open(io.BytesIO(img)).save(name, "WEBP", quality=90)
+        picture.save(name, "WEBP", quality=90)
         costs: list = []
         new = arrange(card, page, name.read_bytes(), costs)
-        new.update(image=str(src), redrawn=True, redrawImage=str(name), before=entry.get("before", entry))
+        new.update(image=str(src), redrawn=True, redrawImage=str(name), before=before)
         res["cards"][card]["pages"][no] = new
-        res["tokens"]["in"] += sum(c.input_tokens for c in costs)
-        res["tokens"]["out"] += sum(c.output_tokens for c in costs)
+        pin, pout = _tokens(costs)
+        res["tokens"]["in"] += pin
+        res["tokens"]["out"] += pout
         res.setdefault("imageTokens", {"in": 0, "out": 0, "images": 0})
         res["imageTokens"]["in"] += tin
         res["imageTokens"]["out"] += tout
@@ -379,9 +396,10 @@ def recolor(args) -> None:
     res = _load_result()
     for card in res["cards"].values():
         for e in card["pages"].values():
-            if e["soundWord"]:
+            sw = e["soundWord"]
+            if sw:
                 busy = layout.Busy(Path(e.get("redrawImage") or e["image"]).read_bytes())
-                e["soundWord"] = {**e["soundWord"], "color": layout.pick_color(busy, piece_boxes(e["soundWord"]), e["soundWord"]["text"])}
+                e["soundWord"] = {**sw, "color": layout.pick_color(busy, piece_boxes(sw), sw["text"])}
     _save_result(res)
     preview(res)
 
@@ -446,12 +464,7 @@ def check_story(old: dict, new: dict) -> list[str]:
     return bad
 
 
-BACKUP = FIRSTORY / "샘플동화-1106"
-ZIP = FIRSTORY / "샘플동화_1117.zip"
-
-
 def export(args) -> None:
-    import zipfile
     res = _load_result()
     cards = _cards(None)
     out, bad = {}, []
@@ -473,7 +486,7 @@ def export(args) -> None:
     for card in cards:
         (SAMPLES / card / "story.json").write_text(json.dumps(out[card], ensure_ascii=False, indent=2), encoding="utf-8")
         for no, e in res["cards"][card]["pages"].items():   # 다시 그린 쪽은 새 그림, 나머지는 원본 그림으로 (되돌린 쪽 포함)
-            page = next(p for p in out[card]["pages"] if str(p["pageNo"]) == no)
+            page = _page(out[card], no)
             shutil.copy(e["redrawImage"] if e.get("redrawn") else BACKUP / card / page["image"], SAMPLES / card / page["image"])
     with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED) as z:   # 카드 폴더만 (화면 기록·.DS_Store 빼고)
         for card in cards:

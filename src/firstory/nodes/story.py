@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Optional, Sequence
 
 from langgraph.graph import END
 from langgraph.types import interrupt
@@ -28,6 +28,12 @@ def _strategy(state) -> Strategy:
 def _arc_name(ctx) -> str:
     """상황별 흐름 파일 이름. 아직 안 일어난 일이면 카테고리와 상관없이 '미리 겪어 보기'."""
     return "upcoming" if ctx.situation.timing == "upcoming" else ctx.situation.category
+
+
+def _with_custom(items: Sequence[str], custom: Optional[str]) -> str:
+    """고른 항목 + 직접 적은 항목을 쉼표로. 둘 다 없으면 '(없음)'."""
+    values = [*items, custom] if custom else list(items)
+    return ", ".join(values) or "(없음)"
 
 
 def _design_extra(state, s: Strategy) -> str:
@@ -57,8 +63,8 @@ def design_story(state: PipelineState) -> dict:
             persona=_persona,
             context=ctx,
             summary=state.get("interview_summary") or "",
-            interests=", ".join(ctx.child.interests + ([ctx.child.custom_interest] if ctx.child.custom_interest else [])) or "(없음)",
-            traits=", ".join(ctx.child.traits + ([ctx.child.custom_trait] if ctx.child.custom_trait else [])) or "(없음)",
+            interests=_with_custom(ctx.child.interests, ctx.child.custom_interest),
+            traits=_with_custom(ctx.child.traits, ctx.child.custom_trait),
             page_count=config.page_count,
             extra=_design_extra(state, s),
             feedback=feedback_block,
@@ -85,17 +91,17 @@ def write_story(state: PipelineState) -> dict:
     years, months = _age(ctx)
     fb = state.get("writer_feedback")
     prev = state.get("story") if fb else None
+    revising = prev is not None
     feedback_block = ""
     if fb:
         feedback_block = "## 부모 피드백 (글 다시 만들기)\n" + fb
-        if prev:
+        if revising:
             feedback_block += (
                 "\n\n## 기존 원고\n" + prev.model_dump_json(indent=2, exclude={"characters", "style_guide"})
                 + "\n\n이번에는 원고 전체가 아니라 **피드백 때문에 고쳐야 하는 쪽만** `pages`에 돌려준다. "
                 "order는 기존 원고 그대로. 피드백과 상관없는 쪽은 넣지 않는다 — 기존 원고 그대로 쓰인다. "
                 "고친 쪽의 `image_prompt`·`characters_in_scene`도 새 글에 맞춘다."
             )
-    revising = prev is not None
     r, cost = structured(
         node="write_story",
         model=config.model_main,
@@ -120,13 +126,15 @@ def write_story(state: PipelineState) -> dict:
     return {"story_draft": s, "story": s, "writer_feedback": None, "cost": [cost], "status": "generating_text",
             # 글 다시 만들기면 polish_story가 메모를 지키고, 작가가 그대로 둔 쪽은 다시 다듬지 않도록
             "revision_feedback": fb or None,
-            "revision_base": {pg.order: pg.text for pg in prev.pages} if prev else None,
+            "revision_base": {pg.order: pg.text for pg in prev.pages} if revising else None,
             # 그리고 illustrate가 장면이 바뀐 쪽만 다시 그리도록 (글만 바뀐 쪽은 그림 그대로)
             "redraw_pages": _scene_changed(prev, s) if revising else None}
 
 
 def _scene_changed(prev: StoryText, new: StoryText) -> list[int]:
-    scene = lambda pg: (pg.image_prompt, pg.characters_in_scene)  # noqa: E731
+    def scene(pg):
+        return pg.image_prompt, pg.characters_in_scene
+
     before = {pg.order: scene(pg) for pg in prev.pages}
     return [pg.order for pg in new.pages if before.get(pg.order) != scene(pg)]
 

@@ -23,10 +23,22 @@ sys.path.insert(0, str(ROOT / "src"))
 from firstory import storage  # noqa: E402
 from firstory.graph import compile_graph, new_thread_id  # noqa: E402
 from firstory.lab import STRATEGY_LABELS  # noqa: E402
-from firstory.schemas import SituationCategory, MessageDirection, Strategy  # noqa: E402
+from firstory.schemas import SituationCategory, Strategy  # noqa: E402
 
 st.set_page_config(page_title="FIRSTORY pipeline", layout="wide")
 INPUTS = sorted((ROOT / "datasets" / "inputs").glob("*.json"))
+CATEGORIES = list(SituationCategory.__args__)
+# 지난 실행 폴더의 파일 → result 키
+RUN_FILES = [
+    ("00-context.json", "context"),
+    ("01-interview.json", "interview"),
+    ("02-design.json", "story_design"),
+    ("02-strategy.json", "strategy"),
+    ("03-story.json", "story"),
+    ("04-guide.json", "guide"),
+    ("05-illustrations.json", "illustrations"),
+    ("99-cost.json", "cost"),
+]
 
 if st.sidebar.radio("화면", ["동화 만들기", "프롬프트 실험"], horizontal=True, label_visibility="collapsed") == "프롬프트 실험":
     import lab_view  # noqa: E402
@@ -43,15 +55,19 @@ def graph():
 G = graph()
 
 
-def cfg(tid):
-    return {"configurable": {"thread_id": tid}}
-
-
 def run_until_pause(inp, tid):
     """invoke → interrupt면 멈춤. 결과(state dict)와 interrupt payload 반환."""
-    r = G.invoke(inp, cfg(tid))
+    r = G.invoke(inp, {"configurable": {"thread_id": tid}})
     pause = r["__interrupt__"][0].value if "__interrupt__" in r else None
     return r, pause
+
+
+def resume(payload, spinner: str):
+    """멈춘 그래프를 payload로 이어서 돌리고 화면을 새로 그린다."""
+    with st.spinner(spinner):
+        r, pause = run_until_pause(Command(resume=payload), st.session_state.get("tid"))
+    st.session_state.update(result=r, pause=pause)
+    st.rerun()
 
 
 # ─────────────────────────── 왼쪽: 입력 ───────────────────────────
@@ -65,7 +81,7 @@ with st.sidebar:
 
     with st.expander("입력 고치기", expanded=False):
         s = data["situation"]
-        s["category"] = st.selectbox("상황 카테고리", list(SituationCategory.__args__), index=list(SituationCategory.__args__).index(s["category"]))
+        s["category"] = st.selectbox("상황 카테고리", CATEGORIES, index=CATEGORIES.index(s["category"]))
         s["timing"] = st.radio("발생 여부", ["past", "upcoming"], index=0 if s["timing"] == "past" else 1, horizontal=True)
         s["description"] = st.text_area("상황 설명", s["description"], height=70)
         c = data["child"]
@@ -84,11 +100,12 @@ with st.sidebar:
     if st.button("실행", type="primary", width="stretch"):
         tid = new_thread_id()
         answers = data.pop("scripted_answers", [])
+        auto = mode.startswith("자동")
         inp = {
             "context": data,
             "run_name": sample.stem,
-            "auto_answers": answers if mode.startswith("자동") else [],
-            "auto_confirm": mode.startswith("자동"),   # 직접 답하기일 때만 생성 전 확인에서 멈춤
+            "auto_answers": answers if auto else [],
+            "auto_confirm": auto,   # 직접 답하기일 때만 생성 전 확인에서 멈춤
             "auto_approve": False,
             "skip_images": skip_images,
             "strategy": Strategy(**{k: True for k in strat}),
@@ -103,13 +120,7 @@ with st.sidebar:
     picked = st.selectbox("run_dir", ["(선택)"] + [r.name for r in runs])
     if picked != "(선택)" and st.button("불러오기"):
         rd = ROOT / "out" / picked
-        loaded = {}
-        for name, key in [("00-context.json", "context"), ("01-interview.json", "interview"), ("02-design.json", "story_design"),
-                          ("02-strategy.json", "strategy"),
-                          ("03-story.json", "story"), ("04-guide.json", "guide"), ("05-illustrations.json", "illustrations"), ("99-cost.json", "cost")]:
-            p = rd / name
-            if p.exists():
-                loaded[key] = json.loads(p.read_text(encoding="utf-8"))
+        loaded = {key: json.loads((rd / name).read_text(encoding="utf-8")) for name, key in RUN_FILES if (rd / name).exists()}
         loaded["run_dir"] = str(rd)
         st.session_state.update(tid=None, result=loaded, pause=None, loaded_json=True)
 
@@ -117,7 +128,6 @@ with st.sidebar:
 # ─────────────────────────── 오른쪽: 출력 ───────────────────────────
 r = st.session_state.get("result")
 pause = st.session_state.get("pause")
-tid = st.session_state.get("tid")
 
 if not r:
     st.info("왼쪽에서 샘플 고르고 [실행]. 또는 지난 실행 불러오기.")
@@ -125,9 +135,7 @@ if not r:
 
 
 def D(x):
-    """pydantic 이든 dict 든 dict 로."""
-    if x is None:
-        return None
+    """pydantic 이든 dict 든 dict 로 (None은 그대로)."""
     return x.model_dump() if hasattr(x, "model_dump") else x
 
 
@@ -135,7 +143,7 @@ ctx = D(r.get("context"))
 story = D(r.get("story"))
 guide = D(r.get("guide"))
 design = D(r.get("story_design"))
-ill = D(r.get("illustrations"))
+ill = D(r.get("illustrations")) or {}
 run_dir = Path(r.get("run_dir", ""))
 if st.session_state.get("loaded_json"):
     iv = r.get("interview", {})
@@ -155,13 +163,9 @@ if pause and pause.get("type") == "interview":
     ans = st.text_input("부모 답변", key=f"ans{pause['turn']}")
     c1, c2 = st.columns([1, 1])
     if c1.button("답하기", type="primary") and ans.strip():
-        with st.spinner("…"):
-            r, pause = run_until_pause(Command(resume=ans.strip()), tid)
-        st.session_state.update(result=r, pause=pause); st.rerun()
+        resume(ans.strip(), "…")
     if c2.button("이만 만들어주세요 (skip)"):
-        with st.spinner("생성 중…"):
-            r, pause = run_until_pause(Command(resume="skip"), tid)
-        st.session_state.update(result=r, pause=pause); st.rerun()
+        resume("skip", "생성 중…")
     st.stop()
 
 # ── 생성 전 확인 ──
@@ -172,9 +176,7 @@ if pause and pause.get("type") == "confirm":
     with st.expander("최종 Context"):
         st.json(pause.get("context"))
     if st.button("이대로 만들기", type="primary"):
-        with st.spinner("생성 중… (이미지 포함 1~3분)"):
-            r, pause = run_until_pause(Command(resume={"action": "generate"}), tid)
-        st.session_state.update(result=r, pause=pause); st.rerun()
+        resume({"action": "generate"}, "생성 중… (이미지 포함 1~3분)")
     st.stop()
 
 # ── 검토 중: 버튼 ──
@@ -183,19 +185,11 @@ if pause and pause.get("type") == "review":
     b1, b2, b3, b4 = st.columns(4)
     fb = st.text_input("피드백 / 바꿀 방향 / 페이지 번호", placeholder="예: 3페이지 엄마 말이 설명조  ·  토끼 말고 공룡으로  ·  2 5")
 
-    def resume(payload):
-        with st.spinner("다시 생성 중…"):
-            rr, pp = run_until_pause(Command(resume=payload), tid)
-        st.session_state.update(result=rr, pause=pp); st.rerun()
-
     if b1.button("✓ 완료", type="primary", width="stretch"):
-        resume({"action": "approve"})
-    if b2.button("다시 쓰기", width="stretch"):
-        resume({"action": "regenerate", "scope": "text", "feedback": fb})
-    if b3.button("캐릭터/이야기 바꾸기", width="stretch"):
-        resume({"action": "regenerate", "scope": "character", "feedback": fb})
-    if b4.button("그림만 다시", width="stretch"):
-        resume({"action": "regenerate", "scope": "images", "feedback": fb})
+        resume({"action": "approve"}, "다시 생성 중…")
+    for col, label, scope in ((b2, "다시 쓰기", "text"), (b3, "캐릭터/이야기 바꾸기", "character"), (b4, "그림만 다시", "images")):
+        if col.button(label, width="stretch"):
+            resume({"action": "regenerate", "scope": scope, "feedback": fb}, "다시 생성 중…")
     st.divider()
 
 # ── 결과 ──
@@ -206,8 +200,8 @@ with tab_story:
         st.warning("아직 동화 없음")
     else:
         st.header(story["title"])
-        imgs = {p["order"]: p for p in (ill or {}).get("pages", [])}
-        sheets = (ill or {}).get("character_sheets") or {}
+        imgs = {p["order"]: p for p in ill.get("pages", [])}
+        sheets = ill.get("character_sheets") or {}
         if sheets:
             with st.expander("캐릭터 시트"):
                 cols = st.columns(max(1, len(sheets)))
@@ -256,7 +250,7 @@ with tab_guide:
 
 with tab_ctx:
     st.subheader(f"인터뷰 · {len(turns)}턴 · {done_by}")
-    for i, t in enumerate(turns, 1):
+    for t in turns:
         st.markdown(f"**AI** › {t['question']}  \n**부모** › {t['answer']}  \n<span style='color:gray'>{t.get('reason', '')}</span>", unsafe_allow_html=True)
     if summary:
         st.success(summary)

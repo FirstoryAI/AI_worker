@@ -24,9 +24,8 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import mock
+from . import mock, storage
 from .config import config
-from . import storage
 from .graph import compile_graph
 from .nodes import safety
 from .nodes.layout import H, block_size
@@ -150,6 +149,21 @@ def _thread_lock(thread_id: str):
         lock.release()
 
 
+def _existing_state(thread_id: str):
+    """thread의 지금 state. 없는 thread면 404."""
+    snap = _graph.get_state(_cfg(thread_id))
+    if not snap.values:
+        raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+    return snap
+
+
+def _check_prefix(prefix: str) -> None:
+    try:
+        storage.run_fields(prefix)
+    except ValueError as e:
+        raise ApiError(422, "VALIDATION_ERROR", f"output_prefix: {e}") from e
+
+
 def _cfg(thread_id: str, run_id: Optional[UUID] = None, run_name: Optional[str] = None) -> dict:
     """LangSmith에서 Spring의 run_id·thread_id로 찾을 수 있게 (스펙 10장)."""
     cfg: dict = {"configurable": {"thread_id": thread_id}, "metadata": {"thread_id": thread_id}}
@@ -169,6 +183,11 @@ def _changed(before: BaseModel, after: BaseModel) -> dict:
     return {k: v for k, v in a.items() if v is not None and v != b.get(k)}
 
 
+def _question_reply(turn: int, question: str, choices: Optional[list[str]], context_update: Optional[dict]) -> dict:
+    return {"type": "question", "turn": turn, "question": question, "choices": choices or [],
+            "context_update": context_update}
+
+
 def _interview_reply(before: StoryInputContext, result: dict) -> dict:
     """멈춘 자리를 스펙 7-3 응답으로. question이면 이번 턴에 AI가 채운 칸(context_update)도 함께."""
     if "__interrupt__" not in result:
@@ -178,8 +197,7 @@ def _interview_reply(before: StoryInputContext, result: dict) -> dict:
         after = result["context"]
         update = {name: diff for name, diff in (("parent", _changed(before.parent, after.parent)),
                                                 ("moment", _changed(before.moment, after.moment))) if diff}
-        return {"type": "question", "turn": pause["turn"], "question": pause["question"],
-                "choices": pause.get("choices") or [], "context_update": update or None}
+        return _question_reply(pause["turn"], pause["question"], pause.get("choices"), update or None)
     if pause["type"] == "confirm":
         return {"type": "confirm", "summary": pause["summary"], "situation_summary": pause.get("situation_summary"),
                 "end_reason": pause["end_reason"],
@@ -240,8 +258,7 @@ def _rewind(thread_id: str, turns_before: int) -> dict:
         if h.next == ("interview_answer",) and len(h.values.get("interview_turns", [])) == turns_before:
             _graph.update_state(_at(thread_id, h), {"pending_question": h.values["pending_question"]},
                                 as_node="interview_step")
-            return {"type": "question", "turn": turns_before + 1, "question": h.values["pending_question"],
-                    "choices": h.values.get("pending_choices") or [], "context_update": None}
+            return _question_reply(turns_before + 1, h.values["pending_question"], h.values.get("pending_choices"), None)
     raise ApiError(500, "INTERNAL_ERROR", "답을 받기 전 자리를 찾지 못했습니다")
 
 
@@ -252,9 +269,7 @@ def interview_answer(thread_id: str, body: InterviewAnswerRequest) -> dict:
     검사가 실패하면 되돌린 뒤 오류."""
     with _thread_lock(thread_id):
         cfg = _cfg(thread_id)
-        snap = _graph.get_state(cfg)
-        if not snap.values:
-            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        snap = _existing_state(thread_id)
         before = snap.values["context"]
         turns = snap.values.get("interview_turns", [])
         blocked = frozenset(body.blocked_topics)
@@ -286,8 +301,10 @@ def _answer_reply(thread_id: str, before: StoryInputContext, turns_before: int,
     log.info("interview/answer %s: 인터뷰 %.1fs, 위기 신호 %s topic %s (검사 시작부터 %.1fs)",
              thread_id, t_interview, verdict.level, verdict.topic, time.time() - started)
     if verdict.level in _REWIND_LEVELS or verdict.topic in blocked:
-        return {**_rewind(thread_id, turns_before), "safety": verdict.model_dump(mode="json")}
-    return {**_interview_reply(before, result), "safety": verdict.model_dump(mode="json")}
+        reply = _rewind(thread_id, turns_before)
+    else:
+        reply = _interview_reply(before, result)
+    return {**reply, "safety": verdict.model_dump(mode="json")}
 
 
 # ── 생성 (스펙 7-4 ~ 7-6) ────────────────────────────────────────────────
@@ -337,26 +354,26 @@ class RunRequest(BaseModel):
 @app.post("/v1/threads/{thread_id}/generate", status_code=202)
 def generate(thread_id: str, body: RunRequest) -> dict:
     lock = _acquire(thread_id)
+    handed_off = False   # 백그라운드 실행에 잠금을 넘겼으면 여기서 풀지 않는다
     try:
-        snap = _graph.get_state(_cfg(thread_id))
-        if not snap.values:
-            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        snap = _existing_state(thread_id)
         if tuple(snap.next) != ("confirm_generate",):
             raise ApiError(409, "INVALID_STATE", "생성 전 확인에서 멈춰 있지 않습니다")
-        try:
-            storage.run_fields(body.output_prefix)
-        except ValueError as e:
-            raise ApiError(422, "VALIDATION_ERROR", f"output_prefix: {e}") from e
-        resume = {"action": "generate", "output_prefix": body.output_prefix,
-                  **({"tone": body.tone} if body.tone else {}),
-                  **({"context": body.context.model_dump(mode="json")} if body.context else {}),
-                  **({"summary": body.summary} if body.summary else {})}
+        _check_prefix(body.output_prefix)
+        resume = {"action": "generate", "output_prefix": body.output_prefix}
+        if body.tone:
+            resume["tone"] = body.tone
+        if body.context:
+            resume["context"] = body.context.model_dump(mode="json")
+        if body.summary:
+            resume["summary"] = body.summary
         _start_run(thread_id, lock, body.run_id, body.run_no, Command(resume=resume), "design_story",
                    len(snap.values.get("cost", [])))
-    except BaseException:
-        lock.release()
-        raise
-    return {"accepted": True}
+        handed_off = True
+        return {"accepted": True}
+    finally:
+        if not handed_off:
+            lock.release()
 
 
 @app.get("/v1/threads/{thread_id}/status")
@@ -400,11 +417,16 @@ def _text_position(p, pi) -> str:
     return "top" if first.y + block_size(first.paragraphs)[1] / H * 100 / 2 < 50 else "bottom"
 
 
+def _page(p, pi) -> dict:
+    """/result의 쪽 하나. pi는 그 쪽의 다 그린 그림 (못 그렸으면 None)"""
+    return {"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
+            "text_position": _text_position(p, pi), "text_blocks": _text_blocks(pi), "sound_word": _sound_word(pi),
+            "image_path": pi.path if pi else None, "image_status": "done" if pi else "failed"}
+
+
 @app.get("/v1/threads/{thread_id}/result")
 def result(thread_id: str) -> dict:
-    snap = _graph.get_state(_cfg(thread_id))
-    if not snap.values:
-        raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+    snap = _existing_state(thread_id)
     run = _runs.get(thread_id)
     if (run and run["state"] == "RUNNING") or tuple(snap.next) != ("parent_review",):
         raise ApiError(409, "INVALID_STATE", "부모 검토에서 멈춰 있지 않습니다")
@@ -423,12 +445,7 @@ def result(thread_id: str) -> dict:
         "back_cover_path": ill.back_cover,     # 뒤표지 (정사각형 1024×1024, 글자 없음, #125). 못 그렸으면 null
         "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
                              for name, key in ill.character_sheets.items()],
-        "pages": [{"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
-                   "text_position": _text_position(p, images.get(p.order)),
-                   "text_blocks": _text_blocks(images.get(p.order)),
-                   "sound_word": _sound_word(images.get(p.order)),
-                   "image_path": images[p.order].path if p.order in images else None,
-                   "image_status": "done" if p.order in images else "failed"} for p in story.pages],
+        "pages": [_page(p, images.get(p.order)) for p in story.pages],
         "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,
         "cost": {"input_tokens": sum(c.input_tokens for c in costs), "output_tokens": sum(c.output_tokens for c in costs),
                  "image_count": sum(c.images for c in costs)},
@@ -466,20 +483,12 @@ class ReviewRequest(BaseModel):
         return self
 
 
-def _check_prefix(prefix: str) -> None:
-    try:
-        storage.run_fields(prefix)
-    except ValueError as e:
-        raise ApiError(422, "VALIDATION_ERROR", f"output_prefix: {e}") from e
-
-
 @app.post("/v1/threads/{thread_id}/review")
 def review(thread_id: str, body: ReviewRequest, response: Response) -> dict:
     lock = _acquire(thread_id)
-    handed_off = False   # 백그라운드 실행에 잠금을 넘겼으면 여기서 풀지 않는다
+    handed_off = False
     try:
-        if not _graph.get_state(_cfg(thread_id)).values:
-            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        _existing_state(thread_id)
         cfg = _cfg(thread_id)
         if body.base_checkpoint_id:
             cfg["configurable"]["checkpoint_id"] = body.base_checkpoint_id
@@ -515,14 +524,11 @@ def retry(thread_id: str, body: RunRequest) -> dict:
     lock = _acquire(thread_id)
     handed_off = False
     try:
-        cfg = _cfg(thread_id)
-        snap = _graph.get_state(cfg)
-        if not snap.values:
-            raise ApiError(404, "THREAD_NOT_FOUND", "없는 thread입니다")
+        snap = _existing_state(thread_id)
         if status(thread_id)["state"] != "FAILED":
             raise ApiError(409, "INVALID_STATE", "실패한 실행이 없습니다")
         _check_prefix(body.output_prefix)
-        _graph.update_state(cfg, storage.run_fields(body.output_prefix))   # 멈춘 자리(next)는 그대로
+        _graph.update_state(_cfg(thread_id), storage.run_fields(body.output_prefix))   # 멈춘 자리(next)는 그대로
         _start_run(thread_id, lock, body.run_id, body.run_no, None, snap.next[0], len(snap.values.get("cost", [])))
         handed_off = True
         return {"accepted": True}

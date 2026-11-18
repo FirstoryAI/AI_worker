@@ -17,6 +17,7 @@ LLM 호출과 interrupt를 같은 노드에 두면 답변 받을 때마다 LLM�
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -53,7 +54,6 @@ _DEEPEN = """## 이번 턴: 부모가 마무리 확인에서 더 이야기하고
 
 
 def _norm(x: str) -> str:
-    import re
     return re.sub(r"[\s\W]+", "", x)
 
 
@@ -82,7 +82,9 @@ def _same(a: str, b: str) -> bool:
 def pick_examples(ctx: StoryInputContext, exclude_id: Optional[int] = None) -> list[dict]:
     """지금 상황과 가장 비슷한 정답 대화 1편(분류 > 시점) + 다른 분류에서 1편. exclude_id는 시험할 때 그 대화를 뺀다."""
     pool = [e for e in _EXAMPLES if e["id"] != exclude_id]
-    score = lambda e: (2 * (e["category"] == ctx.situation.category) + (e["timing"] == ctx.situation.timing), -e["id"])
+    def score(e: dict) -> tuple[int, int]:
+        return 2 * (e["category"] == ctx.situation.category) + (e["timing"] == ctx.situation.timing), -e["id"]
+
     first = max(pool, key=score)
     rest = [e for e in pool if e["category"] != first["category"]]
     return [first, max(rest, key=score)] if rest else [first]
@@ -141,22 +143,15 @@ def interview_step(state: PipelineState) -> dict:
 
     # 안전장치: 이미 한 질문을 또 하면 더 물을 게 없다는 뜻 → undecided 확정.
     # 직전 것만 보지 않는다. 질문이 많아지면 몇 턴 전 질문으로 돌아가는 반복이 생긴다
-    if r.next_question and any(_same(r.next_question, t.question) for t in turns):
-        r.status, r.next_question = "sufficient", None
-        if not ctx.parent.message_direction:
-            ctx.parent.message_direction = "undecided"
-        if not ctx.parent.concern:
-            ctx.parent.concern = turns[-1].answer
-
+    repeated_question = r.next_question and any(_same(r.next_question, t.question) for t in turns)
     # 안전장치: 질문에 같은 답이 두 번 이어지면 더 할 말이 없다는 뜻 → undecided 확정 (#20).
     # 질문을 말만 바꿔 되풀이하면 _same이 못 잡는다. 마무리 질문에 새 이야기를 한 직후에는 보지 않는다
     answers = _answers(turns)
-    if turns and turns[-1].question != READY_QUESTION and len(answers) >= 2 and answers[-1] and answers[-1] == answers[-2]:
+    repeated_answer = (turns and turns[-1].question != READY_QUESTION
+                       and len(answers) >= 2 and answers[-1] and answers[-1] == answers[-2])
+    if repeated_question or repeated_answer:
         r.status, r.next_question = "sufficient", None
-        if not ctx.parent.message_direction:
-            ctx.parent.message_direction = "undecided"
-        if not ctx.parent.concern:
-            ctx.parent.concern = turns[-1].answer
+        _settle_undecided(ctx, turns[-1].answer)
 
     # 안전장치: 필수 칸이 다 찼으면 구체화 질문은 상한까지만 (#73)
     if r.next_question and ctx.is_sufficient() and _deep_enough(turns):
@@ -174,10 +169,7 @@ def interview_step(state: PipelineState) -> dict:
     if ai_done and code_done:
         done_by = "sufficient"
     elif remaining <= 0:
-        if not ctx.parent.message_direction:
-            ctx.parent.message_direction = "undecided"
-        if not ctx.parent.concern:
-            ctx.parent.concern = "(인터뷰 한도 내 파악 안 됨)"
+        _settle_undecided(ctx, "(인터뷰 한도 내 파악 안 됨)")
         done_by = "max_turns"
     else:
         done_by = None
@@ -202,6 +194,14 @@ def interview_step(state: PipelineState) -> dict:
     return out
 
 
+def _settle_undecided(ctx: StoryInputContext, concern: str) -> None:
+    """더 묻지 않고 끝낼 때 빈 칸 채우기: 방향은 undecided, 걱정은 주어진 문장. 이미 채운 칸은 그대로."""
+    if not ctx.parent.message_direction:
+        ctx.parent.message_direction = "undecided"
+    if not ctx.parent.concern:
+        ctx.parent.concern = concern
+
+
 def _choices(raw: list[str]) -> list[str]:
     """답변 카드: 빈 것·겹치는 것을 빼고 최대 config.max_interview_choices개."""
     out: list[str] = []
@@ -222,26 +222,27 @@ def interview_answer(state: PipelineState) -> dict:
         answer = interrupt({"type": "interview", "question": q, "turn": len(turns) + 1,
                             "choices": state.get("pending_choices") or []})
     answer = (answer or "").strip()
+    skipped = answer.lower() in _SKIP
+    reason = state.get("pending_reason", "")
 
     out: dict = {"auto_answers": auto}
     # 이미 충분하다고 본 뒤라 건너뛰기도 sufficient. 앞에서 한 답을 또 쓰면 새 이야기가 아니다 (#20)
     said = _answers(turns)
-    if q == READY_QUESTION and (answer.lower() in _SKIP or _norm(answer) in _GO or (said and _norm(answer) == said[-1])):
-        turns.append(Turn(question=q, answer="[skip]" if answer.lower() in _SKIP else answer,
-                          reason=state.get("pending_reason", "")))
+    if q == READY_QUESTION and (skipped or _norm(answer) in _GO or (said and _norm(answer) == said[-1])):
+        turns.append(Turn(question=q, answer="[skip]" if skipped else answer, reason=reason))
         out.update(interview_turns=turns, interview_done_by="sufficient")
         return out
-    if answer.lower() in _SKIP:
+    if skipped:
         ctx = state["context"].model_copy(deep=True)
         # 전하고 싶은 말을 직접 썼으면 방향을 정한 것 — undecided로 두면 요약이 '아직 정하지 못했어요'를 지어낸다
         if not ctx.parent.message:
             ctx.parent.message_direction = ctx.parent.message_direction or "undecided"
         ctx.parent.concern = ctx.parent.concern or "(부모가 인터뷰를 건너뜀)"
-        turns.append(Turn(question=q, answer="[skip]", reason=state.get("pending_reason", "")))
+        turns.append(Turn(question=q, answer="[skip]", reason=reason))
         out.update(context=ctx, interview_turns=turns, interview_done_by="user_skip")
         return out
 
-    turns.append(Turn(question=q, answer=answer, reason=state.get("pending_reason", "")))
+    turns.append(Turn(question=q, answer=answer, reason=reason))
     out["interview_turns"] = turns
     if any(k in answer for k in _UNSURE):
         out["clarify_count"] = state.get("clarify_count", 0) + 1

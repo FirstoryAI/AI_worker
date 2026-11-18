@@ -53,13 +53,18 @@ SCHEMAS = {"c": StoryDesignC}
 LABELS = {"c": "C. 동물·아는 공간·끝나는 사건"}
 
 
+def _read(d: Path, name: str):
+    return json.loads((d / name).read_text(encoding="utf-8"))
+
+
 def run_variant(a_dir: Path, v: str, force: bool = False) -> Path:
     v_dir = a_dir.with_name(f"{a_dir.name}__{v.upper()}")
     if not force and (v_dir / "04-guide.json").exists():
         return v_dir
-    ctx = StoryInputContext(**json.loads((a_dir / "00-context.json").read_text(encoding="utf-8")))
-    summary = json.loads((a_dir / "01-interview.json").read_text(encoding="utf-8")).get("summary") or ""
-    state = {"context": ctx, "interview_summary": summary}
+    state = {
+        "context": StoryInputContext(**_read(a_dir, "00-context.json")),
+        "interview_summary": _read(a_dir, "01-interview.json").get("summary") or "",
+    }
 
     prompts, design_schema = llm._PROMPTS, story_node.StoryDesign
     llm._PROMPTS, story_node.StoryDesign = VARIANTS / v, SCHEMAS[v]
@@ -76,25 +81,42 @@ def run_variant(a_dir: Path, v: str, force: bool = False) -> Path:
     return v_dir
 
 
-def _load(d: Path):
-    j = lambda n: json.loads((d / n).read_text(encoding="utf-8"))
-    return j("02-design.json"), j("03-story.json"), j("04-guide.json")
+def _load(d: Path) -> dict:
+    return {"design": _read(d, "02-design.json"), "story": _read(d, "03-story.json"), "guide": _read(d, "04-guide.json")}
+
+
+def _cell(s) -> str:
+    return str(s).replace("\n", " ").replace("|", "\\|")
+
+
+def _who(d: dict) -> str:
+    who = f"{d['protagonist']['name']} ({d['protagonist']['species']})"
+    if d.get("supporting"):
+        s = d["supporting"]
+        who += f" · {s['name']} ({s['species']}, {s['role']})"
+    return who
+
+
+def _guide_questions(guide: dict) -> str:
+    return "<br>".join(f"({q['after_page']}쪽 뒤) {_cell(q['text'])}" for q in guide["prompts"])
 
 
 def compare_md(a_dir: Path, dirs: dict[str, Path]) -> str:
     cols = [("A. 지금 방식", _load(a_dir))] + [(LABELS[v], _load(d)) for v, d in dirs.items()]
-    cell = lambda s: str(s).replace("\n", " ").replace("|", "\\|")
-    who = lambda d: f"{d['protagonist']['name']} ({d['protagonist']['species']})" + (
-        f" · {d['supporting']['name']} ({d['supporting']['species']}, {d['supporting']['role']})" if d.get("supporting") else "")
-    row = lambda head, f: f"| {head} | " + " | ".join(f(x) for _, x in cols) + " |"
+
+    def row(head: str, f) -> str:
+        return f"| {head} | " + " | ".join(f(x) for _, x in cols) + " |"
+
     out = [f"# {a_dir.name.split('_', 1)[-1]}: " + " vs ".join(n.split(".")[0] for n, _ in cols), "",
            "| | " + " | ".join(n for n, _ in cols) + " |", "|---" * (len(cols) + 1) + "|",
-           row("제목", lambda x: cell(x[1]["title"])), row("인물", lambda x: cell(who(x[0]))), row("배경", lambda x: cell(x[0]["world"]))]
-    pages = [{p["order"]: p["text"] for p in x[1]["pages"]} for _, x in cols]
+           row("제목", lambda x: _cell(x["story"]["title"])),
+           row("인물", lambda x: _cell(_who(x["design"]))),
+           row("배경", lambda x: _cell(x["design"]["world"]))]
+    pages = [{p["order"]: p["text"] for p in x["story"]["pages"]} for _, x in cols]
     for o in sorted(set().union(*pages)):
-        out.append(f"| {o}쪽 | " + " | ".join(cell(p.get(o, "")) for p in pages) + " |")
-    qs = lambda x: "<br>".join(f"({q['after_page']}쪽 뒤) {cell(q['text'])}" for q in x[2]["prompts"])
-    out += [row("가이드 질문", qs), row("연결 질문", lambda x: cell(x[2]["after_reading"].get("bridge_question", ""))), ""]
+        out.append(f"| {o}쪽 | " + " | ".join(_cell(p.get(o, "")) for p in pages) + " |")
+    out += [row("가이드 질문", lambda x: _guide_questions(x["guide"])),
+            row("연결 질문", lambda x: _cell(x["guide"]["after_reading"].get("bridge_question", ""))), ""]
     return "\n".join(out)
 
 

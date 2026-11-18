@@ -4,6 +4,7 @@ FastAPI 서버 배선 확인 — 인증, 오류 형식, /health, /safety/check, 
 """
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import os
@@ -37,16 +38,128 @@ for k in ("_note", "scripted_answers"):
     CONTEXT.pop(k, None)
 CONTEXT["parent"] = {"response": None, "concern": None, "message": None, "message_direction": None}
 
+SAFETY_OK = {"level": "OK", "category": None, "reason": None, "topic": None}
+RESULT_KEYS = {"run_no", "checkpoint_id", "title", "design", "cover_path", "front_cover_path", "back_cover_path", "character_sheets", "pages", "guide",
+               "cost", "safety"}
 
+
+@server.app.get("/_boom")   # 처리 못 한 예외가 INTERNAL_ERROR 형식으로 나가는지 보려는 테스트용 경로
+def _boom():
+    raise ValueError("boom")
+
+
+# ── 도우미: 모두 지금 열린 TestClient(모듈 전역 c)로 부른다. with 블록마다 c가 새 클라이언트로 바뀐다 ──
 def err(res, status, code):
     assert res.status_code == status, (res.status_code, res.text)
     body = res.json()
     assert set(body) == {"error"} and body["error"]["code"] == code and body["error"]["message"], body
 
 
-@server.app.get("/_boom")   # 처리 못 한 예외가 INTERNAL_ERROR 형식으로 나가는지 보려는 테스트용 경로
-def _boom():
-    raise ValueError("boom")
+def ok(res):
+    assert res.status_code == 200, (res.status_code, res.text)
+    return res.json()
+
+
+def accepted(r):
+    assert r.status_code == 202 and r.json() == {"accepted": True}, r.text
+
+
+def graph_state(tid):
+    return server._graph.get_state(server._cfg(tid))
+
+
+def turns_of(tid):
+    return graph_state(tid).values.get("interview_turns", [])
+
+
+def start(tid, **body):
+    return c.post(f"/v1/threads/{tid}/interview/start", headers=H,
+                  json={"run_id": str(uuid.uuid4()), "context": CONTEXT, "tone": None} | body)
+
+
+def answer(tid, body):
+    return c.post(f"/v1/threads/{tid}/interview/answer", headers=H, json=body)
+
+
+def to_confirm():
+    """인터뷰를 끝까지 답해 생성 전 확인(CONFIRMING)에 둔 새 thread"""
+    tid = str(uuid.uuid4())
+    assert start(tid).status_code == 200
+    for a in ("안아 줬어요", "마음을 먼저 받아 주고 싶어요", iv.READY_GO):
+        r = answer(tid, {"answer": a})
+    assert r.json()["type"] == "confirm", r.text
+    return tid
+
+
+def run_body(run_no=1, prefix=None, **extra):
+    return {"run_id": str(uuid.uuid4()), "run_no": run_no,
+            "output_prefix": prefix or f"stories/{uuid.uuid4().hex[:6]}/runs/{run_no}/", "tone": None} | extra
+
+
+def generate(tid, **kw):
+    return c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body(**kw))
+
+
+def retry(tid, **kw):
+    return c.post(f"/v1/threads/{tid}/retry", headers=H, json=run_body(**kw))
+
+
+def review(tid, **body):
+    return c.post(f"/v1/threads/{tid}/review", headers=H, json=body)
+
+
+def regen(scope, run_no, base, **extra):
+    return {"action": "regenerate", "scope": scope, "pages": [], "feedback": None, "base_checkpoint_id": base,
+            "run_id": str(uuid.uuid4()), "run_no": run_no, "output_prefix": f"stories/12/runs/{run_no}/"} | extra
+
+
+def status(tid):
+    return ok(c.get(f"/v1/threads/{tid}/status", headers=H))
+
+
+def result(tid):
+    return ok(c.get(f"/v1/threads/{tid}/result", headers=H))
+
+
+def wait_done(tid, timeout=30):
+    """실행이 끝날 때(REVIEWING 또는 FAILED)까지 기다린다"""
+    until = {"REVIEWING", "FAILED"}
+    end = time.time() + timeout
+    while time.time() < end:
+        st = status(tid)
+        if st["state"] in until:
+            return st
+        time.sleep(0.05)
+    raise AssertionError(f"{until}까지 안 감: {status(tid)}")
+
+
+def page_paths(res):
+    return {p["page_no"]: p["image_path"] for p in res["pages"]}
+
+
+def no_space(s):
+    return re.sub(r"\s", "", s)
+
+
+def flat_text(page):
+    """쪽의 글 덩어리 줄을 모두 이은 글 (빈칸 없이)"""
+    return no_space("".join(l for b in page["text_blocks"] for para in b["paragraphs"] for l in para))
+
+
+def hold_at(node, gate):
+    """node 차례에서 gate가 열릴 때까지(최대 10초) 붙잡아 두는 가짜 LLM"""
+    def held(**kw):
+        if kw["node"] == node:
+            gate.wait(10)
+        return mock.fake_structured(**kw)
+    return held
+
+
+def broken(**kw):
+    """글 쓰기에서 늘 실패하는 가짜 LLM"""
+    if kw["node"] == "write_story":
+        raise RuntimeError("OpenAI 장애 흉내")
+    return mock.fake_structured(**kw)
 
 
 with TestClient(server.app, raise_server_exceptions=False) as c:
@@ -61,9 +174,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 
     # ── mock /safety/check: 표시가 있으면 그 level, 여러 개면 더 심각한 쪽 ──
     def level(*texts, **extra):
-        r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": list(texts), **extra})
-        assert r.status_code == 200, r.text
-        s = r.json()["safety"]
+        s = ok(c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": list(texts), **extra}))["safety"]
         assert set(s) == {"level", "category", "reason", "topic"}, s
         return s["level"]
 
@@ -100,26 +211,15 @@ print("auth / health / safety mock / errors ok")
 
 # ── 인터뷰 (스펙 7-2, 7-3) ──
 with TestClient(server.app, raise_server_exceptions=False) as c:
-    def start(tid, **body):
-        return c.post(f"/v1/threads/{tid}/interview/start", headers=H,
-                      json={"run_id": str(uuid.uuid4()), "context": CONTEXT, "tone": None} | body)
-
-    def answer(tid, body):
-        return c.post(f"/v1/threads/{tid}/interview/answer", headers=H, json=body)
-
-    def ok(res):
-        assert res.status_code == 200, (res.status_code, res.text)
-        return res.json()
-
     tid = str(uuid.uuid4())
     q1 = ok(start(tid, tone="warm"))
     assert q1 == {"type": "question", "turn": 1, "question": "당시에 어떻게 반응해주셨어요?",
                   "choices": ["꼭 안아 줬어요", "괜찮다고 말해 줬어요", "뭐라고 할지 몰라 가만히 있었어요"],
                   "context_update": None}, q1
-    assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
+    assert graph_state(tid).values["tone"] == "warm"
     q2 = ok(answer(tid, {"answer": "안아 줬어요"}))
     assert q2["type"] == "question" and q2["turn"] == 2, q2
-    assert q2["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, q2   # 답마다 위기 신호 판단을 같이 준다 (#83). 시작에는 없다
+    assert q2["safety"] == SAFETY_OK, q2   # 답마다 위기 신호 판단을 같이 준다 (#83). 시작에는 없다
     assert "safety" not in q1
     assert q2["context_update"] == {"parent": {"response": "안아줌", "concern": "뭐라고 말할지 모르겠음"}}, q2
     # 빈 카드·겹치는 카드를 빼고 4개까지
@@ -135,13 +235,13 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert again["turn"] == 5 and again["question"] == iv.READY_QUESTION, again
     done = ok(answer(tid, {"answer": iv.READY_GO}))
     assert set(done) == {"type", "summary", "situation_summary", "end_reason", "context", "safety"} and done["type"] == "confirm", done
-    assert done["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, done
+    assert done["safety"] == SAFETY_OK, done
     assert done["end_reason"] == "sufficient"
     assert done["summary"] == "속상했던 마음을 먼저 알아주고 싶어요. 친구를 나쁘게 말하지는 않고 싶어요."   # 부모용 문장
     assert done["situation_summary"] == "어린이집에서 친구가 블록을 먼저 가져가서 아이가 울었어요."
     assert done["context"]["parent"]["message_direction"] == "comfort_first"
     assert done["context"]["situation"] == CONTEXT["situation"] | {"custom_category": None}   # 빈 칸도 null로 채워 돌려준다
-    assert server._graph.get_state(server._cfg(tid)).next == ("confirm_generate",)
+    assert graph_state(tid).next == ("confirm_generate",)
 
     # 멈춤 지점과 맞지 않는 요청, 없는 thread
     err(answer(tid, {"answer": "또"}), 409, "INVALID_STATE")
@@ -157,7 +257,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert skipped["context"]["parent"]["message_direction"] == "undecided"
     # 전하고 싶은 말을 직접 쓰고 건너뛰면 방향을 정한 것 — undecided로 두지 않는다 (#31)
     tid2b = str(uuid.uuid4())
-    with_message = json.loads(json.dumps(CONTEXT))
+    with_message = copy.deepcopy(CONTEXT)
     with_message["parent"]["message"] = "속상한 마음을 말로 표현해도 괜찮다는 걸 알려주고 싶어요"
     assert ok(start(tid2b, context=with_message))["turn"] == 1
     skipped = ok(answer(tid2b, {"skip": True}))
@@ -187,17 +287,14 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 
     llm.set_structured_override(flaky)
     err(answer(tid3, {"answer": "안아 줬어요"}), 500, "INTERNAL_ERROR")
-    assert server._graph.get_state(server._cfg(tid3)).next == ("interview_step",)
+    assert graph_state(tid3).next == ("interview_step",)
     retried = ok(answer(tid3, {"answer": "안아 줬어요"}))
     assert retried["type"] == "question" and retried["turn"] == 2, retried
-    assert retried["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, retried   # 이어서 할 때 받아 둔 답을 다시 검사한다
-    assert len(server._graph.get_state(server._cfg(tid3)).values["interview_turns"]) == 1
+    assert retried["safety"] == SAFETY_OK, retried   # 이어서 할 때 받아 둔 답을 다시 검사한다
+    assert len(graph_state(tid3).values["interview_turns"]) == 1
     mock.enable()
 
     # ── 위기 신호 검사와 다음 질문 만들기를 동시에 (#83) ──
-    def turns_of(t):
-        return server._graph.get_state(server._cfg(t)).values.get("interview_turns", [])
-
     # REVISE·CRISIS: 답을 받기 전으로 되돌리고 같은 질문. 고쳐 쓴 답은 새 답으로 받는다
     for mark in ("[[REVISE]]", "[[CRISIS]]"):
         t = str(uuid.uuid4())
@@ -205,7 +302,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
         held = ok(answer(t, {"answer": f"{mark} 혼내 줬어요"}))
         assert held["safety"]["level"] == mark.strip("[]") and held["safety"]["reason"], held
         assert {k: held[k] for k in ("type", "turn", "question", "choices", "context_update")} == first, held
-        assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+        assert graph_state(t).next == ("interview_answer",) and turns_of(t) == []
         fixed = ok(answer(t, {"answer": "안아 줬어요"}))
         assert fixed["turn"] == 2 and fixed["safety"]["level"] == "OK", fixed
         assert [x.answer for x in turns_of(t)] == ["안아 줬어요"]
@@ -226,7 +323,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     first = ok(start(t))
     held = ok(answer(t, {"answer": "[[SEPARATION]] 강아지가 떠났어요", "blocked_topics": ["separation"]}))
     assert held["turn"] == 1 and held["question"] == first["question"] and held["safety"]["topic"] == "separation", held
-    assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+    assert graph_state(t).next == ("interview_answer",) and turns_of(t) == []
     fixed = ok(answer(t, {"answer": "안아 줬어요", "blocked_topics": ["separation"]}))
     assert fixed["turn"] == 2 and fixed["safety"]["topic"] is None and [x.answer for x in turns_of(t)] == ["안아 줬어요"]
     # 목록에 없으면 되돌리지 않는다 (다시 열었을 때)
@@ -246,7 +343,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     fail_once["safety"] = True
     llm.set_structured_override(safety_fails_once)
     err(answer(t, {"answer": "안아 줬어요"}), 500, "INTERNAL_ERROR")
-    assert server._graph.get_state(server._cfg(t)).next == ("interview_answer",) and turns_of(t) == []
+    assert graph_state(t).next == ("interview_answer",) and turns_of(t) == []
     again = ok(answer(t, {"answer": "안아 줬어요"}))
     assert again["turn"] == 2 and again["safety"]["level"] == "OK" and len(turns_of(t)) == 1, again
 
@@ -256,7 +353,7 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     fail_once["interview"] = True
     llm.set_structured_override(flaky)
     err(answer(t, {"answer": "[[REVISE]] 혼내 줬어요"}), 500, "INTERNAL_ERROR")
-    assert server._graph.get_state(server._cfg(t)).next == ("interview_step",)
+    assert graph_state(t).next == ("interview_step",)
     held = ok(answer(t, {"answer": "[[REVISE]] 혼내 줬어요"}))
     assert held["turn"] == 1 and held["question"] == first["question"] and held["safety"]["level"] == "REVISE", held
     assert turns_of(t) == []
@@ -290,49 +387,16 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 print("interview ok")
 
 # ── 생성·상태·결과 (스펙 7-4 ~ 7-6) ──
-RESULT_KEYS = {"run_no", "checkpoint_id", "title", "design", "cover_path", "front_cover_path", "back_cover_path", "character_sheets", "pages", "guide",
-               "cost", "safety"}
-
-
-def run_body(run_no=1, prefix=None, **extra):
-    return {"run_id": str(uuid.uuid4()), "run_no": run_no,
-            "output_prefix": prefix or f"stories/{uuid.uuid4().hex[:6]}/runs/{run_no}/", "tone": None} | extra
-
-
 with TestClient(server.app, raise_server_exceptions=False) as c:
-    def to_confirm():
-        tid = str(uuid.uuid4())
-        assert c.post(f"/v1/threads/{tid}/interview/start", headers=H,
-                      json={"run_id": str(uuid.uuid4()), "context": CONTEXT, "tone": None}).status_code == 200
-        for a in ("안아 줬어요", "마음을 먼저 받아 주고 싶어요", iv.READY_GO):
-            r = c.post(f"/v1/threads/{tid}/interview/answer", headers=H, json={"answer": a})
-        assert r.json()["type"] == "confirm", r.text
-        return tid
-
-    def status(tid):
-        r = c.get(f"/v1/threads/{tid}/status", headers=H)
-        assert r.status_code == 200, r.text
-        return r.json()
-
-    def wait(tid, until, timeout=30):
-        end = time.time() + timeout
-        while time.time() < end:
-            st = status(tid)
-            if st["state"] in until:
-                return st
-            time.sleep(0.05)
-        raise AssertionError(f"{until}까지 안 감: {status(tid)}")
-
     # 끝까지: CONFIRMING → 202 → RUNNING → REVIEWING → result
     tid = to_confirm()
     assert status(tid)["state"] == "CONFIRMING"
     err(c.get(f"/v1/threads/{tid}/result", headers=H), 409, "INVALID_STATE")
     prefix = "stories/12/runs/1/"
-    r = c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body(prefix=prefix, tone="warm"))
-    assert r.status_code == 202 and r.json() == {"accepted": True}, r.text
-    st = wait(tid, {"REVIEWING", "FAILED"})
+    accepted(generate(tid, prefix=prefix, tone="warm"))
+    st = wait_done(tid)
     assert st["state"] == "REVIEWING" and st["run_no"] == 1 and st["error"] is None, st
-    res = c.get(f"/v1/threads/{tid}/result", headers=H).json()
+    res = result(tid)
     assert set(res) == RESULT_KEYS, res.keys()
     assert res["run_no"] == 1 and res["checkpoint_id"] and res["title"] == "포포와 비어 있는 자리"
     assert [p["page_no"] for p in res["pages"]] == list(range(1, config.page_count + 1))
@@ -345,9 +409,9 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     for p in res["pages"]:
         assert 1 <= len(p["text_blocks"]) <= 2 and all(set(b) == {"paragraphs", "x", "y", "color"} for b in p["text_blocks"]), p
         assert all(isinstance(b["x"], float) and isinstance(b["y"], float) and b["color"] in ("dark", "light") for b in p["text_blocks"])
-        assert re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para)) == re.sub(r"\s", "", p["text"] + asks.get(p["page_no"], ""))
+        assert flat_text(p) == no_space(p["text"] + asks.get(p["page_no"], ""))
         if p["page_no"] in asks:
-            assert re.sub(r"\s", "", "".join(p["text_blocks"][-1]["paragraphs"][-1])) == re.sub(r"\s", "", asks[p["page_no"]]), p
+            assert no_space("".join(p["text_blocks"][-1]["paragraphs"][-1])) == no_space(asks[p["page_no"]]), p
     assert asks and [p["text_position"] for p in res["pages"]] == ["top"] * config.page_count
     # 의성어 (#92, #102): 별표 말이 있는 쪽(mock 다듬기는 홀수 쪽)만 {text, color, pieces}, owner는 내리지 않는다
     for p in res["pages"]:
@@ -367,22 +431,22 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert res["front_cover_path"] == res["cover_path"]   # 앞표지 = 정사각형 표지 (#125)
     assert res["back_cover_path"] == f"{prefix}images/back-cover.png" and storage.exists(res["back_cover_path"])
     assert res["cost"]["image_count"] == config.page_count + 4 and res["cost"]["input_tokens"] == 0, res["cost"]   # 쪽 + 시트 2 + 표지 2 (정사각형·뒤)
-    assert res["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}
-    assert server._graph.get_state(server._cfg(tid)).values["tone"] == "warm"
-    err(c.post(f"/v1/threads/{tid}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")
+    assert res["safety"] == SAFETY_OK
+    assert graph_state(tid).values["tone"] == "warm"
+    err(generate(tid), 409, "INVALID_STATE")
 
     # 확인 화면에서 고친 입력과 '나누고 싶은 것'이 생성에 반영된다
     tid_e = to_confirm()
-    edited = json.loads(json.dumps(CONTEXT))
+    edited = copy.deepcopy(CONTEXT)
     edited["situation"]["description"] = "놀이터에서 친구가 그네를 안 비켜 줬어요"
     edited["child"]["age_months"] = 70
     edited["moment"]["emotions"] = ["angry"]
     edited["parent"]["message"] = "기다리면 차례가 온다고 말해 주고 싶어요"
     new_summary = "차례를 기다리는 게 어렵다는 마음을 알아주고 싶어요."
-    r = c.post(f"/v1/threads/{tid_e}/generate", headers=H, json=run_body(context=edited, summary=new_summary))
+    r = generate(tid_e, context=edited, summary=new_summary)
     assert r.status_code == 202, r.text
-    assert wait(tid_e, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
-    v = server._graph.get_state(server._cfg(tid_e)).values
+    assert wait_done(tid_e)["state"] == "REVIEWING"
+    v = graph_state(tid_e).values
     assert v["context"].situation.description == edited["situation"]["description"]
     assert v["context"].child.age_months == 70 and v["context"].moment.emotions == ["angry"]
     assert v["context"].parent.message == edited["parent"]["message"]
@@ -392,58 +456,45 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 
     # 상황을 안 고쳤으면 인터뷰가 가진 moment를 지키고, 요약을 안 고쳤으면 정리도 그대로
     tid_k = to_confirm()
-    before = server._graph.get_state(server._cfg(tid_k)).values
-    same = json.loads(json.dumps(CONTEXT))
+    before = graph_state(tid_k).values
+    same = copy.deepcopy(CONTEXT)
     same["moment"]["emotions"] = ["excited"]   # Spring 폼 값이 인터뷰 결과와 달라도
-    r = c.post(f"/v1/threads/{tid_k}/generate", headers=H,
-               json=run_body(context=same, summary=before["interview_parent_summary"]))
+    r = generate(tid_k, context=same, summary=before["interview_parent_summary"])
     assert r.status_code == 202, r.text
-    assert wait(tid_k, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
-    v = server._graph.get_state(server._cfg(tid_k)).values
+    assert wait_done(tid_k)["state"] == "REVIEWING"
+    v = graph_state(tid_k).values
     assert v["context"].moment == before["context"].moment and v["interview_summary"] == before["interview_summary"]
 
     # 형식 오류, 없는 thread
     tid2 = to_confirm()
-    err(c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body(prefix="../outside/")), 422, "VALIDATION_ERROR")
-    err(c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body(run_no=0)), 422, "VALIDATION_ERROR")
-    err(c.post(f"/v1/threads/{uuid.uuid4()}/generate", headers=H, json=run_body()), 404, "THREAD_NOT_FOUND")
+    err(generate(tid2, prefix="../outside/"), 422, "VALIDATION_ERROR")
+    err(generate(tid2, run_no=0), 422, "VALIDATION_ERROR")
+    err(generate(uuid.uuid4()), 404, "THREAD_NOT_FOUND")
     err(c.get(f"/v1/threads/{uuid.uuid4()}/status", headers=H), 404, "THREAD_NOT_FOUND")
     assert status(tid2)["state"] == "CONFIRMING"   # 거절된 요청은 아무것도 바꾸지 않는다
 
     # 진행 중: 설계에서 붙잡아 두고 RUNNING·THREAD_BUSY 확인
     gate = threading.Event()
-
-    def held(**kw):
-        if kw["node"] == "design_story":
-            gate.wait(10)
-        return mock.fake_structured(**kw)
-
-    llm.set_structured_override(held)
-    assert c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body()).status_code == 202
+    llm.set_structured_override(hold_at("design_story", gate))
+    assert generate(tid2).status_code == 202
     st = status(tid2)
     assert st["state"] == "RUNNING" and st["current_node"] == "design_story" and st["stage"] == 1, st
-    err(c.post(f"/v1/threads/{tid2}/generate", headers=H, json=run_body()), 409, "THREAD_BUSY")
-    err(c.post(f"/v1/threads/{tid2}/interview/answer", headers=H, json={"answer": "a"}), 409, "THREAD_BUSY")
+    err(generate(tid2), 409, "THREAD_BUSY")
+    err(answer(tid2, {"answer": "a"}), 409, "THREAD_BUSY")
     err(c.get(f"/v1/threads/{tid2}/result", headers=H), 409, "INVALID_STATE")
     gate.set()
-    assert wait(tid2, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid2)["state"] == "REVIEWING"
     mock.enable()
 
     # 실패: 글 쓰기에서 예외 → FAILED, error에 code·node. 잠금은 풀린다
     tid3 = to_confirm()
-
-    def broken(**kw):
-        if kw["node"] == "write_story":
-            raise RuntimeError("OpenAI 장애 흉내")
-        return mock.fake_structured(**kw)
-
     llm.set_structured_override(broken)
-    assert c.post(f"/v1/threads/{tid3}/generate", headers=H, json=run_body()).status_code == 202
-    st = wait(tid3, {"FAILED", "REVIEWING"})
+    assert generate(tid3).status_code == 202
+    st = wait_done(tid3)
     assert st["state"] == "FAILED" and st["error"]["code"] == "GENERATION_FAILED", st
     assert st["error"]["node"] == "write_story" and st["stage"] == 2, st
     err(c.get(f"/v1/threads/{tid3}/result", headers=H), 409, "INVALID_STATE")
-    err(c.post(f"/v1/threads/{tid3}/generate", headers=H, json=run_body()), 409, "INVALID_STATE")   # 잠금은 풀렸다
+    err(generate(tid3), 409, "INVALID_STATE")   # 잠금은 풀렸다
     mock.enable()
 
     # 서버가 꺼질 때 돌던 실행: 다시 띄우면 FAILED(SERVER_RESTARTED)
@@ -457,31 +508,13 @@ print("generation ok")
 
 # ── 검토·재시도 (스펙 7-7, 7-8, 8장 버전 갈래) ──
 with TestClient(server.app, raise_server_exceptions=False) as c:
-    def review(t, **body):
-        return c.post(f"/v1/threads/{t}/review", headers=H, json=body)
-
-    def result(t):
-        r = c.get(f"/v1/threads/{t}/result", headers=H)
-        assert r.status_code == 200, r.text
-        return r.json()
-
-    def regen(scope, run_no, base, **extra):
-        return {"action": "regenerate", "scope": scope, "pages": [], "feedback": None, "base_checkpoint_id": base,
-                "run_id": str(uuid.uuid4()), "run_no": run_no, "output_prefix": f"stories/12/runs/{run_no}/"} | extra
-
-    def accepted(r):
-        assert r.status_code == 202 and r.json() == {"accepted": True}, r.text
-
-    def page_paths(res):
-        return {p["page_no"]: p["image_path"] for p in res["pages"]}
-
     # v1(생성 테스트의 tid, runs/1)에서 그림만 다시 3쪽 → v2(runs/2): 3쪽만 새로, 나머지 쪽·시트는 v1 key
     # 부모 메모는 쪽 번호와 따로 와서 3쪽 그림 프롬프트에 들어간다 (#46)
     v1 = result(tid)
     regen_prompts = []
     il.set_image_override(lambda p, refs: regen_prompts.append(p) or mock.tiny_png(p, refs))
     accepted(review(tid, **regen("images", 2, v1["checkpoint_id"], pages=[3], feedback="3쪽 공룡을 더 웃게 해 주세요")))
-    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid)["state"] == "REVIEWING"
     assert len(regen_prompts) == 1 and "3쪽 공룡을 더 웃게 해 주세요" in regen_prompts[0], regen_prompts
     il.set_image_override(mock.tiny_png)
     v2 = result(tid)
@@ -495,19 +528,19 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     # v1로 되돌려 글 다시 → v3(runs/3)는 v1에서 갈라진다. v2 체크포인트도 그대로 남는다
     # mock 작가는 1쪽만 고쳐 그 쪽 장면이 바뀐다 → 1쪽만 runs/3에 새로 그리고 나머지 쪽·시트는 v1 key
     accepted(review(tid, **regen("text", 3, v1["checkpoint_id"], feedback="더 짧게")))
-    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid)["state"] == "REVIEWING"
     v3 = result(tid)
     assert v3["run_no"] == 3 and page_paths(v3)[1] == "stories/12/runs/3/images/page-01.png"
     assert all(path == page_paths(v1)[n] for n, path in page_paths(v3).items() if n != 1)
     assert v3["character_sheets"] == v1["character_sheets"] and v3["cost"]["image_count"] == 1, v3["cost"]
-    assert server._graph.get_state(server._cfg(tid)).values["review_feedback"] == "더 짧게"
+    assert graph_state(tid).values["review_feedback"] == "더 짧게"
     kept = server._graph.get_state({"configurable": {"thread_id": tid, "checkpoint_id": v2["checkpoint_id"]}})
     assert {pi.order: pi.path for pi in kept.values["illustrations"].pages}[3] == "stories/12/runs/2/images/page-03.png"
     assert storage.exists("stories/12/runs/2/images/page-03.png") and storage.exists("stories/12/runs/1/images/page-03.png")
 
     # 이야기·인물 다시 (지금 버전에서) → v4
     accepted(review(tid, **regen("story", 4, None, feedback="토끼 말고 공룡으로")))
-    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid)["state"] == "REVIEWING"
     assert result(tid)["run_no"] == 4
 
     # 형식 오류, 없는 thread, 없는 체크포인트
@@ -522,19 +555,13 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 
     # 다시 만드는 중에는 같은 thread의 요청이 THREAD_BUSY
     gate = threading.Event()
-
-    def held(**kw):
-        if kw["node"] == "write_story":
-            gate.wait(10)
-        return mock.fake_structured(**kw)
-
-    llm.set_structured_override(held)
+    llm.set_structured_override(hold_at("write_story", gate))
     accepted(review(tid, **regen("text", 5, None)))
     st = status(tid)
     assert st["state"] == "RUNNING" and st["current_node"] == "write_story" and st["run_no"] == 5, st
     err(review(tid, action="approve"), 409, "THREAD_BUSY")
     gate.set()
-    assert wait(tid, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid)["state"] == "REVIEWING"
     mock.enable()
 
     # 확정
@@ -546,25 +573,19 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
 
     # 재시도: 글 쓰기에서 실패한 실행을 새 output_prefix로 다시
     tid5 = to_confirm()
-
-    def broken_once(**kw):
-        if kw["node"] == "write_story":
-            raise RuntimeError("OpenAI 장애 흉내")
-        return mock.fake_structured(**kw)
-
-    llm.set_structured_override(broken_once)
-    accepted(c.post(f"/v1/threads/{tid5}/generate", headers=H, json=run_body(prefix="stories/55/runs/1/")))
-    assert wait(tid5, {"FAILED", "REVIEWING"})["state"] == "FAILED"
+    llm.set_structured_override(broken)
+    accepted(generate(tid5, prefix="stories/55/runs/1/"))
+    assert wait_done(tid5)["state"] == "FAILED"
     mock.enable()
-    err(c.post(f"/v1/threads/{tid}/retry", headers=H, json=run_body(run_no=9)), 409, "INVALID_STATE")   # 실패한 적 없음
-    err(c.post(f"/v1/threads/{uuid.uuid4()}/retry", headers=H, json=run_body()), 404, "THREAD_NOT_FOUND")
-    accepted(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=2, prefix="stories/55/runs/2/")))
-    st = wait(tid5, {"REVIEWING", "FAILED"})
+    err(retry(tid, run_no=9), 409, "INVALID_STATE")   # 실패한 적 없음
+    err(retry(uuid.uuid4()), 404, "THREAD_NOT_FOUND")
+    accepted(retry(tid5, run_no=2, prefix="stories/55/runs/2/"))
+    st = wait_done(tid5)
     assert st["state"] == "REVIEWING" and st["run_no"] == 2 and st["error"] is None, st
     retried = result(tid5)
     assert retried["run_no"] == 2 and all(path.startswith("stories/55/runs/2/images/") for path in page_paths(retried).values())
     assert not storage.exists("stories/55/runs/1/images/page-01.png")   # 실패한 실행은 그림 전에 멈췄다
-    err(c.post(f"/v1/threads/{tid5}/retry", headers=H, json=run_body(run_no=3)), 409, "INVALID_STATE")
+    err(retry(tid5, run_no=3), 409, "INVALID_STATE")
 print("review / retry ok")
 
 # ── 글 다시 만들기: 작가는 메모 때문에 고친 쪽만 돌려주고, 나머지 쪽은 이전 원고 그대로. 다듬기는 메모를 받고 고친 쪽만 ──
@@ -592,15 +613,15 @@ def rewrite_page6(**kw):
 with TestClient(server.app, raise_server_exceptions=False) as c:
     llm.set_structured_override(rewrite_page6)   # 시작할 때 mock.enable()이 덮어쓰므로 그 뒤에
     tid8 = to_confirm()
-    accepted(c.post(f"/v1/threads/{tid8}/generate", headers=H, json=run_body()))
-    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    accepted(generate(tid8))
+    assert wait_done(tid8)["state"] == "REVIEWING"
     first = result(tid8)
     assert not writer_calls   # 첫 생성은 원고 전체 (StoryText)
     assert len(polish_systems) == 1 and "부모 요청" not in polish_systems[0]
     assert len(re.findall(r'"order": \d+', polish_systems[0])) == config.page_count   # 첫 생성은 전부 다듬는다
     accepted(review(tid8, **regen("text", 2, first["checkpoint_id"], feedback="6쪽은 놀랐다는 마음이 드러나게",
                                   output_prefix="stories/78/runs/2/")))
-    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid8)["state"] == "REVIEWING"
     second = result(tid8)
     assert len(writer_calls) == 1 and "6쪽은 놀랐다는 마음이 드러나게" in writer_calls[0] and "## 기존 원고" in writer_calls[0]
     assert len(polish_systems) == 2 and "6쪽은 놀랐다는 마음이 드러나게" in polish_systems[1]
@@ -615,27 +636,26 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert second["character_sheets"] == first["character_sheets"] and second["cost"]["image_count"] == 1, second["cost"]
     assert second["cover_path"] == first["cover_path"]   # 제목이 그대로라 표지 재사용
     assert second["front_cover_path"] == first["front_cover_path"] and second["back_cover_path"] == first["back_cover_path"]
-    after = server._graph.get_state(server._cfg(tid8)).values
+    after = graph_state(tid8).values
     assert after.get("revision_feedback") is None and after.get("revision_base") is None   # 다음 실행에 남지 않는다
     assert after.get("redraw_pages") is None
 
     # 글만 고치고 장면은 그대로면 그림을 하나도 다시 그리지 않는다
     revised_pages.update(value=[3], same_scene=True)
     accepted(review(tid8, **regen("text", 3, second["checkpoint_id"], feedback="3쪽 말투만", output_prefix="stories/78/runs/3/")))
-    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid8)["state"] == "REVIEWING"
     third = result(tid8)
-    draft3 = server._graph.get_state(server._cfg(tid8)).values["story_draft"]
+    draft3 = graph_state(tid8).values["story_draft"]
     assert {pg.order: pg.text for pg in draft3.pages}[3] == "3쪽. 포포는 깜짝 놀랐어요."   # 작가는 3쪽 글을 고쳤다
     assert page_paths(third) == page_paths(second) and third["cost"]["image_count"] == 0, third["cost"]
     # 그림은 그대로여도 글이 바뀐 3쪽은 덩어리·자리를 다시 한다. 나머지 쪽은 그대로
-    flat_text = lambda p: re.sub(r"\s", "", "".join(l for b in p["text_blocks"] for para in b["paragraphs"] for l in para))  # noqa: E731
     assert "깜짝놀랐어요" in flat_text(next(p for p in third["pages"] if p["page_no"] == 3))
     assert all(p["text_blocks"] == q["text_blocks"] for p, q in zip(third["pages"], second["pages"]) if p["page_no"] != 3)
 
     # 작가가 없는 쪽을 돌려주면 실패 (부모는 다시 시도할 수 있다). 앞선 버전은 그대로
     revised_pages.update(value=[99], same_scene=False)
     accepted(review(tid8, **regen("text", 4, third["checkpoint_id"], feedback="더 짧게", output_prefix="stories/78/runs/4/")))
-    assert wait(tid8, {"REVIEWING", "FAILED"})["state"] == "FAILED"
+    assert wait_done(tid8)["state"] == "FAILED"
     mock.enable()
 print("text regen keeps other pages ok")
 
@@ -653,16 +673,16 @@ def unsafe_output(**kw):
 with TestClient(server.app, raise_server_exceptions=False) as c:
     llm.set_structured_override(unsafe_output)   # 시작할 때 mock.enable()이 덮어쓰므로 그 뒤에
     tid7 = to_confirm()
-    accepted(c.post(f"/v1/threads/{tid7}/generate", headers=H, json=run_body()))
-    assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    accepted(generate(tid7))
+    assert wait_done(tid7)["state"] == "REVIEWING"
     out = result(tid7)
     assert out["safety"] == {"level": "REVISE", "category": "other", "reason": safety._FALLBACK_REASON["REVISE"], "topic": None}, out["safety"]
     assert len(judged) == 1 and judged[0].startswith("제목: ") and "\n1쪽: " in judged[0], judged
     accepted(review(tid7, **regen("images", 2, out["checkpoint_id"], pages=[2])))
-    assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid7)["state"] == "REVIEWING"
     assert result(tid7)["safety"]["level"] == "REVISE" and len(judged) == 1   # 그림만 다시: 다시 판단하지 않음
     accepted(review(tid7, **regen("text", 3, result(tid7)["checkpoint_id"])))
-    assert wait(tid7, {"REVIEWING", "FAILED"})["state"] == "REVIEWING"
+    assert wait_done(tid7)["state"] == "REVIEWING"
     assert len(judged) == 2   # 글 다시: 새 본문을 다시 판단
     mock.enable()
 
@@ -687,7 +707,7 @@ with TestClient(server.app) as c:
     r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["[[SEPARATION]] 할머니"]})
     assert r.status_code == 200 and r.json()["safety"]["topic"] == "separation", r.text
     r = c.post("/v1/safety/check", headers=H, json={"source": "form", "texts": ["그냥 글"]})
-    assert r.json()["safety"] == {"level": "OK", "category": None, "reason": None, "topic": None}, r.text
+    assert r.json()["safety"] == SAFETY_OK, r.text
 print("safety topic ok")
 
 # ── mock이 아니면: /health는 mock false, /safety/check는 판단 노드로 (여기서는 LLM 대신 가짜 응답) ──

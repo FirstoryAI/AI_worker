@@ -4,7 +4,9 @@ sample_refresh.py 순수 함수 확인 (API 없음). uv run python evals/sample_
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +15,17 @@ sys.path.insert(0, str(ROOT / "evals"))
 
 from firstory.nodes.layout import H, MAX_LINE, W, piece_size, sound_words, text_width  # noqa: E402
 from firstory.schemas import SoundPiece, SoundWord, TextBlock  # noqa: E402
-from sample_refresh import SAMPLES, check_story, move_blocks, move_pieces, piece_boxes, export_story, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
+import sample_refresh as sr  # noqa: E402
+from sample_refresh import SAMPLES, check_story, export_story, move_blocks, move_pieces, piece_boxes, redraw_prompt, rewrap, same_text, to_front  # noqa: E402
+
+
+def raises_value_error(fn, *args) -> bool:
+    try:
+        fn(*args)
+    except ValueError:
+        return True
+    return False
+
 
 old_story = json.loads((SAMPLES / "tantrum" / "story.json").read_text(encoding="utf-8"))
 old = [b["paragraphs"] for b in old_story["pages"][0]["textBlocks"]]
@@ -40,7 +52,8 @@ assert to_front([], None) == ([], None)
 # 다시 그리기 지시: 같은 장면·인물 + 덩어리 크기·자리
 p = redraw_prompt([(700.0, 300.0)], ["left top"])
 assert "same characters" in p and "toward the left top" in p, p
-assert "evening" in redraw_prompt([(700.0, 300.0)], ["left top"], "It is evening.") and "Change only this" in redraw_prompt([(1.0, 1.0)], ["left top"], "It is evening.")
+assert "evening" in redraw_prompt([(700.0, 300.0)], ["left top"], "It is evening.")
+assert "Change only this" in redraw_prompt([(1.0, 1.0)], ["left top"], "It is evening.")
 assert "Change only this" not in p
 
 # 내보내기: 바뀌는 건 textBlocks·soundWord뿐, 검사가 망가진 값을 잡는다
@@ -81,19 +94,11 @@ assert [q["side"] for q in moved["pieces"]] == ["LEFT", "RIGHT"] and sw0["pieces
 one = move_pieces(sw0, [(33.0, 60.0)])   # 두 조각 → 자리 하나면 한 조각으로 합친다 (가운데)
 assert one["pieces"] == [{"text": "쓰담쓰담", "x": 33.0, "y": 60.0, "side": "CENTER"}] and one["text"] == "쓰담쓰담"
 for bad_xy in ([(30.0, 50.0)] * 3, [(30.0, 50.0), (101.0, 5.0)]):
-    try:
-        move_pieces(sw0, bad_xy)
-        raise AssertionError(bad_xy)
-    except ValueError:
-        pass
+    assert raises_value_error(move_pieces, sw0, bad_xy), bad_xy
 
 tb0 = [{"paragraphs": [["가."]], "x": 54.0, "y": 50.0, "color": "DARK"}]
 assert move_blocks(tb0, [(25.0, 6.0)]) == [{"paragraphs": [["가."]], "x": 25.0, "y": 6.0, "color": "DARK"}] and tb0[0]["x"] == 54.0
-try:
-    move_blocks(tb0, [(25.0, 6.0), (1.0, 1.0)])
-    raise AssertionError("count")
-except ValueError:
-    pass
+assert raises_value_error(move_blocks, tb0, [(25.0, 6.0), (1.0, 1.0)]), "count"
 
 # 다시 칠하기: 조각 가운데(%) → 조각 상자(px x, y, w, h)
 _pw, _ph = piece_size("쓰담쓰담")
@@ -101,11 +106,6 @@ assert piece_boxes({"text": "쓰담쓰담", "color": "#000000", "pieces": [{"tex
     (W * 0.5 - _pw / 2, H * 0.25 - _ph / 2, _pw, _ph)]
 
 # 내보낸 뒤(샘플동화-1106 있음)에는 원본을 백업에서 읽고, 다시 그리지 않은 쪽 그림은 백업에서 되돌린다 (리뷰 Important 1)
-import shutil  # noqa: E402
-import tempfile  # noqa: E402
-
-import sample_refresh as sr  # noqa: E402
-
 _saved = (sr.SAMPLES, sr.BACKUP, sr.ZIP, sr.OUT, sr.RESULT)
 _src = sr.BACKUP if sr.BACKUP.exists() else sr.SAMPLES
 with tempfile.TemporaryDirectory() as _d:

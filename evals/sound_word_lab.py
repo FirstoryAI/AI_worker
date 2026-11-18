@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import shutil
 import sys
 import time
@@ -21,52 +20,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from firstory.nodes.layout import (  # noqa: E402
-    FONT_PATH, FONT_RATIO, PIECE_RATIO, H, W, Busy, SfxAsk, place_page, place_word, settle, short_look, sound_words,
-)
+from _lab_pages import blocks_html, load_pages, word_html  # noqa: E402
+from firstory.nodes.layout import FONT_PATH, FONT_RATIO, PIECE_RATIO, H, W, Busy, SfxAsk, place_page, place_word, settle, sound_words  # noqa: E402
 from firstory.schemas import TextBlock  # noqa: E402
 
 SAMPLE_CAST = [("미루", "A small white rabbit, the main character"), ("가온 선생님", "A big brown bear teacher")]
 
 
-def load(src: Path) -> list[dict]:
-    """쪽마다 {name, order, text, image(path), blocks(지금 text_blocks 문단), old(TextBlock 목록), cast}"""
-    out = []
-    if (src / "03-story.json").exists():
-        story = json.loads((src / "03-story.json").read_text(encoding="utf-8"))
-        ill = json.loads((src / "05-illustrations.json").read_text(encoding="utf-8"))
-        looks = {c["name"]: short_look(c["visual_description"]) for c in story["characters"]}
-        imgs = {p["order"]: p for p in ill["pages"]}
-        for p in story["pages"]:
-            pi = imgs.get(p["order"]) or {}
-            if not sound_words(p["text"]) or not pi.get("path") or not pi.get("text_blocks"):
-                continue
-            old = [TextBlock(**b) for b in pi["text_blocks"]]
-            out.append({"name": src.name, "order": p["order"], "text": p["text"],
-                        "image": src.parent / pi["path"], "old": old,
-                        "cast": [(n, looks.get(n, "")) for n in p["characters_in_scene"]]})
-    else:
-        story = json.loads((src / "story.json").read_text(encoding="utf-8"))
-        for p in story["pages"]:
-            if not sound_words(p["text"]):
-                continue
-            n = p["pageNo"]
-            old = [TextBlock(paragraphs=b["paragraphs"], x=b["x"], y=b["y"], color=b["color"].lower()) for b in p.get("textBlocks") or []]
-            if not old:
-                continue
-            nested = src / "pages" / f"page-{n:02d}" / f"page-{n:02d}.webp"   # 노란접시 에셋 모양
-            flat = src / (p.get("image") or f"page-{n:02d}.webp")              # 프론트 sample-stories 모양 (인물 정보 없음)
-            out.append({"name": story.get("title", src.name), "order": n, "text": p["text"],
-                        "image": nested if nested.exists() else flat, "old": old, "cast": SAMPLE_CAST if nested.exists() else []})
-    return out
-
-
-def blocks_html(tbs: list[TextBlock]) -> str:
-    out = []
-    for b in tbs:
-        paras = "".join(f'<p>{"<br>".join(html.escape(l).replace("**", "") for l in para)}</p>' for para in b.paragraphs)
-        out.append(f'<div class="tb {b.color}" style="left:{b.x}%;top:{b.y}%">{paras}</div>')
-    return "".join(out)
+def rect(bx, cls: str) -> str:
+    """(x0, y0, x1, y1) % 칸을 점선 상자로"""
+    return f'<span class="{cls}" style="left:{bx[0]}%;top:{bx[1]}%;width:{bx[2] - bx[0]}%;height:{bx[3] - bx[1]}%"></span>'
 
 
 def main():
@@ -80,7 +43,7 @@ def main():
     (out_dir / "img").mkdir(parents=True, exist_ok=True)
     shutil.copy(FONT_PATH, out_dir / "font.woff2")
 
-    pages = [pg for src in args.inputs for pg in load(Path(src).expanduser().resolve())]
+    pages = [pg for src in args.inputs for pg in load_pages(Path(src).expanduser().resolve(), sound_only=True, sample_cast=SAMPLE_CAST)]
     rows, tin, tout = [], 0, 0
     for i, pg in enumerate(pages):
         image = pg["image"].read_bytes()
@@ -91,32 +54,34 @@ def main():
         t0 = time.time()
         spots, _, wspot, costs = place_page(image, blocks, ask, grid=args.grid)
         ms = int((time.time() - t0) * 1000)
-        tin += sum(c.input_tokens for c in costs)
-        tout += sum(c.output_tokens for c in costs)
+        pin, pout = sum(c.input_tokens for c in costs), sum(c.output_tokens for c in costs)
+        tin += pin
+        tout += pout
         got = settle(busy, blocks, spots) if spots else None
         new = [TextBlock(paragraphs=b, **g) for b, g in zip(blocks, got)] if got else []
         sw = place_word(busy, word, wspot, new or pg["old"])
         name = f"img/{i:02d}{pg['image'].suffix}"
         shutil.copy(pg["image"], out_dir / name)
 
-        def rect(bx, cls):
-            return f'<span class="{cls}" style="left:{bx[0]}%;top:{bx[1]}%;width:{bx[2] - bx[0]}%;height:{bx[3] - bx[1]}%"></span>'
-
         dot = ""
         if wspot:
             dot = rect(wspot["source"], "box") + "".join(rect(b, "cbox") for _, b in wspot["chars"])
-        word_html = "".join(f'<span class="sw" style="left:{q.x}%;top:{q.y}%;color:{sw.color}">{html.escape(q.text)}</span>'
-                            for q in sw.pieces) if sw else ""
-        placed = (f"조각 {len(sw.pieces)}개 · 색 {sw.color}" if sw else ("놓을 곳 없음 → null" if wspot else "AI 답 없음 → null"))
+        if sw:
+            placed = f"조각 {len(sw.pieces)}개 · 색 {sw.color}"
+        elif wspot:
+            placed = "놓을 곳 없음 → null"
+        else:
+            placed = "AI 답 없음 → null"
+        source = wspot or {}
         meta = (f"<b>{html.escape(pg['name'])} {pg['order']}쪽</b> · 말 <b>{html.escape(word)}</b>"
-                f" · 근원 <b>{html.escape((wspot or {}).get('owner', '-'))}</b> ({(wspot or {}).get('kind', '-')})"
+                f" · 근원 <b>{html.escape(source.get('owner', '-'))}</b> ({source.get('kind', '-')})"
                 f" · {placed} · 글 자리 {'새 자리' if new else '못 정함(기존 자리로 그림)'} · {ms / 1000:.1f}초"
-                f" · 입력 {sum(c.input_tokens for c in costs)} / 출력 {sum(c.output_tokens for c in costs)}토큰")
+                f" · 입력 {pin} / 출력 {pout}토큰")
         rows.append(f"""
 <section><div class="meta">{meta}</div>
 <div class="pair">
   <figure><div class="pg"><img src="{name}">{blocks_html(pg['old'])}</div><figcaption>지금 저장된 글 자리</figcaption></figure>
-  <figure><div class="pg"><img src="{name}">{blocks_html(new or pg['old'])}{word_html}{dot}</div><figcaption>새 글 자리 + 의성어{' (눈금 그림으로 물음)' if args.grid else ''}</figcaption></figure>
+  <figure><div class="pg"><img src="{name}">{blocks_html(new or pg['old'])}{word_html(sw)}{dot}</div><figcaption>새 글 자리 + 의성어{' (눈금 그림으로 물음)' if args.grid else ''}</figcaption></figure>
 </div>
 <details><summary>본문</summary><pre>{html.escape(pg['text'])}</pre></details></section>""")
         print(f"{i + 1}/{len(pages)} {pg['order']}쪽 {ms}ms", flush=True)

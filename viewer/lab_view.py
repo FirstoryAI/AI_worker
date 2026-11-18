@@ -55,8 +55,10 @@ def _sidebar(root: Path):
         st.caption("같은 입력·같은 인터뷰로 전략만 바꿔 뽑는다 (텍스트만)")
         sample = st.selectbox("샘플", inputs, format_func=lambda p: p.stem, key="lab_sample")
         bases = lab.base_runs(sample.stem)
-        base = st.selectbox("기준 실행 (이 인터뷰를 그대로 씀)", bases, format_func=_base_label, key="lab_base") if bases else None
-        if not bases:
+        if bases:
+            base = st.selectbox("기준 실행 (이 인터뷰를 그대로 씀)", bases, format_func=_base_label, key="lab_base")
+        else:
+            base = None
             st.info("이 샘플로 돌린 실행이 없어요. 아래 버튼으로 먼저 만들어요.")
         if st.button("이 샘플로 기준 새로 만들기 (텍스트만 · 2~3분)", width="stretch"):
             with st.spinner("스크립트 답변으로 인터뷰부터 동화까지 한 번 돌리는 중…"):
@@ -76,8 +78,9 @@ def _sidebar(root: Path):
 
 
 def _scores(e: dict, ok: list[str]):
-    rows = [{"전략": _name(k), "제목": e["variants"][k]["story"]["title"],
-             **lab.score_row(e["variants"][k]), **_form(e["variants"][k]["dir"])} for k in ok]
+    variants = e["variants"]
+    rows = [{"전략": _name(k), "제목": variants[k]["story"]["title"], **lab.score_row(variants[k]), **_form(variants[k]["dir"])}
+            for k in ok]
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption("점수는 LLM이 매긴 1~5점이라 방향 참고용이에요. 고를 때는 아래 본문을 직접 읽어 주세요. "
                "설계 반영 = 설계의 쪽별 사건이 본문에 실제로 나온 수.")
@@ -100,14 +103,17 @@ def _side_by_side(e: dict, ok: list[str]):
 def _detail(e: dict, ok: list[str]):
     st.subheader("전략별 자세히")
     for t, k in zip(st.tabs([_name(k) for k in ok]), ok):
-        v, d = e["variants"][k], e["variants"][k]["design"]
+        v = e["variants"][k]
+        d = v["design"]
         with t:
             st.caption(lab.PRESETS[k][1])
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**설계**")
                 p = d["protagonist"]
-                who = f"{p['name']} ({p['species']})" + (f" · {d['supporting']['name']} ({d['supporting']['species']})" if d.get("supporting") else "")
+                who = f"{p['name']} ({p['species']})"
+                if d.get("supporting"):
+                    who += f" · {d['supporting']['name']} ({d['supporting']['species']})"
                 st.markdown(f"- 인물: {who}\n- 원인: {d.get('problem_cause', '')}")
                 for f, label in _EXTRA:
                     if d.get(f):
@@ -149,21 +155,22 @@ def render(root: Path):
         _explain()
         return
 
-    e = lab.load(Path(path))
-    meta, ctx = e["meta"], e["context"]
-    st.header(f"프롬프트 실험 · {Path(path).name}")
+    exp_dir = Path(path)
+    e = lab.load(exp_dir)
+    meta, variants = e["meta"], e["variants"]
+    st.header(f"프롬프트 실험 · {exp_dir.name}")
     st.caption(f"기준 {Path(meta['base']).name} · {meta['created']} · 설계·작성 {meta['model_main']} · 채점 {meta['model_judge']}")
     with st.expander("입력과 인터뷰 정리"):
-        s = ctx["situation"]
+        s = e["context"]["situation"]
         st.markdown(f"**상황** ({s['category']} · {s['timing']}) {s['description']}")
         st.success(e["summary"])
     for k in meta["keys"]:
-        if e["variants"][k]["error"]:
-            st.error(f"{_name(k)} 실패 — {e['variants'][k]['error']}")
-    ok = [k for k in meta["keys"] if e["variants"][k]["story"]]
+        if variants[k]["error"]:
+            st.error(f"{_name(k)} 실패 — {variants[k]['error']}")
+    ok = [k for k in meta["keys"] if variants[k]["story"]]
     if not ok:
         return
     _scores(e, ok)
     _side_by_side(e, ok)
     _detail(e, ok)
-    st.caption(f"표·본문 전체: {Path(path) / 'compare.md'}")
+    st.caption(f"표·본문 전체: {exp_dir / 'compare.md'}")

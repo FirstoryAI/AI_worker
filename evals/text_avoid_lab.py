@@ -20,47 +20,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from _lab_pages import blocks_html, load_pages, word_html  # noqa: E402
 from firstory.nodes import illustrate as il  # noqa: E402
 from firstory.nodes import layout  # noqa: E402
-from firstory.nodes.layout import FONT_PATH, FONT_RATIO, H, W, SfxAsk, block_size, blockers, short_look, sound_words, wrap_line  # noqa: E402
+from firstory.nodes.layout import FONT_PATH, FONT_RATIO, H, W, SfxAsk, blockers, sound_words, wrap_line  # noqa: E402
 from firstory.schemas import TextBlock  # noqa: E402
-
-
-def load(src: Path) -> list[dict]:
-    """쪽마다 {name, order, text, image(path), old(TextBlock 목록), cast}"""
-    out = []
-    if (src / "03-story.json").exists():
-        story = json.loads((src / "03-story.json").read_text(encoding="utf-8"))
-        ill = json.loads((src / "05-illustrations.json").read_text(encoding="utf-8"))
-        looks = {c["name"]: short_look(c["visual_description"]) for c in story["characters"]}
-        imgs = {p["order"]: p for p in ill["pages"]}
-        for p in story["pages"]:
-            pi = imgs.get(p["order"]) or {}
-            if not pi.get("path") or not pi.get("text_blocks"):
-                continue
-            out.append({"name": src.name, "order": p["order"], "text": p["text"], "image": src.parent / pi["path"],
-                        "old": [TextBlock(**b) for b in pi["text_blocks"]],
-                        "cast": [(n, looks.get(n, "")) for n in p["characters_in_scene"]]})
-    else:
-        story = json.loads((src / "story.json").read_text(encoding="utf-8"))
-        for p in story["pages"]:
-            n = p["pageNo"]
-            old = [TextBlock(paragraphs=b["paragraphs"], x=b["x"], y=b["y"], color=b["color"].lower()) for b in p.get("textBlocks") or []]
-            if not old:
-                continue
-            nested = src / "pages" / f"page-{n:02d}" / f"page-{n:02d}.webp"
-            flat = src / (p.get("image") or f"page-{n:02d}.webp")
-            out.append({"name": story.get("title", src.name), "order": n, "text": p["text"],
-                        "image": nested if nested.exists() else flat, "old": old, "cast": []})
-    return out
-
-
-def blocks_html(tbs: list[TextBlock]) -> str:
-    out = []
-    for b in tbs:
-        paras = "".join(f'<p>{"<br>".join(html.escape(l).replace("**", "") for l in para)}</p>' for para in b.paragraphs)
-        out.append(f'<div class="tb {b.color}" style="left:{b.x}%;top:{b.y}%">{paras}</div>')
-    return "".join(out)
 
 
 def overlap(tbs: list[TextBlock], chars) -> float:
@@ -87,7 +51,7 @@ def main():
     out_dir = ROOT / "out" / args.out
     (out_dir / "img").mkdir(parents=True, exist_ok=True)
     shutil.copy(FONT_PATH, out_dir / "font.woff2")
-    pages = [pg for src in args.inputs for pg in load(Path(src).expanduser().resolve())]
+    pages = [pg for src in args.inputs for pg in load_pages(Path(src).expanduser().resolve())]
     if args.limit:
         pages = pages[:args.limit]
 
@@ -96,10 +60,10 @@ def main():
     orig_place = il.place_page
     saved: dict = json.loads((ROOT / "out" / args.replay / "answers.json").read_text()) if args.replay else {}
     answers: dict = {}
-    key = [""]
+    page_key = ""
 
     def spy(*a, **k):
-        kk = f"{key[0]}#{len(seen)}"
+        kk = f"{page_key}#{len(seen)}"
         if args.replay:
             spots, chars, word = saved[kk]
             chars = [(n, tuple(b)) for n, b in chars]
@@ -121,14 +85,15 @@ def main():
         sfx = SfxAsk(word=words[0], text=pg["text"], cast=pg["cast"]) if words else None
         blocks = [[[w for line in para for w in wrap_line(line)] for para in b.paragraphs] for b in pg["old"]]   # 지금 글자 크기로 다시 감기
         seen.clear()
-        key[0] = f"{pg['name']}/{pg['order']}"
+        page_key = f"{pg['name']}/{pg['order']}"
         wanted: list = []
         costs: list = []
         t0 = time.time()
         new, sw = il._arrange(pg["order"], image, blocks, costs, lambda bl, where: wanted.append(where) or None, sfx)
         ms = int((time.time() - t0) * 1000)
-        tin += sum(c.input_tokens for c in costs)
-        tout += sum(c.output_tokens for c in costs)
+        pin, pout = sum(c.input_tokens for c in costs), sum(c.output_tokens for c in costs)
+        tin += pin
+        tout += pout
         chars = seen[0] if seen else []
         ob, oa = overlap(pg["old"], chars), overlap(new, chars)
         stats["before"] += ob > 0
@@ -140,17 +105,15 @@ def main():
         shutil.copy(pg["image"], out_dir / name)
         cbox = "".join(f'<span class="cbox" style="left:{b[0]}%;top:{b[1]}%;width:{b[2] - b[0]}%;height:{b[3] - b[1]}%"></span>'
                        for _, b in chars)
-        word_html = "".join(f'<span class="sw" style="left:{q.x}%;top:{q.y}%;color:{sw.color}">{html.escape(q.text)}</span>'
-                            for q in sw.pieces) if sw else ""
         meta = (f"<b>{html.escape(pg['name'])} {pg['order']}쪽</b> · 캐릭터 칸 {len(chars)}개"
                 f" · 겹침 {ob:.1f}% → {oa:.1f}% · 덩어리 {len(pg['old'])} → {len(new)}"
                 f"{' · <b>다시 그리기 필요</b>' if wanted else ''} · {ms / 1000:.1f}초"
-                f" · 입력 {sum(c.input_tokens for c in costs)} / 출력 {sum(c.output_tokens for c in costs)}토큰")
+                f" · 입력 {pin} / 출력 {pout}토큰")
         rows.append(f"""
 <section><div class="meta">{meta}</div>
 <div class="pair">
   <figure><div class="pg"><img src="{name}">{blocks_html(pg['old'])}{cbox}</div><figcaption>지금 저장된 글 자리 (파란 점선은 새로 받은 캐릭터 칸)</figcaption></figure>
-  <figure><div class="pg"><img src="{name}">{blocks_html(new)}{word_html}{cbox}</div><figcaption>새 글 자리{' + 의성어' if sfx else ''}</figcaption></figure>
+  <figure><div class="pg"><img src="{name}">{blocks_html(new)}{word_html(sw)}{cbox}</div><figcaption>새 글 자리{' + 의성어' if sfx else ''}</figcaption></figure>
 </div></section>""")
         print(f"{i + 1}/{len(pages)} {pg['order']}쪽 {ms}ms 겹침 {ob:.1f}→{oa:.1f}", flush=True)
     il.place_page = orig_place

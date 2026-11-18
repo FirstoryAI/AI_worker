@@ -50,6 +50,19 @@ def _w(p: Path, obj):
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
 
+def _summary(exp: Path) -> str:
+    return (_j(exp / "01-interview.json") or {}).get("summary") or ""
+
+
+def _cell(s) -> str:
+    """마크다운 표 칸 하나: 줄바꿈·| 를 막는다."""
+    return str(s).replace("\n", " ").replace("|", "\\|")
+
+
+def _name(key: str) -> str:
+    return PRESETS[key][0]
+
+
 def _text_graph():
     """설계 → 쓰기 → 다듬기. 본 그래프와 같은 노드, 인터뷰·그림·가이드만 뺐다."""
     g = StateGraph(PipelineState)
@@ -80,7 +93,7 @@ def run_variant(exp: Path, key: str, judge_on: bool = True) -> Path:
     """실험 폴더의 기준 입력으로 전략 하나를 돌린다."""
     _, _, strategy = PRESETS[key]
     ctx = StoryInputContext(**_j(exp / "00-context.json"))
-    summary = (_j(exp / "01-interview.json") or {}).get("summary") or ""
+    summary = _summary(exp)
     s = _text_graph().invoke({"context": ctx, "interview_summary": summary, "strategy": strategy, "cost": []})
 
     d = exp / key
@@ -172,7 +185,7 @@ def load(exp: Path) -> dict:
             "cost": _j(d / "99-cost.json") or [],
         }
     return {"dir": exp, "meta": meta, "context": _j(exp / "00-context.json"),
-            "summary": (_j(exp / "01-interview.json") or {}).get("summary") or "", "variants": variants}
+            "summary": _summary(exp), "variants": variants}
 
 
 def score_row(v: dict) -> dict:
@@ -196,21 +209,19 @@ def score_row(v: dict) -> dict:
 def compare_md(exp: Path) -> str:
     e = load(exp)
     keys = [k for k in e["meta"]["keys"] if e["variants"][k]["story"]]
-    cell = lambda s: str(s).replace("\n", " ").replace("|", "\\|")
-    name = lambda k: PRESETS[k][0]
     out = [f"# 프롬프트 실험 · {exp.name}", "", f"기준: `{e['meta']['base']}`", "",
-           f"> {cell(e['summary'])}", ""]
+           f"> {_cell(e['summary'])}", ""]
     rows = {k: score_row(e["variants"][k]) for k in keys}
     cols = [c for c in ["재미", "개연성", "따뜻함", "눈높이", "부모 의도", "주인공 주도", "평균", "설계 반영", "토큰", "시간(s)"]
             if any(c in r for r in rows.values())]
     out += ["| 전략 | " + " | ".join(cols) + " |", "|---" * (len(cols) + 1) + "|"]
-    out += [f"| {name(k)} | " + " | ".join(cell(rows[k].get(c, "")) for c in cols) + " |" for k in keys]
-    out += ["", "| | " + " | ".join(name(k) for k in keys) + " |", "|---" * (len(keys) + 1) + "|",
-            "| 제목 | " + " | ".join(cell(e["variants"][k]["story"]["title"]) for k in keys) + " |"]
+    out += [f"| {_name(k)} | " + " | ".join(_cell(rows[k].get(c, "")) for c in cols) + " |" for k in keys]
+    out += ["", "| | " + " | ".join(_name(k) for k in keys) + " |", "|---" * (len(keys) + 1) + "|",
+            "| 제목 | " + " | ".join(_cell(e["variants"][k]["story"]["title"]) for k in keys) + " |"]
     pages = [{p["order"]: p["text"] for p in e["variants"][k]["story"]["pages"]} for k in keys]
     for o in sorted(set().union(*pages)):
-        out.append(f"| {o}쪽 | " + " | ".join(cell(p.get(o, "")) for p in pages) + " |")
+        out.append(f"| {o}쪽 | " + " | ".join(_cell(p.get(o, "")) for p in pages) + " |")
     failed = [k for k in e["meta"]["keys"] if e["variants"][k]["error"]]
     if failed:
-        out += ["", "실패: " + ", ".join(f"{name(k)} ({e['variants'][k]['error'][:80]})" for k in failed)]
+        out += ["", "실패: " + ", ".join(f"{_name(k)} ({e['variants'][k]['error'][:80]})" for k in failed)]
     return "\n".join(out) + "\n"

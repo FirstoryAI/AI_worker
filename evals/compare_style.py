@@ -50,7 +50,7 @@ def sheet(dirs: list[Path], labels: list[str], dest: Path):
     W, G, H = 768, 12, 36
     rows = []
     for name in names:
-        pair = [next(iter(sorted(d.glob(f"{name}.*"))), None) for d in dirs]
+        pair = [min(d.glob(f"{name}.*"), default=None) for d in dirs]
         size = Image.open(next(f for f in pair if f)).size if any(pair) else (W, W)
         rows.append((name, pair, round(W * size[1] / size[0])))
     im = Image.new("RGB", (len(dirs) * (W + G) + G, sum(h + H + G for *_, h in rows) + G), "white")

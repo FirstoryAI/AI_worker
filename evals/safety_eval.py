@@ -90,7 +90,7 @@ def run(case):
     return case, result
 
 
-if __name__ == "__main__":
+def main() -> None:
     only = set(sys.argv[1:])
     cases = [c for c in CASES if not only or c[3] in only]
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -98,17 +98,28 @@ if __name__ == "__main__":
 
     level_ok = cat_ok = topic_ok = 0
     for case, r in results:
-        source, texts, _, want_level, want_cat = case[:5]
-        want_topic = case[5] if len(case) > 5 else None
+        source, texts, _, want_level, want_cat, *rest = case
+        want_topic = rest[0] if rest else None
         lv = want_level is None or r.level == want_level
         ct = want_level is None or r.category == want_cat
         tp = r.topic == want_topic
         level_ok += lv
         cat_ok += lv and ct
         topic_ok += tp
-        mark = ("✓" if lv and ct else ("△" if lv else "✗")) + ("" if tp else " topic✗")
+        if lv and ct:
+            mark = "✓"
+        elif lv:
+            mark = "△"
+        else:
+            mark = "✗"
+        if not tp:
+            mark += " topic✗"
         print(f"{mark} [{source}] 기대 {want_level}/{want_cat}/{want_topic} → {r.level}/{r.category}/{r.topic}  {texts[0][:40]!r}")
         if r.reason:
             print(f"     reason: {r.reason}")
     n = len(results)
     print(f"\nlevel 맞음 {level_ok}/{n}, level·category 모두 맞음 {cat_ok}/{n}, topic 맞음 {topic_ok}/{n}")
+
+
+if __name__ == "__main__":
+    main()

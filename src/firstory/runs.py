@@ -18,6 +18,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _error_json(code: str, node: Optional[str], message: str) -> str:
+    return json.dumps({"code": code, "node": node, "message": message}, ensure_ascii=False)
+
+
 class Runs:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,9 +52,8 @@ class Runs:
                     _now(), thread_id)
 
     def fail(self, thread_id: str, code: str, node: Optional[str], message: str) -> None:
-        error = json.dumps({"code": code, "node": node, "message": message}, ensure_ascii=False)
         self._write("UPDATE ai_runs SET state = 'FAILED', error = ?, updated_at = ? WHERE thread_id = ?",
-                    error, _now(), thread_id)
+                    _error_json(code, node, message), _now(), thread_id)
 
     def get(self, thread_id: str) -> Optional[dict]:
         with self._lock:
@@ -63,8 +66,7 @@ class Runs:
 
     def interrupt_running(self) -> int:
         """서버가 꺼질 때 돌던 실행은 이어 갈 수 없으므로 FAILED로. 서버 시작할 때 부른다."""
-        error = json.dumps({"code": "SERVER_RESTARTED", "node": None, "message": "AI 서버가 다시 시작돼 실행이 끊겼습니다"},
-                           ensure_ascii=False)
+        error = _error_json("SERVER_RESTARTED", None, "AI 서버가 다시 시작돼 실행이 끊겼습니다")
         with self._lock, self._conn:
             return self._conn.execute("UPDATE ai_runs SET state = 'FAILED', error = ?, updated_at = ? WHERE state = 'RUNNING'",
                                       (error, _now())).rowcount
