@@ -25,9 +25,9 @@ def draw(a_dir: Path) -> tuple[Path, float, int]:
     story = StoryText(**json.loads((a_dir / "03-story.json").read_text(encoding="utf-8")))
     out = a_dir.with_name(f"{a_dir.name}__{config.image_quality}") / "images"
     key = out.resolve().relative_to(config.output_root.resolve()).as_posix()   # 기준 폴더가 저장소 루트(out/) 아래여야 한다
-    t0, made = time.time(), 0
+    t0 = time.time()
     result, costs = ill._run(story, key)
-    made += sum(c.images for c in costs)
+    made = sum(c.images for c in costs)
     for _ in range(6):
         failed = {p.order for p in result.pages if p.status != "completed"}
         if not failed:

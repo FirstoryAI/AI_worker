@@ -28,10 +28,15 @@ _structured = story_node.structured
 def tagged(tag: str):
     try:
         from langsmith import trace
-        with trace(name=tag, tags=[tag]):
-            yield
     except ImportError:
         yield
+        return
+    with trace(name=tag, tags=[tag]):
+        yield
+
+
+def _read(a_dir: Path, name: str):
+    return json.loads((a_dir / name).read_text(encoding="utf-8"))
 
 
 def run(a_dir: Path, *, reasoning: str | None, design_model: str | None, tag: str):
@@ -43,9 +48,9 @@ def run(a_dir: Path, *, reasoning: str | None, design_model: str | None, tag: st
         return _structured(**kw)
 
     state = {
-        "context": StoryInputContext(**json.loads((a_dir / "00-context.json").read_text(encoding="utf-8"))),
-        "interview_summary": json.loads((a_dir / "01-interview.json").read_text(encoding="utf-8")).get("summary") or "",
-        "story": StoryText(**json.loads((a_dir / "03-story.json").read_text(encoding="utf-8"))),
+        "context": StoryInputContext(**_read(a_dir, "00-context.json")),
+        "interview_summary": _read(a_dir, "01-interview.json").get("summary") or "",
+        "story": StoryText(**_read(a_dir, "03-story.json")),
     }
     story_node.structured = patched
     try:
@@ -57,31 +62,48 @@ def run(a_dir: Path, *, reasoning: str | None, design_model: str | None, tag: st
     return d["story_design"].model_dump(), g["guide"].model_dump(), {c.node: c for c in d["cost"] + g["cost"]}
 
 
+def _cell(s) -> str:
+    return str(s).replace("\n", " ").replace("|", "\\|")
+
+
+def _who(d: dict) -> str:
+    who = f"{d['protagonist']['name']} ({d['protagonist']['species']})"
+    if d.get("supporting"):
+        s = d["supporting"]
+        who += f" · {s['name']} ({s['species']}, {s['role']})"
+    return who
+
+
+def _arc_step(d: dict, i: int) -> str:
+    return _cell(d["story_arc"][i]) if i < len(d["story_arc"]) else ""
+
+
+def _guide_prompt(g: dict, i: int) -> str:
+    if i >= len(g["prompts"]):
+        return ""
+    q = g["prompts"][i]
+    return f"({q['after_page']}쪽 뒤, {q['purpose']}) {_cell(q['text'])}<br>부모 힌트: {_cell(q.get('parent_hint') or '')}"
+
+
 def md(name, label, base, var) -> str:
-    cell = lambda s: str(s).replace("\n", " ").replace("|", "\\|")
     (db, gb, cb), (dv, gv, cv) = base, var
-    who = lambda d: f"{d['protagonist']['name']} ({d['protagonist']['species']})" + (
-        f" · {d['supporting']['name']} ({d['supporting']['species']}, {d['supporting']['role']})" if d.get("supporting") else "")
     out = [f"# {name}: 기준 vs {label}", "", "## 토큰·시간", "", "| 노드 | | 기준 | 변형 |", "|---|---|---|---|"]
     for node in ("design_story", "reading_guide"):
         b, v = cb[node], cv[node]
         out += [f"| {node} | 모델 | {b.model} | {v.model} |", f"| | 입력 토큰 | {b.input_tokens} | {v.input_tokens} |",
                 f"| | 출력 토큰 | {b.output_tokens} | {v.output_tokens} |", f"| | 시간 | {b.ms / 1000:.1f}s | {v.ms / 1000:.1f}s |"]
     out += ["", "## 설계", "", "| | 기준 | 변형 |", "|---|---|---|",
-            f"| 인물 | {cell(who(db))} | {cell(who(dv))} |", f"| 배경 | {cell(db['world'])} | {cell(dv['world'])} |",
-            f"| 상황 | {cell(db['mirrored_situation'])} | {cell(dv['mirrored_situation'])} |",
-            f"| 가치 | {cell(' / '.join(db['values_to_honor']))} | {cell(' / '.join(dv['values_to_honor']))} |"]
+            f"| 인물 | {_cell(_who(db))} | {_cell(_who(dv))} |", f"| 배경 | {_cell(db['world'])} | {_cell(dv['world'])} |",
+            f"| 상황 | {_cell(db['mirrored_situation'])} | {_cell(dv['mirrored_situation'])} |",
+            f"| 가치 | {_cell(' / '.join(db['values_to_honor']))} | {_cell(' / '.join(dv['values_to_honor']))} |"]
     for i in range(max(len(db["story_arc"]), len(dv["story_arc"]))):
-        a = lambda d: cell(d["story_arc"][i]) if i < len(d["story_arc"]) else ""
-        out.append(f"| 흐름 {i + 1} | {a(db)} | {a(dv)} |")
+        out.append(f"| 흐름 {i + 1} | {_arc_step(db, i)} | {_arc_step(dv, i)} |")
     out += ["", "## 독서 가이드 (같은 동화에 대해)", "", "| | 기준 | 변형 |", "|---|---|---|",
-            f"| 방향 | {cell(gb['before_reading']['intent'])} | {cell(gv['before_reading']['intent'])} |",
-            f"| 팁 | {cell(' / '.join(gb['before_reading']['tips']))} | {cell(' / '.join(gv['before_reading']['tips']))} |"]
+            f"| 방향 | {_cell(gb['before_reading']['intent'])} | {_cell(gv['before_reading']['intent'])} |",
+            f"| 팁 | {_cell(' / '.join(gb['before_reading']['tips']))} | {_cell(' / '.join(gv['before_reading']['tips']))} |"]
     for i in range(max(len(gb["prompts"]), len(gv["prompts"]))):
-        q = lambda g: (f"({g['prompts'][i]['after_page']}쪽 뒤, {g['prompts'][i]['purpose']}) {cell(g['prompts'][i]['text'])}"
-                       f"<br>부모 힌트: {cell(g['prompts'][i].get('parent_hint') or '')}") if i < len(g["prompts"]) else ""
-        out.append(f"| 질문 {i + 1} | {q(gb)} | {q(gv)} |")
-    out += [f"| 연결 질문 | {cell(gb['after_reading']['bridge_question'])} | {cell(gv['after_reading']['bridge_question'])} |", ""]
+        out.append(f"| 질문 {i + 1} | {_guide_prompt(gb, i)} | {_guide_prompt(gv, i)} |")
+    out += [f"| 연결 질문 | {_cell(gb['after_reading']['bridge_question'])} | {_cell(gv['after_reading']['bridge_question'])} |", ""]
     return "\n".join(out)
 
 
@@ -92,7 +114,12 @@ def main():
     ap.add_argument("--design-model", choices=["light", "main"])
     args = ap.parse_args()
     model = {"light": config.model_light, "main": config.model_main}.get(args.design_model)
-    label = "-".join(x for x in (f"reasoning-{args.reasoning}" if args.reasoning else "", f"design-{args.design_model}" if model else "") if x)
+    parts = []
+    if args.reasoning:
+        parts.append(f"reasoning-{args.reasoning}")
+    if model:
+        parts.append(f"design-{args.design_model}")
+    label = "-".join(parts)
     for a_dir in args.runs:
         name = a_dir.name.split("_", 1)[-1]
         base = run(a_dir, reasoning=None, design_model=None, tag=f"compare:{label}:base")

@@ -27,6 +27,7 @@ from firstory.schemas import StoryText  # noqa: E402
 BOTH_NEW = ("the second one within the right half (not across the vertical center); "
             "both are just empty parts of the same single scene, not two separate pages. ")
 BOTH_OLD = "the second one within the right half (not across the vertical center). "
+LABELS = {"old": "고치기 전", "new": "고친 뒤"}   # HTML에 이 순서로
 
 
 def old_prompt(new: str, chars) -> str:
@@ -42,28 +43,29 @@ def main() -> None:
     ap.add_argument("--old", type=int, default=1)
     ap.add_argument("--new", type=int, default=3)
     ap.add_argument("--out", default="single-moment")
-    a = ap.parse_args()
+    args = ap.parse_args()
 
-    story = StoryText.model_validate_json((a.src / "03-story.json").read_text(encoding="utf-8"))
-    ill = json.loads((a.src / "05-illustrations.json").read_text(encoding="utf-8"))
-    p = next(x for x in story.pages if x.order == a.page)
-    pi = next(x for x in ill["pages"] if x["order"] == a.page)
-    blocks = [tb["paragraphs"] for tb in pi["text_blocks"]]
+    story = StoryText.model_validate_json((args.src / "03-story.json").read_text(encoding="utf-8"))
+    ill = json.loads((args.src / "05-illustrations.json").read_text(encoding="utf-8"))
+    page = next(x for x in story.pages if x.order == args.page)
+    page_ill = next(x for x in ill["pages"] if x["order"] == args.page)
+    blocks = [tb["paragraphs"] for tb in page_ill["text_blocks"]]
     by_name = {c.name: c for c in story.characters}
-    chars = [by_name[n] for n in p.characters_in_scene if n in by_name]
-    sheets = {unicodedata.normalize("NFC", f.name): f for f in [*a.src.glob("sheet-*.webp"), *a.src.glob("images/sheet-*.webp"), *a.src.glob("*sheet-*.webp")]}
+    chars = [by_name[n] for n in page.characters_in_scene if n in by_name]
+    # 파일 이름은 NFD(맥)일 수 있어 NFC로 맞춰 인물 이름과 비교한다
+    sheets = {unicodedata.normalize("NFC", f.name): f for f in [*args.src.glob("sheet-*.webp"), *args.src.glob("images/sheet-*.webp"), *args.src.glob("*sheet-*.webp")]}
     refs = []
     for c in chars:
         f = next(v for k, v in sheets.items() if unicodedata.normalize("NFC", c.name) in k)
         refs.append((f"{il._safe(c.name)}.png", il._ref(f.read_bytes())))
 
-    new = il.page_prompt(story, chars, p.image_prompt, [block_size(b) for b in blocks])
+    new = il.page_prompt(story, chars, page.image_prompt, [block_size(b) for b in blocks])
     prompts = {"old": old_prompt(new, chars), "new": new}
-    out = ROOT / "out" / a.out
+    out = ROOT / "out" / args.out
     out.mkdir(parents=True, exist_ok=True)
     (out / "prompts.json").write_text(json.dumps(prompts, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    jobs = [("old", i) for i in range(a.old)] + [("new", i) for i in range(a.new)]
+    jobs = [("old", i) for i in range(args.old)] + [("new", i) for i in range(args.new)]
 
     def draw(job):
         kind, i = job
@@ -77,12 +79,12 @@ def main() -> None:
         done = list(ex.map(draw, jobs))
 
     rows = "".join(
-        f"<h2>{'고치기 전' if k == 'old' else '고친 뒤'}</h2>" + "".join(f'<img src="{n}">' for kk, n in done if kk == k)
-        for k in ("old", "new"))
+        f"<h2>{LABELS[kind]}</h2>" + "".join(f'<img src="{name}">' for k, name in done if k == kind)
+        for kind in LABELS)
     (out / "index.html").write_text(
         f"<!doctype html><meta charset=utf-8><title>한 순간 실험</title><style>body{{font-family:sans-serif;margin:16px}}"
         f"img{{width:48%;margin:4px}}pre{{white-space:pre-wrap;background:#f4f4f4;padding:8px}}</style>"
-        f"<h1>{html.escape(story.title)} {a.page}쪽</h1><pre>{html.escape(p.image_prompt)}</pre>{rows}", encoding="utf-8")
+        f"<h1>{html.escape(story.title)} {args.page}쪽</h1><pre>{html.escape(page.image_prompt)}</pre>{rows}", encoding="utf-8")
     print(out / "index.html")
 
 

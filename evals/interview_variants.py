@@ -1,5 +1,5 @@
 """인터뷰 다음 질문을 같은 상황에서 프롬프트·reasoning 안별로 다시 만들어 시간과 결과를 비교한다 (#82).
-입력: 개발 서버 체크포인트에서 뽑은 interview_step 직전 상태 목록(JSON). 출력: 결과 JSON + 나란히 보는 markdown.
+입력: 개발 서버 체크포인트에서 뽑은 interview_step 직전 상태 목록(JSON). 출력: <출력 경로>.json
   uv run python evals/interview_variants.py steps.json out/interview-variants [2026-11-06T15]
 """
 from __future__ import annotations
@@ -65,19 +65,17 @@ def run(step: dict, name: str) -> dict:
 
 
 def main(src: str, out: str) -> None:
-    steps = json.loads(Path(src).read_text())
     since = sys.argv[3] if len(sys.argv) > 3 else ""   # 이 시각(UTC ISO) 뒤의 차례만. 예 2026-11-06T15 = 11/7 한국 시각부터
-    steps = [s for s in steps if s["at"] >= since]
-    steps.sort(key=lambda s: (s["thread"], len(s["turns"])))
-    # 캐시가 걸리게 B·C의 같은 앞부분을 한 번 먼저 보낸다
+    steps = sorted((s for s in json.loads(Path(src).read_text()) if s["at"] >= since),
+                   key=lambda s: (s["thread"], len(s["turns"])))
+    # 캐시가 걸리게 모든 안이 함께 쓰는 앞부분을 한 번 먼저 보낸다
     run(steps[0], next(iter(VARIANTS)))
-    results: list[dict] = [None] * len(steps)
 
-    def one(i):
-        results[i] = {"step": i, "rows": [run(steps[i], v) for v in VARIANTS]}
+    def one(i: int) -> dict:
+        return {"step": i, "rows": [run(steps[i], v) for v in VARIANTS]}
 
     with ThreadPoolExecutor(3) as pool:
-        list(pool.map(one, range(len(steps))))
+        results = list(pool.map(one, range(len(steps))))
     Path(out + ".json").write_text(json.dumps(results, ensure_ascii=False, indent=1))
     print(len(steps), "steps")
 

@@ -7,17 +7,27 @@ from __future__ import annotations
 import io
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from firstory.nodes.layout import (  # noqa: E402
-    BAND, BUSY_LIMIT, EDGE_X, EDGE_Y, FOLD, FONT_PX, FONT_RATIO, GAP, H, MAX_LINE, W,
-    Busy, block_size, build_blocks, calmest, calmest_pick, side_of, chunk_page, merge, normalize_chunks, place_page, settle, split_lines, text_width, wrap_line,
-)
+import firstory.nodes.layout as lay  # noqa: E402
 from firstory import llm, mock  # noqa: E402
-from firstory.schemas import BlockSpot, CharacterBox, OwnerBox, TextChunking, TextPlacement  # noqa: E402
+from firstory.llm import prompt  # noqa: E402
+from firstory.nodes.illustrate import _stale  # noqa: E402
+from firstory.nodes.layout import (  # noqa: E402
+    BAND, BUSY_LIMIT, CHAR_PAD, EDGE_X, EDGE_Y, FOLD, FONT_PX, FONT_RATIO, GAP, H, HUES, LINE_PX, MAX_LINE, SFX_FOLD, W,
+    Busy, SfxAsk, _closer_to_source, _others, _overlap, _rect_dist, block_size, blockers, build_blocks, calmest,
+    calmest_pick, chunk_page, contrast, delta_e, merge, normalize_chunks, pick_color, piece_size, place_page, place_word,
+    settle, short_look, side_of, sound_words, split_block, split_lines, split_word, text_color, text_width, wrap_line,
+)
+from firstory.schemas import (  # noqa: E402
+    BlockSpot, CharacterBox, OwnerBox, PageImage, TextBlock, TextChunking, TextPlacement, TextPlacementWithWord, WordSpot,
+)
 
 # ── 줄 나누기 ──
 # 대사 하나는 한 줄 (#77): 따옴표 안의 마침표·줄바꿈에서는 자르지 않는다
@@ -63,14 +73,21 @@ assert len(blocks) == 2 and len(blocks[0]) == 2 and blocks[1] == [["라라는 �
 assert blocks[0][0] == [lines[0]] and blocks[0][1][0] == lines[1]
 assert merge(blocks) == [blocks[0] + blocks[1]]
 
-w, h = block_size([["가나다"], ["라마"]]); assert h == (2 + 0.6) * FONT_PX * 1.55
+w, h = block_size([["가나다"], ["라마"]])
+assert h == (2 + 0.6) * FONT_PX * 1.55
 assert abs(w - text_width("가나다")) < 1e-9
 assert block_size([["가", "나", "다"]])[1] == 3 * FONT_PX * 1.55
 
 
 # ── 합성 그림: 왼쪽 위(x 5~45%, y 7~40%)만 줄무늬, 나머지는 흰 바탕 ──
 def png(img: Image.Image) -> bytes:
-    buf = io.BytesIO(); img.save(buf, "PNG"); return buf.getvalue()
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def solid(rgb) -> Busy:
+    return Busy(png(Image.new("RGB", (W, H), rgb)))
 
 
 def stripes(box_pct: tuple[float, float, float, float] | None, size=(W, H)) -> Image.Image:
@@ -101,6 +118,12 @@ def px(spot):  # % -> px
 
 def page(spot, bw):
     return 0 if px(spot)[0] + bw / 2 < W / 2 else 1
+
+
+def separation(out) -> float:
+    """덩어리 두 자리(1번 blk, 2번 blk2) 사이 간격(px): 가로·세로 중 더 벌어진 쪽"""
+    (ax, ay), (bx, by) = px(out[0]), px(out[1])
+    return max(ax - (bx + bw2), bx - (ax + bw), ay - (by + bh2), by - (ay + bh))
 
 
 def check_one(spot, bw, bh):
@@ -161,10 +184,7 @@ assert (page(out[0], bw), out[0]["y"]) < (page(out[1], bw2), out[1]["y"])
 # 3-2) 두 덩어리가 서로 겹치지 않고 2% 이상 떨어져 있다
 out = settle(busy, [blk, blk2], [{"x": 55, "y": 8, "color": "dark"}, {"x": 55, "y": 12, "color": "dark"}])
 assert out and len(out) == 2
-(ax, ay), (bx, by) = px(out[0]), px(out[1])
-sep_x = max(ax - (bx + bw2), bx - (ax + bw))
-sep_y = max(ay - (by + bh2), by - (ay + bh))
-assert max(sep_x, sep_y) >= gap_px - 1, out
+assert separation(out) >= gap_px - 1, out
 assert page(out[0], bw) == 0 and page(out[1], bw2) == 1, out                         # 둘 다 오른쪽이라 답해도 1 은 왼쪽 면 (#95)
 
 # 3-3) 둘 다 왼쪽 면 아래라고 답하면 1 은 그대로, 2 는 오른쪽 면으로 (#95)
@@ -199,7 +219,7 @@ bl, out = calmest_pick(right_full, [blk, blk2])
 assert len(bl) == 1 and bl[0] == blk + blk2 and len(out) == 1, (bl, out)
 assert page(out[0], block_size(bl[0])[0]) == 0, out
 #      어디나 똑같이 조용하면(같으면) 나눈다
-white = Busy(png(Image.new("RGB", (W, H), "white")))
+white = solid("white")
 bl, out = calmest_pick(white, [blk, blk2])
 assert bl == [blk, blk2] and page(out[0], bw) == 0 and page(out[1], bw2) == 1, (bl, out)
 #      한 덩어리는 calmest 그대로
@@ -242,12 +262,9 @@ assert all(o["color"] == "light" for o in out), out
 dark_out = settle(dark_bg, [blk], [{"x": 55, "y": 8, "color": "dark"}])
 assert dark_out and dark_out[0]["color"] == "light", dark_out
 # 라벤더 벽: 채널 평균은 150을 넘지만 대비는 흰 글자가 낫다 → light. 밝은 회색은 dark (#77)
-from firstory.nodes.layout import text_color  # noqa: E402
-lavender = Busy(png(Image.new("RGB", (W, H), (149, 142, 168))))
-assert text_color(lavender, 200, 80, bw, bh) == "light"
-assert text_color(Busy(png(Image.new("RGB", (W, H), (190, 190, 190)))), 200, 80, bw, bh) == "dark"
-(ax, ay), (bx, by) = px(out[0]), px(out[1])
-assert max(max(ax - (bx + bw2), bx - (ax + bw)), max(ay - (by + bh2), by - (ay + bh))) >= gap_px - 1, out
+assert text_color(solid((149, 142, 168)), 200, 80, bw, bh) == "light"
+assert text_color(solid((190, 190, 190)), 200, 80, bw, bh) == "dark"
+assert separation(out) >= gap_px - 1, out
 
 # ── 덩어리 나누기 호출 (LLM 가짜) ──
 calls: list[dict] = []
@@ -337,13 +354,16 @@ assert place_page(img, [blk_a])[0] == []                                        
 assert place_page(img, []) == ([], [], None, [])                                                               # 덩어리 없으면 부르지 않음
 
 # 캐릭터 칸 (#104): 맨 위 characters를 모든 쪽에서 받는다. 이상한 칸은 그 칸만 뺀다
-_ob = lambda *v: OwnerBox(x0=v[0], y0=v[1], x1=v[2], y1=v[3])  # noqa: E731
+def ob(x0, y0, x1, y1) -> OwnerBox:
+    return OwnerBox(x0=x0, y0=y0, x1=x1, y1=y1)
+
+
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")],
-                                                    characters=[CharacterBox(name="초코", box=_ob(35, 30, 60, 85))])))
+                                                    characters=[CharacterBox(name="초코", box=ob(35, 30, 60, 85))])))
 assert place_page(img, [blk_a])[1] == [("초코", (35.0, 30.0, 60.0, 85.0))]
 llm.set_structured_override(fake_with(TextPlacement.model_construct(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=[
-    CharacterBox.model_construct(name="x", box=_ob(60, 10, 50, 20)), CharacterBox.model_construct(name="y", box=_ob(10, 10, 20, 180)),
-    CharacterBox(name="모아", box=_ob(10, 30, 30, 85))])))
+    CharacterBox.model_construct(name="x", box=ob(60, 10, 50, 20)), CharacterBox.model_construct(name="y", box=ob(10, 10, 20, 180)),
+    CharacterBox(name="모아", box=ob(10, 30, 30, 85))])))
 assert place_page(img, [blk_a])[1] == [("모아", (10.0, 30.0, 30.0, 85.0))]
 llm.set_structured_override(fake_with(TextPlacement.model_construct(blocks=[BlockSpot(x=6, y=8, color="dark")])))
 assert place_page(img, [blk_a])[1] == []                                                                    # characters 없음
@@ -364,22 +384,12 @@ llm.set_structured_override(None)
 seen: dict = {}
 
 
-class _Res:
-    output_parsed = TextPlacement(blocks=[BlockSpot(x=1, y=2, color="light")])
-    usage = None
+def fake_parse(**kw):
+    seen.update(kw)
+    return SimpleNamespace(output_parsed=TextPlacement(blocks=[BlockSpot(x=1, y=2, color="light")]), usage=None)
 
 
-class _Responses:
-    def parse(self, **kw):
-        seen.update(kw)
-        return _Res()
-
-
-class _Client:
-    responses = _Responses()
-
-
-llm._client = _Client()
+llm._client = SimpleNamespace(responses=SimpleNamespace(parse=fake_parse))
 obj, cost = llm.structured_image(node="n", model="m", schema=TextPlacement, system="S", user="U", image=img, reasoning="low")
 assert obj.blocks[0].x == 1 and cost.node == "n" and seen["reasoning"] == {"effort": "low"} and seen["text_format"] is TextPlacement
 part = seen["input"][1]["content"]
@@ -390,10 +400,6 @@ llm._client = None
 print("layout ok")
 
 # 7-2) calmest는 거리보다 복잡도: 왼쪽 위(조금 복잡)보다 멀리 있는 왼쪽 아래(조금 더 조용)를 고른다
-import numpy as np  # noqa: E402
-import firstory.nodes.layout as _L  # noqa: E402
-
-
 def two_soft() -> Image.Image:
     img = stripes_two((0, 0, 50, 45), soft=(215, 215, 215))
     d = ImageDraw.Draw(img)
@@ -408,36 +414,29 @@ soft2 = Busy(png(two_soft()))
 out = calmest(soft2, [blk])
 x, y = px(out[0])
 assert y > H / 2, out                                                            # 아래 띠
-grid = [(float(gx), float(gy)) for page in (0, 1) for (ylo, yhi) in _L._y_bands(bh)
-        for gy in np.arange(ylo, yhi + 1e-6, _L.GRID) for gx in np.arange(*_L._x_range(page, bw)[:1], _L._x_range(page, bw)[1] + 1e-6, _L.GRID)]
-best = min(_L._score(soft2, gx, gy, bw, bh) for gx, gy in grid)
-assert _L._score(soft2, x, y, bw, bh) <= best + 0.05, (out, best)              # 두 면을 통틀어 가장 조용함
+grid = []   # 두 면의 모든 격자 자리 (calmest 가 훑는 자리와 같음)
+for side in (0, 1):
+    xlo, xhi = lay._x_range(side, bw)
+    for ylo, yhi in lay._y_bands(bh):
+        for gy in np.arange(ylo, yhi + 1e-6, lay.GRID):
+            grid += [(float(gx), float(gy)) for gx in np.arange(xlo, xhi + 1e-6, lay.GRID)]
+best = min(lay._score(soft2, gx, gy, bw, bh) for gx, gy in grid)
+assert lay._score(soft2, x, y, bw, bh) <= best + 0.05, (out, best)             # 두 면을 통틀어 가장 조용함
 print("calmest ok")
 
 # ── 이전 배치가 지금 글과 맞나 (_stale) — 대사를 쪼갠 옛 배치는 다시 한다 (#77) ──
-from types import SimpleNamespace  # noqa: E402
-
-from firstory.nodes.illustrate import _stale  # noqa: E402
-from firstory.schemas import PageImage, TextBlock  # noqa: E402
-
-page = SimpleNamespace(text='나루가 웃었어요.\n"속상했어. 같이 놀고 싶어."')
+stale_page = SimpleNamespace(text='나루가 웃었어요.\n"속상했어. 같이 놀고 싶어."')
 split_old = PageImage(order=7, path="k", status="completed", text_blocks=[
     TextBlock(paragraphs=[["나루가 웃었어요.", '"속상했어.', '같이 놀고 싶어."']], x=5, y=7, color="dark")])
 one_line = PageImage(order=7, path="k", status="completed", text_blocks=[
     TextBlock(paragraphs=[["나루가 웃었어요."]], x=5, y=7, color="dark"),
     TextBlock(paragraphs=[['"속상했어. 같이 놀고 싶어."']], x=55, y=80, color="dark")])
-assert _stale(page, split_old)            # 글은 같아도 대사가 쪼개져 있으면 배치만 다시
-assert not _stale(page, one_line)         # 덩어리·문단이 나뉘어도 줄이 같으면 그대로
-assert not _stale(page, PageImage(order=7, status="failed"))
+assert _stale(stale_page, split_old)      # 글은 같아도 대사가 쪼개져 있으면 배치만 다시
+assert not _stale(stale_page, one_line)   # 덩어리·문단이 나뉘어도 줄이 같으면 그대로
+assert not _stale(stale_page, PageImage(order=7, status="failed"))
 print("stale ok")
 
 # ── 의성어 (#92) ──
-from firstory.llm import prompt  # noqa: E402,F401
-from firstory.nodes.layout import (  # noqa: E402
-    SFX_FOLD, SfxAsk, _closer_to_source, _others, piece_size, place_word, short_look, sound_words,
-)
-from firstory.schemas import CharacterBox, OwnerBox, SoundWord, TextPlacementWithWord, WordSpot  # noqa: E402
-
 assert sound_words("미루가 **훌쩍훌쩍** 울었어요.") == ["훌쩍훌쩍"]
 assert sound_words("**톡** 치고 ** 냠냠 **") == ["톡", "냠냠"]
 assert sound_words("별표 없음.") == []
@@ -453,7 +452,6 @@ sys0, user0 = calls[0]["system"], calls[0]["user"]
 
 # 별표 있는 쪽: 의성어 단락 + 의성어 스키마. AI는 근원·캐릭터 칸만 답한다 (#102)
 ask = SfxAsk(word="데굴데굴", text="초코는 옆에서 자동차를 **데굴데굴** 굴렸어요.", cast=[("초코", "A small hedgehog")])
-ob = lambda *v: OwnerBox(x0=v[0], y0=v[1], x1=v[2], y1=v[3])  # noqa: E731
 good = WordSpot(owner="초코", source_kind="object", source_box=ob(40, 70, 48, 78))
 good_chars = [CharacterBox(name="초코", box=ob(35, 30, 60, 85)), CharacterBox(name="모아", box=ob(10, 30, 30, 85))]
 calls.clear()
@@ -490,7 +488,6 @@ assert place_page(img, [blk_a], ask)[:3] == ([], [], None)
 
 
 # ── 조각 놓기 place_word (#102) ──
-white = Busy(png(Image.new("RGB", (W, H), "white")))
 tb = [TextBlock(paragraphs=[["가"]], x=5.0, y=7.0, color="dark")]
 face = {"owner": "모아", "kind": "face", "source": (20.0, 35.0, 30.0, 50.0), "chars": [("모아", (15.0, 30.0, 35.0, 90.0))]}
 sw = place_word(white, "데굴데굴", face, tb)
@@ -504,15 +501,11 @@ assert [p.side for p in one.pieces] == ["center"] and one.pieces[0].y < 30, one 
 assert [p.text for p in place_word(white, "우당탕탕", face, tb).pieces] == ["우당탕탕"]
 
 
-def test_object_in_front_of_body():
-    car = {"owner": "자동차", "kind": "object", "source": (55.0, 75.0, 62.0, 82.0),
-           "chars": [("초코", (52.0, 35.0, 72.0, 88.0)), ("모아", (15.0, 30.0, 35.0, 90.0))]}
-    got = place_word(white, "데굴데굴", car, tb)
-    # 접히는 선 너머 빈 곳은 다른 캐릭터(모아)에 더 가까워 버리고, 오른쪽은 반지름 밖 → 안 띄운다. 머리 옆으로는 절대 안 간다
-    assert got is None or all(p.y >= 75 - 3 for p in got.pieces), got
-
-
-test_object_in_front_of_body()
+# 몸 앞의 물건: 접히는 선 너머 빈 곳은 다른 캐릭터(모아)에 더 가까워 버리고, 오른쪽은 반지름 밖 → 안 띄운다. 머리 옆으로는 절대 안 간다
+car_in_front = {"owner": "자동차", "kind": "object", "source": (55.0, 75.0, 62.0, 82.0),
+                "chars": [("초코", (52.0, 35.0, 72.0, 88.0)), ("모아", (15.0, 30.0, 35.0, 90.0))]}
+got = place_word(white, "데굴데굴", car_in_front, tb)
+assert got is None or all(p.y >= 75 - 3 for p in got.pieces), got
 held = {"owner": "자동차", "kind": "object", "source": (70.0, 70.0, 76.0, 76.0), "chars": [("초코", (62.0, 30.0, 80.0, 88.0))]}
 sw = place_word(white, "데굴데굴", held, tb)
 assert sw and all(abs(p.y - 73) < 6 for p in sw.pieces), sw            # 손에 든 물건도 그 높이 양옆
@@ -522,41 +515,33 @@ sw = place_word(white, "데굴데굴", car_free, tb)
 assert sw and abs(sw.pieces[0].y - 78.5) < 3 and abs(sw.pieces[1].y - 78.5) < 3, sw   # 물건 높이 양옆
 
 
-def test_edge_falls_back_to_one_piece():
-    edge = {"owner": "a", "kind": "face", "source": (2.0, 30.0, 10.0, 45.0), "chars": [("a", (1.0, 28.0, 12.0, 90.0))]}
-    got = place_word(white, "데굴데굴", edge, [])
-    assert got is None or [p.side for p in got.pieces] == ["center"], got
-
-
-test_edge_falls_back_to_one_piece()
-
-
-def test_no_characters_still_places():
-    got = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (60.0, 30.0, 70.0, 45.0), "chars": []}, [])
-    assert got and len(got.pieces) == 1, got
-
-
-test_no_characters_still_places()
+# 가장자리 근원은 한 조각으로 내려간다
+edge = {"owner": "a", "kind": "face", "source": (2.0, 30.0, 10.0, 45.0), "chars": [("a", (1.0, 28.0, 12.0, 90.0))]}
+got = place_word(white, "데굴데굴", edge, [])
+assert got is None or [p.side for p in got.pieces] == ["center"], got
+# 캐릭터 칸이 없어도 놓는다
+got = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (60.0, 30.0, 70.0, 45.0), "chars": []}, [])
+assert got and len(got.pieces) == 1, got
 # 근원 가까움 (px 칸): 다른 캐릭터 칸이 더 가까우면 False
 assert _closer_to_source((100.0, 100.0), (120.0, 90.0, 140.0, 110.0), [(50.0, 50.0, 95.0, 95.0)]) is False
 assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), [(50.0, 50.0, 80.0, 80.0)]) is True
 assert _closer_to_source((100.0, 100.0), (105.0, 90.0, 140.0, 110.0), []) is True
 assert place_word(white, "엉엉", None, tb) is None
 # 실험(11/16 샘플 동화): 한쪽이 옆 캐릭터에 막혀도 조각마다 자기 쪽에서 따로 자리를 찾는다 (거울 대칭 아님)
-_ph = piece_size("데굴")[1] / H * 100
-for _word, _spot in (
-        ("데굴데굴", {"owner": "자동차", "kind": "object", "source": (46.0, 75.0, 53.0, 81.0),
-                     "chars": [("a", (63.0, 8.0, 86.0, 83.0)), ("b", (49.0, 39.0, 68.0, 82.0))]}),
-        ("사각사각", {"owner": "크레파스", "kind": "object", "source": (57.0, 67.0, 60.0, 74.0),
-                     "chars": [("a", (45.0, 33.0, 66.0, 74.0)), ("b", (68.0, 11.0, 100.0, 75.0))]})):
+car_between = ("데굴데굴", {"owner": "자동차", "kind": "object", "source": (46.0, 75.0, 53.0, 81.0),
+                            "chars": [("a", (63.0, 8.0, 86.0, 83.0)), ("b", (49.0, 39.0, 68.0, 82.0))]})
+crayon = ("사각사각", {"owner": "크레파스", "kind": "object", "source": (57.0, 67.0, 60.0, 74.0),
+                      "chars": [("a", (45.0, 33.0, 66.0, 74.0)), ("b", (68.0, 11.0, 100.0, 75.0))]})
+piece_h = piece_size("데굴")[1] / H * 100   # 조각 높이(%)
+for _word, _spot in (car_between, crayon):
     _got = place_word(white, _word, _spot, [])
     if _got is None or len(_got.pieces) == 1:   # #108: 인물과 여유를 두면 좁은 장면은 한 조각(또는 안 띄움)으로 내려갈 수 있다
         continue
     assert [p.side for p in _got.pieces] == ["left", "right"], (_word, _got)
     _l, _r = _got.pieces
     assert _l.x < _spot["source"][0] and _r.x > _spot["source"][2], _got                # 근원 양옆
-    assert abs(_l.y - _r.y) <= 2 * _ph + 0.1, _got                                        # 높이 차이는 조각 둘 높이까지
-    assert all(_spot["source"][1] - _ph - 0.1 <= p.y <= _spot["source"][3] + _ph + 0.1 for p in _got.pieces), _got   # 물건 높이 둘레
+    assert abs(_l.y - _r.y) <= 2 * piece_h + 0.1, _got                                    # 높이 차이는 조각 둘 높이까지
+    assert all(_spot["source"][1] - piece_h - 0.1 <= p.y <= _spot["source"][3] + piece_h + 0.1 for p in _got.pieces), _got   # 물건 높이 둘레
 # 견줄 상대에서 빼는 캐릭터는 근원과 가장 많이 겹치는 하나뿐 (같으면 더 작은 칸 = 근원 주인)
 _car = (400.0, 800.0, 460.0, 860.0)
 _holder, _leg = (380.0, 350.0, 600.0, 920.0), (200.0, 300.0, 410.0, 900.0)   # 다리 칸이 자동차 끝에 살짝 겹침
@@ -573,8 +558,7 @@ assert _others("face", _face, []) == [] and _others("object", _car, [_leg]) == [
 # 조각은 글 덩어리·접히는 선·여백을 지킨다
 fold = place_word(white, "엉엉", {"owner": "a", "kind": "face", "source": (47.0, 40.0, 53.0, 50.0), "chars": []}, [])
 assert fold is None or all(abs(p.x - 50) * W / 100 >= piece_size(p.text)[0] / 2 + W * SFX_FOLD / 100 - 1 for p in fold.pieces), fold
-dark = Busy(png(Image.new("RGB", (W, H), (20, 20, 30))))
-assert place_word(dark, "엉엉", face, []).color == "#FFFFFF"
+assert place_word(solid((20, 20, 30)), "엉엉", face, []).color == "#FFFFFF"
 # 눈금: 기본(grid=True)이면 별표 있는 쪽·없는 쪽 모두 10% 눈금을 그려 보내고 지시에 알린다 (#104). grid=False면 그림 그대로
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacementWithWord(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=good_chars, sound_word=good)))
@@ -586,25 +570,28 @@ calls.clear()
 place_page(img, [blk_a], ask, grid=False)
 assert calls[0]["image"] == img and "눈금" not in calls[0]["system"]
 # 눈금 그리기가 터지면 눈금 없이 원래 그림으로 묻는다 — 칸·의성어는 그대로 받는다
-import firstory.nodes.layout as _lay  # noqa: E402
-_orig_wg = _lay.with_grid
-_lay.with_grid = lambda image: (_ for _ in ()).throw(RuntimeError("grid"))
+def grid_fails(image):
+    raise RuntimeError("grid")
+
+
 calls.clear()
-try:
+with patch.object(lay, "with_grid", grid_fails):
     spots, wchars, wspot, _ = place_page(img, [blk_a], ask)
-finally:
-    _lay.with_grid = _orig_wg
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is not None and len(wchars) == 2
 assert calls[0]["schema"] is TextPlacementWithWord and calls[0]["image"] == img and "눈금" not in calls[0]["system"]
+
+
 # 의성어 지시 준비가 터지면 의성어 없이 — 글 자리·칸은 그대로 받는다 (리뷰 #3)
-_orig_pr = _lay.prompt
-_lay.prompt = lambda name, **kw: (_ for _ in ()).throw(RuntimeError("p")) if name == "text_place_word" else _orig_pr(name, **kw)
+def word_prompt_fails(name, **kw):
+    if name == "text_place_word":
+        raise RuntimeError("p")
+    return prompt(name, **kw)
+
+
 calls.clear()
 llm.set_structured_override(fake_with(TextPlacement(blocks=[BlockSpot(x=6, y=8, color="dark")], characters=good_chars)))
-try:
+with patch.object(lay, "prompt", word_prompt_fails):
     spots, wchars, wspot, _ = place_page(img, [blk_a], ask)
-finally:
-    _lay.prompt = _orig_pr
 assert spots == [{"x": 6.0, "y": 8.0, "color": "dark"}] and wspot is None and len(wchars) == 2
 assert calls[0]["schema"] is TextPlacement
 llm.set_structured_override(mock.fake_structured)
@@ -613,46 +600,34 @@ print("sound word ok")
 
 
 # ── 의성어 나누기·조각 크기·색 (#102) ──
-from firstory.nodes.layout import FONT_RATIO as _FR, contrast, delta_e, pick_color, piece_size, split_word  # noqa: E402
-
 assert split_word("데굴데굴") == ["데굴", "데굴"]
 assert split_word("두근두근") == ["두근", "두근"]
 assert split_word("데굴 데굴") == ["데굴", "데굴"]
 for _w in ("우당탕탕", "와르르르", "엉엉", "꼬르륵", "콩닥콩닥콩닥", "톡"):
     assert split_word(_w) == [_w], _w
 _pw, _ph = piece_size("데굴")
-assert abs(_pw - text_width("데굴") * 0.025 / _FR) < 1e-6 and abs(_ph - W * 0.025 * 1.2) < 1e-6
+assert abs(_pw - text_width("데굴") * 0.025 / FONT_RATIO) < 1e-6 and abs(_ph - W * 0.025 * 1.2) < 1e-6
 assert round(contrast((255, 255, 255), (0, 0, 0)), 1) == 21.0
 assert delta_e((255, 255, 255), (255, 255, 255)) == 0
 
-
-def _solid(rgb):
-    return Busy(png(Image.new("RGB", (W, H), rgb)))
-
-
 _box = [(800.0, 400.0, 100.0, 60.0)]
 # #117: 진한 5색은 밝은 바탕(흰·크림·하늘)에서 모두 대비 3:1 이상, 말로 시작 색을 정해 돌려 쓴다
-from firstory.nodes.layout import HUES  # noqa: E402
 assert len(HUES) == 5
 for _bg in ((255, 255, 255), (240, 225, 190), (170, 190, 230)):
     assert all(contrast(rgb, _bg) >= 3 for _, rgb in HUES), _bg
 _words = ["쓰담쓰담", "엉엉", "콩콩", "쏙", "훌쩍훌쩍", "토닥토닥", "방긋", "톡", "냠냠", "데굴데굴"]
-_white = _solid((255, 255, 255))
-_picked = [pick_color(_white, _box, w) for w in _words]
+_picked = [pick_color(white, _box, w) for w in _words]
 assert all(c in [h for h, _ in HUES] for c in _picked), _picked
 assert len(set(_picked)) >= 4, _picked                                                   # 말마다 여러 색
-assert [pick_color(_white, _box, w) for w in _words] == _picked                          # 같은 말은 같은 색
-assert pick_color(_solid((240, 225, 190)), _box, "쓰담쓰담") == pick_color(_white, _box, "쓰담쓰담")   # 밝은 바탕이면 바탕이 달라도
-assert pick_color(_solid((32, 32, 32)), _box, "엉엉") == "#FFFFFF"                        # 어두운 바탕은 흰색
-assert pick_color(_solid((140, 160, 205)), _box, "엉엉") == "#4A4A4A"                     # 진한 5색·흰색 모두 3:1 미만이면 진한 회색
-assert pick_color(_white, _box * 2, "데굴데굴") == pick_color(_white, _box, "데굴데굴")    # 두 조각 = 같은 한 색
+assert [pick_color(white, _box, w) for w in _words] == _picked                          # 같은 말은 같은 색
+assert pick_color(solid((240, 225, 190)), _box, "쓰담쓰담") == pick_color(white, _box, "쓰담쓰담")   # 밝은 바탕이면 바탕이 달라도
+assert pick_color(solid((32, 32, 32)), _box, "엉엉") == "#FFFFFF"                        # 어두운 바탕은 흰색
+assert pick_color(solid((140, 160, 205)), _box, "엉엉") == "#4A4A4A"                     # 진한 5색·흰색 모두 3:1 미만이면 진한 회색
+assert pick_color(white, _box * 2, "데굴데굴") == pick_color(white, _box, "데굴데굴")    # 두 조각 = 같은 한 색
 print("split color ok")
 
 
 # ── 캐릭터 칸 피하기 (#104) ──
-from firstory.nodes.layout import CHAR_PAD, _overlap, blockers  # noqa: E402
-
-_wbusy = Busy(png(Image.new("RGB", (W, H), "white")))
 _p = W * CHAR_PAD
 assert blockers([("a", (10.0, 10.0, 20.0, 20.0))]) == [(0.1 * W - _p, 0.1 * H - _p, 0.2 * W + _p, 0.2 * H + _p)]
 assert CHAR_PAD == 0.015 and blockers([]) == []
@@ -661,30 +636,27 @@ assert _overlap(0, 0, 100, 100, [(200.0, 0.0, 300.0, 100.0)]) == 0.0
 
 
 def _rect(spot, block):
-    bw, bh = block_size(block)
-    x, y = spot["x"] / 100 * W, spot["y"] / 100 * H
-    return x, y, bw, bh
+    """덩어리 네모(px): x, y, 폭, 높이"""
+    return (*px(spot), *block_size(block))
 
 
 # AI가 고른 자리(6%, 8%)가 캐릭터 칸 위 → 칸을 피한 곳으로 옮긴다
 _av = blockers([("a", (4.0, 5.0, 30.0, 60.0))])
-_got = settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], _av)
+_got = settle(white, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], _av)
 assert _got and _overlap(*_rect(_got[0], blk_a), _av) == 0, _got
-assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}]) == settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], [])
-assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}])[0]["x"] == 6.0   # 칸이 없으면 지금처럼 AI 자리 그대로
+assert settle(white, [blk_a], [{"x": 6, "y": 8, "color": "dark"}]) == settle(white, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], [])
+assert settle(white, [blk_a], [{"x": 6, "y": 8, "color": "dark"}])[0]["x"] == 6.0   # 칸이 없으면 지금처럼 AI 자리 그대로
 # 2덩어리: 왼쪽 면 위 띠를 칸이 덮으면 1번은 왼쪽 면 아래 띠로 (면 고정 #95 유지)
 _av2 = blockers([("a", (0.0, 0.0, 50.0, 45.0))])
-_got2 = settle(_wbusy, [blk_a, blk_b], [{"x": 6, "y": 8, "color": "dark"}, {"x": 55, "y": 8, "color": "dark"}], _av2)
+_got2 = settle(white, [blk_a, blk_b], [{"x": 6, "y": 8, "color": "dark"}, {"x": 55, "y": 8, "color": "dark"}], _av2)
 assert _got2 and _got2[0]["x"] < 50 and _got2[0]["y"] > 50 and _got2[1]["x"] >= 50, _got2
 assert all(_overlap(*_rect(s, b), _av2) == 0 for s, b in zip(_got2, [blk_a, blk_b])), _got2
 # 어디에도 칸을 피할 곳이 없으면 None (호출한 쪽이 다음 단계로)
-assert settle(_wbusy, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], blockers([("a", (0.0, 0.0, 100.0, 100.0))])) is None
+assert settle(white, [blk_a], [{"x": 6, "y": 8, "color": "dark"}], blockers([("a", (0.0, 0.0, 100.0, 100.0))])) is None
 print("avoid ok")
 
 
 # ── 한 덩어리를 둘로 나누기 split_block (#104) ──
-from firstory.nodes.layout import split_block  # noqa: E402
-
 assert split_block([["a.", "b."], ["c.", "d."]]) == [[["a.", "b."]], [["c.", "d."]]]
 assert split_block([["a.", "b.", "c.", "d."]]) == [[["a.", "b."]], [["c.", "d."]]]
 assert split_block([["a.", "b.", "c."]]) == [[["a.", "b."]], [["c."]]]                     # 같으면 뒤쪽 경계
@@ -716,22 +688,20 @@ def _over(blocks, spots, avoid):
     return sum(_overlap(*_rect(s, b), avoid) for b, s in zip(blocks, spots))
 
 
-assert settle(_wbusy, [_b7], [{"x": 6, "y": 8, "color": "dark"}], _av7) is None          # 7줄 한 덩어리는 어디에 둬도 칸에 닿는다
-_bl, _sp = calmest_pick(_wbusy, [_b7], _av7)
+assert settle(white, [_b7], [{"x": 6, "y": 8, "color": "dark"}], _av7) is None          # 7줄 한 덩어리는 어디에 둬도 칸에 닿는다
+_bl, _sp = calmest_pick(white, [_b7], _av7)
 assert len(_bl) == 2 and _over(_bl, _sp, _av7) == 0, (_bl, _sp)                         # 나눈 두 덩어리가 뽑힘
 assert _sp[0]["x"] < 50 <= _sp[1]["x"]
 # 그림 전체가 칸이어도 늘 자리는 있고, 겹침은 칸을 모를 때보다 작거나 같다
 _avall = blockers([("a", (0.0, 20.0, 100.0, 100.0))])
-_bl, _sp = calmest_pick(_wbusy, [blk_a], _avall)
-_bl0, _sp0 = calmest_pick(_wbusy, [blk_a])
+_bl, _sp = calmest_pick(white, [blk_a], _avall)
+_bl0, _sp0 = calmest_pick(white, [blk_a])
 assert _over(_bl, _sp, _avall) <= _over(_bl0, _sp0, _avall), (_sp, _sp0)
-assert calmest(_wbusy, [blk_a], _avall) is not None
+assert calmest(white, [blk_a], _avall) is not None
 print("calmest avoid ok")
 
 
 # ── 겹침은 줄마다 실제 글자 폭으로 잰다 (4쪽: 긴 첫 줄 때문에 네모가 칸에 닿아 벽 자리를 버렸음) ──
-from firstory.nodes.layout import LINE_PX  # noqa: E402
-
 _long = "초코가 모아 옆의 바퀴 블록으로 손을"
 _blk = [[_long, "뻗었어요."], ["음."]]
 _wl = text_width(_long) / W * 100
@@ -739,7 +709,7 @@ _x0 = 5 + text_width("뻗었어요.") / W * 100 + 1.5 + 3              # 짧은 
 _y0 = 7 + LINE_PX / H * 100 + 1.5 * W / H + 1                       # 첫 줄 아래 + 여백 + 1%
 assert _x0 < 5 + _wl                                                 # 덩어리 네모는 칸에 닿는다
 _avr = blockers([("a", (_x0, _y0, 60.0, 95.0))])
-_got = settle(_wbusy, [_blk], [{"x": 5, "y": 7, "color": "dark"}], _avr)
+_got = settle(white, [_blk], [{"x": 5, "y": 7, "color": "dark"}], _avr)
 assert _got == [{"x": 5.0, "y": 7.0, "color": "dark"}], _got          # 실제 글자는 안 닿으니 AI 자리 그대로
 print("row overlap ok")
 
@@ -769,11 +739,15 @@ print("fallback prefers calm wall ok")
 # ── 의성어 조각은 캐릭터 칸에서 여유(CHAR_PAD)를 두고 떨어진다 (#108: 96번 4쪽 '훌쩍훌쩍'이 귀 끝에 닿음) ──
 def _clear_of(sw, chars):
     """모든 조각이 CHAR_PAD만큼 키운 캐릭터 칸(%)과 안 겹치나"""
-    for q in (sw.pieces if sw else []):
+    if not sw:
+        return True
+    pad = W * CHAR_PAD
+    for q in sw.pieces:
         qw, qh = piece_size(q.text)
-        r = (q.x / 100 * W - qw / 2, q.y / 100 * H - qh / 2, q.x / 100 * W + qw / 2, q.y / 100 * H + qh / 2)
+        cx, cy = q.x / 100 * W, q.y / 100 * H
+        r = (cx - qw / 2, cy - qh / 2, cx + qw / 2, cy + qh / 2)
         for c in chars:
-            cp = (c[0] / 100 * W - W * CHAR_PAD, c[1] / 100 * H - W * CHAR_PAD, c[2] / 100 * W + W * CHAR_PAD, c[3] / 100 * H + W * CHAR_PAD)
+            cp = (c[0] / 100 * W - pad, c[1] / 100 * H - pad, c[2] / 100 * W + pad, c[3] / 100 * H + pad)
             if r[0] < cp[2] and cp[0] < r[2] and r[1] < cp[3] and cp[1] < r[3]:
                 return False
     return True
@@ -783,13 +757,10 @@ _scenes = [
     ("훌쩍훌쩍", {"owner": "나리", "kind": "face", "source": (37.0, 38.0, 46.0, 55.0),
                  "chars": [("나리", (35.0, 33.0, 48.0, 85.0)), ("솔", (49.0, 37.0, 63.0, 86.0))]}),
     ("데굴데굴", face), ("엉엉", face), ("데굴데굴", held), ("데굴데굴", car_free), ("훌쩍훌쩍", hug),
-    ("데굴데굴", {"owner": "자동차", "kind": "object", "source": (46.0, 75.0, 53.0, 81.0),
-                 "chars": [("a", (63.0, 8.0, 86.0, 83.0)), ("b", (49.0, 39.0, 68.0, 82.0))]}),
-    ("사각사각", {"owner": "크레파스", "kind": "object", "source": (57.0, 67.0, 60.0, 74.0),
-                 "chars": [("a", (45.0, 33.0, 66.0, 74.0)), ("b", (68.0, 11.0, 100.0, 75.0))]}),
+    car_between, crayon,
 ]
 for _w, _s in _scenes:
-    _sw = place_word(_wbusy, _w, _s, [])
+    _sw = place_word(white, _w, _s, [])
     assert _clear_of(_sw, [b for _, b in _s["chars"]]), (_w, _s, _sw)
 print("sound word pad ok")
 
@@ -797,18 +768,15 @@ print("sound word pad ok")
 # ── 손 동작(쓰담쓰담·토닥토닥·콩콩 맞대기)은 손이 닿는 곳이 근원 (#119) ──
 # 11/17 샘플 4쪽: AI가 쓰다듬는 쪽 얼굴(face)로 답해 어른 얼굴 위끝 = 그림 맨 위(8~10%)로 갔다.
 # 손은 두 몸 칸 사이에 묻혀 지금 반지름(15%)으로는 자리가 없다 → touch: 한 조각, 손 칸에서 몸 칸 밖 가장 가까운 곳(반지름 25%), 없으면 None
-from firstory.nodes.layout import _rect_dist  # noqa: E402
-
 assert WordSpot(owner="손", source_kind="touch", source_box=ob(41, 60, 62, 73)).source_kind == "touch"
 _t = wplaced(WordSpot(owner="손", source_kind="touch", source_box=ob(41, 60, 62, 73)))
 assert _t and _t["kind"] == "touch" and _t["source"] == (41.0, 60.0, 62.0, 73.0), _t
-_pw = prompt("text_place_word", word="쓰담쓰담", text="엄마가 미로를 **쓰담쓰담** 했어요.", cast="- (없음)")
-assert "touch" in _pw and "쓰담쓰담" in _pw and "손" in _pw
-llm.set_structured_override(mock.fake_structured)
+_touch_prompt = prompt("text_place_word", word="쓰담쓰담", text="엄마가 미로를 **쓰담쓰담** 했어요.", cast="- (없음)")
+assert "touch" in _touch_prompt and "쓰담쓰담" in _touch_prompt and "손" in _touch_prompt
 # 견줄 상대: 손과 겹치는 캐릭터(쓰다듬는 쪽·받는 쪽)는 모두 뺀다
 _hand = (800.0, 650.0, 1000.0, 750.0)
 assert _others("touch", _hand, [(700.0, 300.0, 1250.0, 1000.0), (900.0, 100.0, 1700.0, 1000.0), (100.0, 100.0, 400.0, 900.0)]) == [(100.0, 100.0, 400.0, 900.0)]
-assert _lay.SFX_TOUCH_RADIUS == 0.25
+assert lay.SFX_TOUCH_RADIUS == 0.25
 _touch_scenes = [   # (말, 손 칸, 캐릭터 칸) — 캐릭터 칸은 11/17 진짜 답, 손 칸은 그림을 보고 잡음 (out/sound-word-top-1117)
     ("쓰담쓰담", (41.0, 60.0, 62.0, 73.0), [("하람", (51.0, 10.0, 90.0, 95.0)), ("미루", (38.0, 35.0, 63.0, 80.0))]),
     ("쓰담쓰담", (54.0, 49.0, 60.0, 57.0), [("나루", (39.0, 31.0, 61.0, 83.0)), ("미소", (60.0, 10.0, 92.0, 92.0))]),
@@ -820,9 +788,8 @@ for _w, _src, _chars in _touch_scenes:
     assert _sw and [(p.text, p.side) for p in _sw.pieces] == [(_w, "center")], (_w, _sw)   # 반복 말도 한 조각
     _p = _sw.pieces[0]
     assert _p.y >= 20, (_w, _sw)                                                        # 그림 맨 위로 안 간다
-    _pw_, _ph_ = piece_size(_w)
     _d = _rect_dist((_p.x / 100 * W, _p.y / 100 * H), tuple(v / 100 * (W if i % 2 == 0 else H) for i, v in enumerate(_src)))
-    assert _d <= W * _lay.SFX_TOUCH_RADIUS, (_w, _d)                                          # 손에서 반지름 안
+    assert _d <= W * lay.SFX_TOUCH_RADIUS, (_w, _d)                                          # 손에서 반지름 안
     assert _clear_of(_sw, [b for _, b in _chars]), (_w, _sw)                             # 몸은 가리지 않는다
 # 손 둘레가 모두 몸이면 안 띄운다
 _crowd = [("a", (5.0, 5.0, 48.0, 95.0)), ("b", (52.0, 5.0, 95.0, 95.0))]

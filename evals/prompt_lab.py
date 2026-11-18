@@ -29,7 +29,13 @@ def main():
         print(f"기준 실행 만드는 중: {base.stem} (텍스트만)")
         base = lab.make_base(base)
         print("  →", base)
-    done = lambda k, err: print(f"  {'✗' if err else '✓'} {lab.PRESETS[k][0]}" + (f"  {err}" if err else ""))
+
+    def done(k, err):
+        if err:
+            print(f"  ✗ {lab.PRESETS[k][0]}  {err}")
+        else:
+            print(f"  ✓ {lab.PRESETS[k][0]}")
+
     exp = lab.run_experiment(base, args.presets, judge_on=not args.no_judge, workers=args.workers, on_done=done)
     print("→", exp / "compare.md")
 
