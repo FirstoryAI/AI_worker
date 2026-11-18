@@ -142,7 +142,7 @@ def normalize_chunks(n_lines: int, idx: list[list[list[int]]], lines: list[str] 
     if lines is not None and len(lines) == n_lines:
         open_quote = False
         for i in range(n_lines - 1):
-            if sum(lines[i].count(q) for q in _DQUOTES) % 2:
+            if _quote_open(lines[i]):            # 이 줄의 따옴표 개수가 홀수 → 열림/닫힘이 바뀐다
                 open_quote = not open_quote
             if open_quote:                       # i 줄 끝에서 따옴표가 열려 있음 → 다음 줄을 같은 문단에
                 label[i + 1] = label[i]
@@ -214,9 +214,8 @@ def split_block(block: Block) -> list[Block] | None:
 def block_size(block: Block) -> tuple[float, float]:
     """(폭 px, 높이 px), 1920×1088 기준."""
     rows = [line for para in block for line in para]
-    n = len(rows)
     width = max((text_width(l) for l in rows), default=0.0)
-    return width, (n + PARA_GAP * (len(block) - 1)) * FONT_PX * LINE_H
+    return width, (len(rows) + PARA_GAP * (len(block) - 1)) * FONT_PX * LINE_H
 
 
 # ── 복잡도 ──
@@ -264,11 +263,6 @@ class Busy:
         st = self._stats(x, y, w, h)
         return (255.0, 255.0, 255.0) if st is None else tuple(float(v) for v in st[0][:3])
 
-    def brightness(self, x: float, y: float, w: float, h: float) -> float:
-        """상자의 밝기 (0~255, 채널 평균). 상자가 비면 흰 바탕으로 본다."""
-        st = self._stats(x, y, w, h)
-        return 255.0 if st is None else float(st[0].mean())
-
 
 # ── 자리 ──
 def _page(x: float, bw: float) -> int:
@@ -296,7 +290,7 @@ def _y_bands(bh: float) -> list[tuple[float, float]]:
 
 
 def _to_px(spot: dict) -> tuple[float, float]:
-    """AI 가 %로 답하면 그대로, 픽셀로 답했으면(100 넘는 값) 그림 크기로 나눠 %로 본다"""
+    """자리 % → px. 100 넘는 값이 있으면 이미 px로 보고 그대로 둔다"""
     x, y = float(spot["x"]), float(spot["y"])
     if x > 100 or y > 100:
         return x, y
@@ -330,10 +324,19 @@ def _order_ok(x: float, y: float, bw: float, placed: list[tuple[float, float, fl
 Rect = tuple[float, float, float, float]   # px x0, y0, x1, y1
 
 
+def _pct_to_px(box: Rect) -> Rect:
+    """% 칸 → px 칸"""
+    return box[0] / 100 * W, box[1] / 100 * H, box[2] / 100 * W, box[3] / 100 * H
+
+
+def _grow(rects, p: float) -> list[Rect]:
+    """칸들을 사방으로 p px씩 키운다 (p < 0이면 줄인다)"""
+    return [(x0 - p, y0 - p, x1 + p, y1 + p) for x0, y0, x1, y1 in rects]
+
+
 def blockers(chars: "Chars") -> list[Rect]:
     """캐릭터 칸(%) → 글이 피할 px 칸. 사방으로 그림 폭의 CHAR_PAD씩 키운다 (#104)"""
-    p = W * CHAR_PAD
-    return [(b[0] / 100 * W - p, b[1] / 100 * H - p, b[2] / 100 * W + p, b[3] / 100 * H + p) for _, b in chars]
+    return _grow([_pct_to_px(b) for _, b in chars], W * CHAR_PAD)
 
 
 def _overlap(x: float, y: float, bw: float, bh: float, avoid) -> float:
@@ -361,8 +364,7 @@ def rows_of(block: Block) -> list[tuple[float, float, float]]:
 
 def _unpad(avoid) -> list[Rect]:
     """blockers로 키운 칸 → 캐릭터 몸 칸 (px)"""
-    p = W * CHAR_PAD
-    return [(x0 + p, y0 + p, x1 - p, y1 - p) for x0, y0, x1, y1 in avoid]
+    return _grow(avoid, -W * CHAR_PAD)
 
 
 def _overlap_rows(x: float, y: float, rows, avoid) -> float:
@@ -370,9 +372,14 @@ def _overlap_rows(x: float, y: float, rows, avoid) -> float:
     return sum(_overlap(x, y + dy, w, h, avoid) for dy, w, h in rows)
 
 
-def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
+def _around(x: float, y: float, w: float, h: float) -> tuple[float, float, float, float]:
+    """바탕을 재는 상자 (x, y, w, h): 사방으로 그림 폭의 BUSY_PAD씩 키운다"""
     pad = W * BUSY_PAD
-    return busy.at(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad)
+    return x - pad, y - pad, w + 2 * pad, h + 2 * pad
+
+
+def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
+    return busy.at(*_around(x, y, bw, bh))
 
 
 def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: float, bh: float,
@@ -383,6 +390,10 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
     rows(rows_of)를 주면 겹침은 줄마다 실제 글자 폭으로 잰다 — 덩어리 네모로 재면 긴 줄 하나 때문에 빈 벽을 버린다"""
     best: tuple[float, tuple[float, float]] | None = None
     real = _unpad(avoid)
+
+    def overlap(x: float, y: float, rects) -> float:
+        return _overlap_rows(x, y, rows, rects) if rows is not None else _overlap(x, y, bw, bh, rects)
+
     for page in pages:
         lo, hi = _x_range(page, bw)
         for ylo, yhi in _y_bands(bh):
@@ -391,7 +402,7 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
                     x, y = float(x), float(y)
                     if not (_order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)):
                         continue
-                    over = (_overlap_rows(x, y, rows, avoid) if rows is not None else _overlap(x, y, bw, bh, avoid)) if avoid else 0.0
+                    over = overlap(x, y, avoid) if avoid else 0.0
                     if strict and over > 0:
                         continue
                     std = _score(busy, x, y, bw, bh)
@@ -399,7 +410,7 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
                         continue
                     score = std + move_cost * math.hypot(x - near[0], y - near[1])
                     if over:   # 몸에 닿은 넓이는 크게, 여백에만 걸친 넓이는 작게 — 조용한 벽이 복잡한 물건 위보다 낫게
-                        body = _overlap_rows(x, y, rows, real) if rows is not None else _overlap(x, y, bw, bh, real)
+                        body = overlap(x, y, real)
                         score += OVERLAP_COST * body + MARGIN_COST * (over - body)
                     if best is None or score < best[0]:
                         best = (score, (x, y))
@@ -409,9 +420,13 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
 def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
             placed: list[tuple[float, float, float, float]], page: int | None = None, avoid=(), rows=None) -> tuple[float, float] | None:
     """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳. page를 주면 그 면에서만"""
-    home = _page(near[0], bw)
-    for page in ((home, 1 - home) if page is None else (page,)):
-        found = _best_on(busy, (page,), near, bw, bh, placed, BUSY_LIMIT, avoid=avoid, rows=rows)
+    if page is None:
+        home = _page(near[0], bw)
+        order = (home, 1 - home)
+    else:
+        order = (page,)
+    for p in order:
+        found = _best_on(busy, (p,), near, bw, bh, placed, BUSY_LIMIT, avoid=avoid, rows=rows)
         if found:
             return found
     return None
@@ -420,20 +435,27 @@ def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
 def text_color(busy: Busy, x: float, y: float, bw: float, bh: float) -> str:
     """덩어리 자리(둘레 포함) 바탕과의 대비(WCAG)가 흰 글자 쪽이 비슷하거나 크면 light, 아니면 dark. AI가 고른 색은 쓰지 않는다 —
     어두운 밤 장면에도 dark를 고르고, 자리를 옮기면 다른 자리 색이 된다 (#77)."""
-    pad = W * BUSY_PAD
-    bg = luminance(busy.mean_rgb(x - pad, y - pad, bw + 2 * pad, bh + 2 * pad))
+    bg = luminance(busy.mean_rgb(*_around(x, y, bw, bh)))
     on_white = (1.0 + 0.05) / (bg + 0.05)
     on_dark = (bg + 0.05) / (luminance(DARK_TEXT) + 0.05)
     return "light" if on_white >= on_dark * WHITE_BIAS else "dark"
 
 
+def _linear(c: float) -> float:
+    """sRGB 채널(0~255) → 선형 값(0~1)"""
+    c /= 255
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
 def luminance(rgb: tuple[float, float, float]) -> float:
     """WCAG 상대 휘도 (0~1). 채널 평균 밝기는 파랑·보라 바탕을 실제보다 밝게 본다 (#77)."""
-    def lin(c: float) -> float:
-        c /= 255
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-    r, g, b = (lin(c) for c in rgb)
+    r, g, b = (_linear(c) for c in rgb)
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _spot(busy: Busy, x: float, y: float, bw: float, bh: float) -> dict:
+    """px 자리 → {"x": %, "y": %, "color"}. 글자색은 그 자리 바탕으로 (text_color)"""
+    return {"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": text_color(busy, x, y, bw, bh)}
 
 
 def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
@@ -452,7 +474,7 @@ def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
             return None
         x, y = found
         placed.append((x, y, bw, bh))
-        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": text_color(busy, x, y, bw, bh)})
+        out.append(_spot(busy, x, y, bw, bh))
     return out
 
 
@@ -502,16 +524,17 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> list
         bw, bh = block_size(block)
         spot = spots[i] if i < len(spots) else {"x": DEFAULT_SPOT[0], "y": DEFAULT_SPOT[1], "color": DEFAULT_SPOT[2]}
         side = side_of(i, len(blocks))
+        rows = rows_of(block)
         x, y = _push(*_to_px(spot), bw, bh, side)
         ok = (_in_band(y, bh) and _order_ok(x, y, bw, placed) and _gap_ok(x, y, bw, bh, placed)
-              and _overlap_rows(x, y, rows_of(block), avoid) == 0 and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
+              and _overlap_rows(x, y, rows, avoid) == 0 and _score(busy, x, y, bw, bh) <= BUSY_LIMIT)
         if not ok:
-            found = _search(busy, (x, y), bw, bh, placed, side, avoid, rows_of(block))
+            found = _search(busy, (x, y), bw, bh, placed, side, avoid, rows)
             if found is None:
                 return None
             x, y = found
         placed.append((x, y, bw, bh))
-        out.append({"x": round(x / W * 100, 1), "y": round(y / H * 100, 1), "color": text_color(busy, x, y, bw, bh)})
+        out.append(_spot(busy, x, y, bw, bh))
     return out
 
 
@@ -729,11 +752,7 @@ def contrast(a: tuple[float, float, float], b: tuple[float, float, float]) -> fl
 
 def _lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
     """sRGB(0~255) → CIELAB (D65)"""
-    def lin(c: float) -> float:
-        c /= 255
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-    r, g, b = (lin(c) for c in rgb)
+    r, g, b = (_linear(c) for c in rgb)
     x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
     y = 0.2126 * r + 0.7152 * g + 0.0722 * b
     z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
@@ -754,8 +773,7 @@ def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]], word:
     """조각 상자들(px x, y, w, h) 둘레 배경에서 읽히는 색 하나 (#102, #117).
     말(md5)로 HUES 시작 색을 정해 차례로 보고, 모든 조각 배경과 대비 3:1 이상인 첫 색. 같은 말은 같은 색.
     다 안 되면 흰색 → 진한 회색, 그래도 없으면 대비 최솟값이 가장 큰 색."""
-    pad = W * BUSY_PAD
-    bgs = [busy.mean_rgb(x - pad, y - pad, w + 2 * pad, h + 2 * pad) for x, y, w, h in boxes]
+    bgs = [busy.mean_rgb(*_around(*box)) for box in boxes]
     start = hashlib.md5(word.encode("utf-8")).digest()[0] % len(HUES)
     order = HUES[start:] + HUES[:start] + [WHITE, GRAY]
 
@@ -843,16 +861,14 @@ def _piece_ok(sc: _WordScene, cx: float, cy: float, pw: float, ph: float) -> boo
     return _closer_to_source((cx, cy), sc.source, sc.others)
 
 
-def _offsets(signs: tuple[int, int] | None) -> list[tuple[float, float]]:
-    """반지름 안 격자 이동 (가까운 순). signs가 (sx, sy)면 그 방향 사분면만(0 포함), None이면 사방"""
+def _offsets() -> list[tuple[float, float]]:
+    """반지름 안 격자 이동 (가까운 순, 사방)"""
     r = W * SFX_RADIUS
     n = int(r // GRID)
     rng = range(-n, n + 1)
     out = []
     for i in rng:
         for j in rng:
-            if signs is not None and (i * signs[0] < 0 or j * signs[1] < 0):
-                continue
             dx, dy = i * GRID, j * GRID
             if dx * dx + dy * dy <= r * r:
                 out.append((dx, dy))
@@ -872,7 +888,7 @@ def _place_pair(sc: _WordScene, size: tuple[float, float]) -> list[tuple[float, 
     got = []
     for sx, sign in ((x0 - g - pw / 2, -1), (x1 + g + pw / 2, 1)):
         hit = None
-        for dx, dy in _offsets(None):
+        for dx, dy in _offsets():
             if dx * sign < 0:
                 continue
             x, y = sx + dx, base + dy
@@ -898,7 +914,7 @@ def _place_one(sc: _WordScene, size: tuple[float, float]) -> tuple[float, float]
     pw, ph = size
     x0, y0, x1, y1 = sc.source
     cx, cy = (x0 + x1) / 2, y0 - W * 0.01 - ph / 2
-    for dx, dy in _offsets(None):
+    for dx, dy in _offsets():
         x, y = cx + dx, cy + dy
         if sc.kind == "face" and y + ph / 2 > y1:
             continue
@@ -938,38 +954,28 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
     if spot is None or not word or not word.strip():
         return None
 
-    def px(b: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-        return b[0] / 100 * W, b[1] / 100 * H, b[2] / 100 * W, b[3] / 100 * H
-
-    source = px(spot["source"])
-    chars = [px(b) for _, b in spot.get("chars", [])]
+    source = _pct_to_px(spot["source"])
+    chars = [_pct_to_px(b) for _, b in spot.get("chars", [])]
     others = _others(spot["kind"], source, chars)
     block_px = []
     for b in blocks:
         bw, bh = block_size(b.paragraphs)
         block_px.append((b.x / 100 * W, b.y / 100 * H, bw, bh))
-    pad = W * CHAR_PAD   # 캐릭터를 절대 가리지 않게: 칸은 윤곽에 붙어 오니 사방으로 여유를 둔다 (#108)
-    sc = _WordScene(kind=spot["kind"], source=source, chars=[(c[0] - pad, c[1] - pad, c[2] + pad, c[3] + pad) for c in chars],
-                    others=others, blocks=block_px)
+    # 캐릭터를 절대 가리지 않게: 칸은 윤곽에 붙어 오니 사방으로 여유를 둔다 (#108)
+    sc = _WordScene(kind=spot["kind"], source=source, chars=_grow(chars, W * CHAR_PAD), others=others, blocks=block_px)
 
-    parts = split_word(word)
     whole = word.replace(" ", "")
-    placed: list[tuple[str, float, float, str]] | None = None
     if spot["kind"] == "touch":
         one = _place_touch(sc, piece_size(whole))
         return _word(busy, word, spot, [(whole, *one, "center")]) if one else None
+    parts = split_word(word)
     if len(parts) == 2:
         pw = max(piece_size(t)[0] for t in parts)
         pair = _place_pair(sc, (pw, piece_size(parts[0])[1]))
         if pair:
-            placed = [(parts[0], *pair[0], "left"), (parts[1], *pair[1], "right")]
-    if placed is None:
-        one = _place_one(sc, piece_size(whole))
-        if one:
-            placed = [(whole, *one, "center")]
-    if placed is None:
-        return None
-    return _word(busy, word, spot, placed)
+            return _word(busy, word, spot, [(parts[0], *pair[0], "left"), (parts[1], *pair[1], "right")])
+    one = _place_one(sc, piece_size(whole))
+    return _word(busy, word, spot, [(whole, *one, "center")]) if one else None
 
 
 def _word(busy: Busy, word: str, spot: dict, placed: list[tuple[str, float, float, str]]) -> SoundWord:

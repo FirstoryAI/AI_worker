@@ -18,6 +18,7 @@ import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 from .. import storage
 from ..config import config
@@ -92,15 +93,15 @@ def build_html(state: PipelineState) -> str:
     story, guide, ill = state["story"], state.get("guide"), state.get("illustrations")
     here = storage.local_path(state["output_prefix"])
 
-    def src(key: str) -> str:  # 그림만 다시 그린 실행은 안 바뀐 쪽이 이전 실행 폴더에 있다
-        return os.path.relpath(storage.local_path(key), here)
+    def src(key: Optional[str]) -> Optional[str]:  # 그림만 다시 그린 실행은 안 바뀐 쪽이 이전 실행 폴더에 있다
+        return os.path.relpath(storage.local_path(key), here) if key else None
 
     pages = {p.order: p for p in (ill.pages if ill else [])}
     img = {o: src(p.path) for o, p in pages.items() if p.status == "completed" and p.path}
-    cover = src(ill.cover) if ill and ill.cover else None
-    front = src(ill.front_cover) if ill and ill.front_cover else None   # 앞표지 = 정사각형 표지, 뒤표지도 정사각형 (#125). 옛 동화는 가로
-    back = src(ill.back_cover) if ill and ill.back_cover else None
-    sheet = src(ill.character_sheet_path) if ill and ill.character_sheet_path else None
+    cover = front = back = sheet = None
+    if ill:
+        cover, sheet = src(ill.cover), src(ill.character_sheet_path)
+        front, back = src(ill.front_cover), src(ill.back_cover)   # 앞표지 = 정사각형 표지, 뒤표지도 정사각형 (#125). 옛 동화는 가로
     synopsis = guide.synopsis if guide else ""
     prompts_after = {}
     for q in (guide.prompts if guide else []):
@@ -143,26 +144,25 @@ def build_html(state: PipelineState) -> str:
         slides.append(f"""
     <section class="slide" data-label="뒤표지"><div class="scene book-cover"><img src="{_e(back)}" alt=""></div></section>""")
 
-    g = guide
     panel = ""
-    if g:
+    if guide:
         design = state.get("story_design")
         mirrored = getattr(design, "mirrored_situation", None) or (design.get("mirrored_situation") if isinstance(design, dict) else None)
         starters = "".join(
             f'<div class="starter"><div class="when">p.{q.after_page} 뒤 · {_e(q.purpose)}</div><div class="say">“{_e(q.text)}”</div>'
-            f'<div class="quiet">{_e(q.parent_hint or "")}</div></div>' for q in g.prompts)
+            f'<div class="quiet">{_e(q.parent_hint or "")}</div></div>' for q in guide.prompts)
         sounds = "".join(
             f'<li>{o}쪽 <b style="color:{_e(pi.sound_word.color)}">{_e(pi.sound_word.text)}</b> · 조각 {len(pi.sound_word.pieces)}</li>'
             for o, pi in sorted(pages.items()) if pi.sound_word)
-        starred = [o for o, p in ((p.order, p) for p in story.pages) if _SFX.search(p.text)]
+        starred = [p.order for p in story.pages if _SFX.search(p.text)]
         panel = f"""
   <aside id="library">
     <h2>부모용 · 읽기 전에</h2>
-    <div class="card"><h3>{_e(story.title)}</h3><p>{_e(g.before_reading.intent)}</p></div>
-    <h4>함께 읽을 때</h4><ul>{''.join(f'<li>{_e(t)}</li>' for t in g.before_reading.tips)}</ul>
+    <div class="card"><h3>{_e(story.title)}</h3><p>{_e(guide.before_reading.intent)}</p></div>
+    <h4>함께 읽을 때</h4><ul>{''.join(f'<li>{_e(t)}</li>' for t in guide.before_reading.tips)}</ul>
     <h4>이야기 속 질문</h4>{starters}
-    <h4>다 읽은 뒤</h4><p class="say">“{_e(g.after_reading.bridge_question)}”</p>
-    {f'<p class="quiet">{_e(g.after_reading.if_undecided)}</p>' if g.after_reading.if_undecided else ''}
+    <h4>다 읽은 뒤</h4><p class="say">“{_e(guide.after_reading.bridge_question)}”</p>
+    {f'<p class="quiet">{_e(guide.after_reading.if_undecided)}</p>' if guide.after_reading.if_undecided else ''}
     <h4>그림 위 의성어·의태어</h4>
     {f'<ul>{sounds}</ul>' if sounds else '<p class="quiet">띄운 말 없음</p>'}
     <p class="quiet">본문 별표 말 있는 쪽: {', '.join(map(str, starred)) or '없음'}</p>
@@ -248,7 +248,10 @@ def render(state: PipelineState) -> dict:
 def rerender(run_dir: str | Path) -> Path:
     """저장된 실행 폴더(03-story·04-guide·05-illustrations JSON)로 book.html만 다시 그린다. OpenAI 호출 없음."""
     run = Path(run_dir).resolve()
-    read = lambda name: json.loads((run / name).read_text(encoding="utf-8")) if (run / name).exists() else None  # noqa: E731
+    def read(name: str):
+        path = run / name
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
     story, guide, ill = read("03-story.json"), read("04-guide.json"), read("05-illustrations.json")
     interview, design = read("01-interview.json") or {}, read("02-design.json")
     state = {

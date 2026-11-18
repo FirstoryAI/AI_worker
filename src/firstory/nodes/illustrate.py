@@ -57,19 +57,21 @@ def _format_args() -> dict:
             if config.image_format != "png" else {})
 
 
+def _request(call: Callable, **kwargs) -> tuple[bytes, int, int]:
+    """이미지 API 한 번 (generate·edit 공통). 콘텐츠 정책에 막히면 PolicyBlocked로 바꿔 던진다."""
+    try:
+        res = call(model=config.image_model, quality=config.image_quality, n=1, **kwargs, **_format_args())
+    except BadRequestError as e:
+        raise _policy(e) from e
+    return base64.b64decode(res.data[0].b64_json), *_usage(res)
+
+
 def _gen(prompt_text: str, size: Optional[str] = None) -> tuple[bytes, int, int]:
     """→ (그림 bytes, input_tokens, output_tokens). 이미지 비용은 토큰으로 매겨진다.
     시트라 config.sheet_size·config.image_format으로 받는다 (#80). 저장 key 확장자는 _ext로 정한다."""
     if _override:
         return _override(prompt_text, []), 0, 0
-    try:
-        res = client().images.generate(
-            model=config.image_model, prompt=prompt_text, size=size or config.sheet_size, quality=config.image_quality, n=1,
-            **_format_args(),
-        )
-    except BadRequestError as e:
-        raise _policy(e) from e
-    return base64.b64decode(res.data[0].b64_json), *_usage(res)
+    return _request(client().images.generate, prompt=prompt_text, size=size or config.sheet_size)
 
 
 def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] = None) -> tuple[bytes, int, int]:
@@ -78,20 +80,13 @@ def _edit(prompt_text: str, refs: list[tuple[str, bytes]], size: Optional[str] =
     if _override:
         return _override(prompt_text, [b for _, b in refs]), 0, 0
     images = _attach(refs)
-    try:
-        res = client().images.edit(
-            model=config.image_model,
-            image=images if len(images) > 1 else images[0],
-            prompt=prompt_text,
-            size=size or config.image_size,
-            quality=config.image_quality,
-            n=1,
-            **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
-            **_format_args(),
-        )
-    except BadRequestError as e:
-        raise _policy(e) from e
-    return base64.b64decode(res.data[0].b64_json), *_usage(res)
+    return _request(
+        client().images.edit,
+        image=images if len(images) > 1 else images[0],
+        prompt=prompt_text,
+        size=size or config.image_size,
+        **({"input_fidelity": "high"} if config.image_model.startswith("gpt-image-1") else {}),  # 1/1.5 전용
+    )
 
 
 def _soften(scene: str) -> tuple[str, CostEntry]:
@@ -194,15 +189,18 @@ def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] =
         if where and i <= len(where):
             span += f" toward the {where[i - 1]}"
         spans.append(span)
+    if len(sizes) == 2:
+        sides = ("the first one within the left half and the second one within the right half (not across the vertical center); "   # 2덩어리는 양쪽 면 (#95)
+                 "both are just empty parts of the same single scene, not two separate pages. ")   # 좌우 두 장면으로 나누지 않게 (#110)
+    else:
+        sides = "each within the left half or the right half (not across the vertical center). "
     return (
         "Layout: one continuous wide picture. Do not draw any vertical line, seam, crease, fold or gutter down the middle; "
         "the scene runs straight across the center. "
         "Story text will be printed over the picture later, so compose the scene with generous open space: "
         "the plain wall, sky, floor or blanket simply continues there, uninterrupted — " + "; ".join(spans) + ", "
         "toward the top or the bottom of the picture (not the middle height), "
-        + ("the first one within the left half and the second one within the right half (not across the vertical center); "   # 2덩어리는 양쪽 면 (#95)
-           "both are just empty parts of the same single scene, not two separate pages. "   # 좌우 두 장면으로 나누지 않게 (#110)
-           if len(sizes) == 2 else "each within the left half or the right half (not across the vertical center). ") +
+        + sides +
         "This open space must look like a natural part of the scene, with the same color, texture and light as its surroundings. "
         "Never draw any box, panel, frame, card, sheet of paper, sign, label, speech bubble, blank rectangle or lighter patch "
         "to mark where text goes. "
@@ -211,30 +209,30 @@ def layout_prompt(sizes: list[tuple[float, float]], where: Optional[list[str]] =
     )
 
 
+def _reference_lines(chars: list[CharacterSheet]) -> list[str]:
+    """첨부한 참고 그림 순서대로 "Reference n = 이름 (역할): 생김새" 줄."""
+    return [f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}" for i, c in enumerate(chars, 1)]
+
+
 def cover_prompt(story: StoryText, setting: Optional[str] = None) -> str:
-    lines = [f"Front cover of a children's picture book. {len(story.characters)} reference image(s) are attached, one per character, in this order:"]
-    for i, c in enumerate(story.characters, 1):
-        lines.append(f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}")
-    lines += [
+    if setting is None:
+        setting = story.pages[0].image_prompt if story.pages else ""
+    return "\n".join([
+        f"Front cover of a children's picture book. {len(story.characters)} reference image(s) are attached, one per character, in this order:",
+        *_reference_lines(story.characters),
         "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add other characters.",
         "The protagonist is the clear focus, warm and inviting, in a simple setting that hints at the story.",
-        f"Story setting (for mood only): {setting if setting is not None else story.pages[0].image_prompt if story.pages else ''}",
+        f"Story setting (for mood only): {setting}",
         f"Style: {story.style_guide}",
         f'Put the book title in Korean at the top in large, rounded, hand-lettered style, spelled exactly: "{story.title}". No other text, no borders.',
-    ]
-    return "\n".join(lines)
-
-
-def _reference_lines(story: StoryText, first: int = 1) -> list[str]:
-    return [f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}" for i, c in enumerate(story.characters, first)]
+    ])
 
 
 def back_cover_prompt(story: StoryText) -> str:
     """뒤표지 (정사각형 표지와 같은 크기, 글자 없음, #125). 실제 그림책 뒤표지처럼 빈 바탕에 주인공 혼자 작게 그린 마무리 한 컷.
     마지막 쪽 장면을 다시 그리지 않는다 (10쪽과 겹친다). 참고 그림은 주인공 시트 한 장 (#88)."""
-    hero = story.protagonist()
-    lines = [f"Back cover of a children's picture book. 1 reference image is attached:",
-             f"  Reference 1 = {hero.name} ({hero.role}): {hero.visual_description}",
+    lines = ["Back cover of a children's picture book. 1 reference image is attached:",
+             *_reference_lines([story.protagonist()]),
              "Draw the character EXACTLY as in the reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add any other character.",
              "A small spot illustration: only this character, alone, in a happy relaxed pose saying goodbye (a small wave or a gentle smile), "
              "drawn small in the center and taking up about one third of the image height.",
@@ -258,10 +256,7 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
                 request: Optional[str] = None, where: Optional[list[str]] = None) -> str:
     lines = [
         f"Illustrate this picture-book scene. {len(page_chars)} reference image(s) are attached, one per character, in this order:",
-    ]
-    for i, c in enumerate(page_chars, 1):
-        lines.append(f"  Reference {i} = {c.name} ({c.role}): {c.visual_description}")
-    lines += [
+        *_reference_lines(page_chars),
         "Draw each character EXACTLY as in its reference (same species, colors, markings, proportions, outfit). Do not redesign, do not swap, do not add other characters.",
         single_moment(page_chars),
         f"Scene (follow the described poses and positions precisely): {image_prompt}",
@@ -469,6 +464,11 @@ def _ref(data: bytes) -> bytes:
         return data
 
 
+def _ms(t0: float) -> int:
+    """t0(time.time())부터 지난 밀리초."""
+    return int((time.time() - t0) * 1000)
+
+
 def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = None, prev: Optional[Illustrations] = None,
          request: Optional[str] = None, questions: Optional[dict[int, list[str]]] = None):
     """img_prefix: 이번 실행의 그림 key 앞부분 (…/images). 일부 쪽만 다시 그리면 나머지 쪽과 시트는
@@ -481,6 +481,17 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
     ill = prev.model_copy(deep=True) if prev else Illustrations()
     by_name = {c.name: c for c in story.characters}
 
+    def save(stem: str, img: bytes) -> str:
+        """이번 실행의 그림 key로 저장. 확장자는 받은 바이트로 정한다."""
+        return storage.write_bytes(storage.join(img_prefix, f"{stem}.{_ext(img)}"), img)
+
+    def refs_for(chars: list[CharacterSheet]) -> list[tuple[str, bytes]]:
+        return [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
+
+    def scene_chars(p) -> list[CharacterSheet]:
+        """장면에 나오는 캐릭터. 아무도 없으면 주인공."""
+        return [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
+
     # 1) 캐릭터 시트 — 일부 쪽만 다시 그릴 때는 이전 실행의 시트를 그대로 쓴다. 여러 명이면 병렬
     def make_sheet(c: CharacterSheet):
         if only_pages is not None and c.name in ill.character_sheets:
@@ -488,8 +499,8 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         t0 = time.time()
         img, tin, tout = _draw(lambda desc: _gen(sheet_prompt(c.model_copy(update={"visual_description": desc}), story.style_guide)),
                                c.visual_description, f"{img_prefix} sheet {c.role}", costs)
-        key = storage.write_bytes(storage.join(img_prefix, f"sheet-{c.role}-{_safe(c.name)}.{_ext(img)}"), img)
-        return c.name, key, CostEntry(node=f"illustrate:sheet:{c.name}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=int((time.time() - t0) * 1000))
+        key = save(f"sheet-{c.role}-{_safe(c.name)}", img)
+        return c.name, key, CostEntry(node=f"illustrate:sheet:{c.name}", model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=_ms(t0))
 
     with ThreadPoolExecutor(max_workers=max(1, config.image_concurrency)) as ex:
         for name, key, cost in ex.map(make_sheet, story.characters):
@@ -532,7 +543,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             except Exception as e:  # noqa: BLE001 — 못 그리면 처음 그림 그대로 기본 자리로
                 log.warning("쪽 %d: 자리를 위한 다시 그리기 실패: %s", p.order, type(e).__name__)
                 return None
-            state["key"] = storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(again)}"), again)
+            state["key"] = save(f"page-{p.order:02d}", again)
             state["tin"] += tin2
             state["tout"] += tout2
             state["images"] += 1
@@ -542,8 +553,8 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
     def work(p):
         t0 = time.time()
         try:
-            chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
-            refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars]
+            chars = scene_chars(p)
+            refs = refs_for(chars)
             old_pi = prev_pages.get(p.order)   # 그림만 다시: 글이 그대로면 덩어리 나누기는 이전 그대로 (AI를 다시 부르지 않는다)
             tail = questions.get(p.order, [])
             if old_pi and old_pi.status == "completed" and old_pi.path and old_pi.text_blocks and not _stale(p, old_pi, tail):
@@ -555,13 +566,12 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
                 costs.append(cost)
             img, tin, tout = _draw(lambda sc: _edit(page_prompt(story, chars, sc, [block_size(b) for b in blocks], request), refs),
                                    scene, f"{img_prefix} page {p.order}", costs)
-            state = {"key": storage.write_bytes(storage.join(img_prefix, f"page-{p.order:02d}.{_ext(img)}"), img),
-                     "tin": tin, "tout": tout, "images": 1}
+            state = {"key": save(f"page-{p.order:02d}", img), "tin": tin, "tout": tout, "images": 1}
             tbs, sw = _arrange(p.order, img, blocks, costs, make_redraw(p, chars, refs, state, scene), _sfx(p.order, p.text, chars))
             return (PageImage(order=p.order, path=state["key"], status="completed", text_blocks=tbs, sound_word=sw),
-                    int((time.time() - t0) * 1000), state["tin"], state["tout"], state["images"])
+                    _ms(t0), state["tin"], state["tout"], state["images"])
         except Exception as e:  # noqa: BLE001
-            return PageImage(order=p.order, status="failed", error=str(e)[:300]), int((time.time() - t0) * 1000), 0, 0, 0
+            return PageImage(order=p.order, status="failed", error=str(e)[:300]), _ms(t0), 0, 0, 0
 
     def relayout(p):
         """그림은 그대로 두고 (이전 key) 글이 바뀐 쪽의 덩어리와 자리만 다시. 다시 그리지 않는다.
@@ -578,19 +588,19 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
             except Exception as e:  # noqa: BLE001
                 log.warning("쪽 %d: 저장된 그림을 읽지 못함: %s", p.order, type(e).__name__)
                 image = None
-            chars = [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
+            chars = scene_chars(p)
             state = {"key": pi.path, "tin": 0, "tout": 0, "images": 0}
-            redraw = make_redraw(p, chars, [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in chars], state) if new_question else None
+            redraw = make_redraw(p, chars, refs_for(chars), state) if new_question else None
             tbs, sw = _arrange(p.order, image, blocks, costs, redraw, _sfx(p.order, p.text, chars))
             if state["images"]:
                 costs.append(CostEntry(node=f"illustrate:page{p.order}", model=config.image_model, input_tokens=state["tin"],
-                                       output_tokens=state["tout"], images=state["images"], ms=int((time.time() - t0) * 1000)))
+                                       output_tokens=state["tout"], images=state["images"], ms=_ms(t0)))
             return pi.model_copy(update={"path": state["key"], "text_blocks": tbs, "sound_word": sw})
         except Exception as e:  # noqa: BLE001 — 글 자리 계산이 전체 생성을 막지 않는다. 쪽은 이전 그대로 (글이 여전히 다르면 다음 실행에 다시 한다)
             log.warning("쪽 %d: 글 자리 다시 계산 실패 → 이전 그대로: %s", p.order, type(e).__name__)
             return pi
 
-    sheet_refs = [(f"{_safe(c.name)}.png", ref_bytes[c.name]) for c in story.characters]
+    sheet_refs = refs_for(story.characters)
     setting = story.pages[0].image_prompt if story.pages else ""
 
     def draw_cover(node: str, name: str, make_prompt: Callable[[str], str], scene: str,
@@ -600,21 +610,19 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         for attempt in (1, 2):
             try:
                 img, tin, tout = _draw(lambda s: _edit(make_prompt(s), refs, size=size), scene, f"{img_prefix} {name}", costs)
-                key = storage.write_bytes(storage.join(img_prefix, f"{name}.{_ext(img)}"), img)
-                return key, CostEntry(node=node, model=config.image_model, input_tokens=tin, output_tokens=tout,
-                                      images=1, ms=int((time.time() - t0) * 1000))
+                key = save(name, img)
+                return key, CostEntry(node=node, model=config.image_model, input_tokens=tin, output_tokens=tout, images=1, ms=_ms(t0))
             except Exception as e:  # noqa: BLE001
                 log.warning("%s 실패 (%d번째): %s", name, attempt, type(e).__name__)
-        return None, CostEntry(node=node, model=config.image_model, ms=int((time.time() - t0) * 1000))
+        return None, CostEntry(node=node, model=config.image_model, ms=_ms(t0))
 
     def cover():   # 정사각형 (서재 카드). 없으면 Spring이 캐릭터 시트를 쓴다
         return draw_cover("illustrate:cover", "cover", lambda scene: cover_prompt(story, scene), setting,
                           sheet_refs, config.cover_size)
 
     def back_cover():   # 주인공 혼자 작게 (참고 그림은 주인공 시트만)
-        hero = story.protagonist().name
         return draw_cover("illustrate:back_cover", "back-cover", lambda _: back_cover_prompt(story), "",
-                          [(f"{_safe(hero)}.png", ref_bytes[hero])], config.cover_size)
+                          refs_for([story.protagonist()]), config.cover_size)
 
     redraw_cover = only_pages is None or not ill.cover or ill.cover_title != story.title
     redraw_back = only_pages is None or not ill.back_cover   # 주인공 혼자 그린 그림이라 쪽과 상관없다 (#90)
@@ -671,7 +679,7 @@ def illustrate(state: PipelineState) -> dict:
 _PAGE_RE = re.compile(r"((?:\d+\s*,\s*)*\d+)\s*(?:쪽|페이지)|p\s*(\d+)", re.I)
 
 
-def _pages_from_feedback(fb: str) -> set[int] | None:
+def _pages_from_feedback(fb: str) -> Optional[set[int]]:
     """쪽·페이지·p가 붙은 숫자만 쪽 번호로 ("3쪽 다리 4개로" → {3}). 숫자만 쓴 피드백("3", "3, 5")도 쪽 번호."""
     pages = {int(n) for m in _PAGE_RE.finditer(fb) for n in re.findall(r"\d+", m.group(0))}
     pages |= {int(t) for t in fb.replace(",", " ").split() if t.isdigit()}
@@ -689,7 +697,10 @@ def illustrate_only(state: PipelineState) -> dict:
     feedback(부모 메모)은 다시 그리는 쪽의 그림 프롬프트에 붙인다 (#46)."""
     fb = state.get("review_feedback") or ""
     chosen = state.get("regenerate_pages")
-    pages = (set(chosen) or None) if chosen is not None else _pages_from_feedback(fb)
+    if chosen is not None:
+        pages = set(chosen) or None   # []면 전부
+    else:
+        pages = _pages_from_feedback(fb)
     ill, costs = _run(state["story"], storage.join(state["output_prefix"], "images"), only_pages=pages,
                       prev=state.get("illustrations"), request=_memo(fb), questions=_questions(state.get("guide")))
     return {"illustrations": ill, "cost": costs}

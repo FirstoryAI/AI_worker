@@ -36,6 +36,14 @@ def print_story(story: dict, guide: dict | None = None):
             print(f"      {C['m']}[{q['purpose']}]{C['0']} {q['text']}")
 
 
+# 검토 화면 번호 → (다시 만들 범위, 피드백 물음)
+_REGENERATE = {
+    "2": ("text", "어떻게 바꿀까요?"),
+    "3": ("character", "어떤 쪽으로? (예: 토끼 말고 공룡으로)"),
+    "4": ("images", "페이지 번호 (비우면 전부)"),
+}
+
+
 def handle_interrupt(payload: dict, args) -> object:
     """interrupt 값을 보고 사람에게 묻는다. 돌려주는 값이 Command(resume=...)."""
     t = payload.get("type")
@@ -62,17 +70,12 @@ def handle_interrupt(payload: dict, args) -> object:
         print_story(payload["story"], payload.get("guide"))
         say("g", f"\n  → {payload['run_dir']}/book.html 을 열어서 그림까지 확인")
         print("\n  [1] 완료   [2] 다시 쓰기(피드백)   [3] 캐릭터/이야기 바꾸기   [4] 그림만 다시")
-        a = (input("  › ").strip() or "1")
-        if a == "2":
-            fb = input("  어떻게 바꿀까요? › ").strip()
-            return {"action": "regenerate", "scope": "text", "feedback": fb}
-        if a == "3":
-            fb = input("  어떤 쪽으로? (예: 토끼 말고 공룡으로) › ").strip()
-            return {"action": "regenerate", "scope": "character", "feedback": fb}
-        if a == "4":
-            fb = input("  페이지 번호 (비우면 전부) › ").strip()
-            return {"action": "regenerate", "scope": "images", "feedback": fb}
-        return {"action": "approve"}
+        a = input("  › ").strip() or "1"
+        if a not in _REGENERATE:
+            return {"action": "approve"}
+        scope, question = _REGENERATE[a]
+        fb = input(f"  {question} › ").strip()
+        return {"action": "regenerate", "scope": scope, "feedback": fb}
     return None
 
 
@@ -108,7 +111,13 @@ def main(argv=None):
             say("y", "이 thread는 이미 끝났거나 없음")
             return 1
         say("c", f"재개: {thread_id}")
-        inp = None
+        # 멈춘 interrupt 다시 보여주기
+        pending = [t for t in snap.tasks if t.interrupts]
+        if pending:
+            answer = handle_interrupt(pending[0].interrupts[0].value, args)
+            result = run(graph, Command(resume=answer), cfg, args)
+        else:
+            result = run(graph, None, cfg, args)
     else:
         if not args.input:
             ap.error("입력 JSON 경로가 필요합니다")
@@ -126,17 +135,6 @@ def main(argv=None):
             "strategy": Strategy(**{k: True for k in keys}),
         }
         say("b", f"\nFIRSTORY pipeline  {C['d']}thread={thread_id}{' · 전략 ' + ','.join(keys) if keys else ''}{C['0']}")
-
-    if inp is None:
-        # 멈춘 interrupt 다시 보여주기
-        snap = graph.get_state(cfg)
-        pend = [t for t in snap.tasks if t.interrupts]
-        if pend:
-            answer = handle_interrupt(pend[0].interrupts[0].value, args)
-            result = run(graph, Command(resume=answer), cfg, args)
-        else:
-            result = run(graph, None, cfg, args)
-    else:
         result = run(graph, inp, cfg, args)
 
     # 요약

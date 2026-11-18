@@ -128,7 +128,12 @@ def structured(
 
 
 def _data_url(image: bytes) -> str:
-    mime = "image/jpeg" if image[:3] == b"\xff\xd8\xff" else "image/webp" if image[:4] == b"RIFF" else "image/png"
+    if image[:3] == b"\xff\xd8\xff":
+        mime = "image/jpeg"
+    elif image[:4] == b"RIFF":
+        mime = "image/webp"
+    else:
+        mime = "image/png"
     return f"data:{mime};base64,{base64.b64encode(image).decode('ascii')}"
 
 

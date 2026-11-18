@@ -181,9 +181,6 @@ class Strategy(BaseModel):
     fewshot: bool = False   # 좋은 설계 예시를 보여 준다 (Dramatron)
     motif: bool = False     # 반복 문구·위로 물건 (StoryTale)
 
-    def on(self) -> list[str]:
-        return [k for k, v in self.model_dump().items() if v]
-
 
 class Attempt(BaseModel):
     action: str = Field(description="주인공이 해 보는 일 (눈에 보이는 행동)")

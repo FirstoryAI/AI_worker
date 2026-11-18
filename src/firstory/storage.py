@@ -52,10 +52,10 @@ def write_bytes(key: str, data: bytes) -> str:
     if _use_s3():
         content_type = mimetypes.guess_type(key)[0] or "application/octet-stream"
         _s3().put_object(Bucket=config.s3_bucket, Key=key, Body=data, ContentType=content_type)
-        return key
-    p = local_path(key)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(data)
+    else:
+        p = local_path(key)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
     return key
 
 
