@@ -10,7 +10,7 @@ import re
 import struct
 import zlib
 
-from . import llm
+from . import llm, tts
 from .config import config
 from .nodes import illustrate
 from .schemas import (
@@ -137,6 +137,12 @@ def fake_safety(texts: list[str]) -> SafetyResult:
     return result
 
 
+def silent_mp3(inputs: list[dict]) -> bytes:
+    """가짜 낭독. 배선 확인용 짧은 고정 바이트 (ID3 머리말)."""
+    return b"ID3\x03\x00\x00\x00\x00\x00\x00"
+
+
 def enable() -> None:
     llm.set_structured_override(fake_structured)
     illustrate.set_image_override(tiny_png)
+    tts.set_tts_override(silent_mp3)

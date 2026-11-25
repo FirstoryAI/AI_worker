@@ -3,19 +3,28 @@
 - segments: 한 쪽의 글을 따옴표 안(대사)·밖(해설) 조각으로
 - cast_voices: 인물 → 목소리 id (풀에서 안 겹치게)
 - assign_voices: 따옴표 조각마다 누가 말했는지 모델이 정하고, 인물마다 목소리 종류를 받아 목소리를 배정한다
+- page_inputs·source_hash: 한 쪽의 (글, 목소리) 목록과 그 해시 (같으면 다시 만들지 않는다)
+- narrate: 쪽마다 ElevenLabs 대화 음성을 만들어 저장한다. 실패한 쪽은 failed로 두고 나머지는 이어 간다
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
 
-from .. import voices
+from .. import storage, tts, voices
 from ..config import config
 from ..llm import prompt, structured
-from ..schemas import CostEntry, SpeakerAssignment, VoiceType
+from ..schemas import CostEntry, Narration, PageAudio, SpeakerAssignment, VoiceType
 from ..state import PipelineState
 from .layout import split_lines
+
+log = logging.getLogger("firstory.narrate")
 
 NARRATOR_NAME = "narrator"
 _QUOTED = re.compile(r'["“”]([^"“”]*)["“”]')
@@ -109,4 +118,65 @@ def assign_voices(state: PipelineState) -> dict:
     return {
         "voice_plan": {"cast_types": cast_types, "cast_voices": cast_voices(cast_types, keep_voices), "speakers": speakers},
         "cost": [cost],
+    }
+
+
+def page_inputs(page_no: int, text: str, plan: dict) -> list[dict]:
+    """한 쪽의 [{"text", "voice_id"}]. 해설은 해설자 목소리, 대사는 말한 인물의 목소리
+    (목소리 표에 없는 이름이면 해설자). 같은 목소리가 이어지면 한 조각으로 합친다."""
+    cast = plan.get("cast_voices", {})
+    speakers = plan.get("speakers", {})
+    out: list[dict] = []
+    for seg in segments(page_no, text):
+        voice = cast.get(speakers.get(seg.id), voices.NARRATOR) if seg.quoted else voices.NARRATOR
+        if out and out[-1]["voice_id"] == voice:
+            out[-1]["text"] += " " + seg.text
+        else:
+            out.append({"text": seg.text, "voice_id": voice})
+    return out
+
+
+def source_hash(inputs: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def narrate(state: PipelineState) -> dict:
+    if not tts.enabled():
+        log.info("[narrate] ElevenLabs 키가 없어 낭독을 만들지 않습니다")
+        return {"narration": None, "cost": []}
+
+    story = state["story"]
+    plan = state.get("voice_plan") or {"cast_types": {}, "cast_voices": {}, "speakers": {}}
+    prefix = state["output_prefix"]
+    prev = state.get("narration")
+    prev_pages = {p.order: p for p in prev.pages} if prev else {}
+
+    def work(page) -> tuple[PageAudio, Optional[CostEntry]]:
+        n = page.order
+        inputs = page_inputs(n, page.text, plan)
+        h = source_hash(inputs)
+        old = prev_pages.get(n)
+        if old and old.status == "completed" and old.source_hash == h:
+            return old, None   # 글·목소리가 그대로인 쪽은 이전 음성을 그대로 쓴다
+        t0 = time.time()
+        err = ""
+        for _ in range(2):   # 한 번 더 시도
+            try:
+                data = tts.dialogue(inputs, page=n)
+                break
+            except tts.TtsError as e:
+                err = f"{e.status}: {e}"
+        else:
+            log.warning("[narrate] %d쪽 음성 실패: %s", n, err)
+            return PageAudio(order=n, status="failed", error=err, source_hash=h), None   # 실패한 쪽은 과금되지 않는다
+        key = storage.write_bytes(storage.join(prefix, "audio", f"page-{n:02d}.mp3"), data)
+        cost = CostEntry(node=f"narrate:page{n}", model=config.tts_model,
+                         tts_chars=sum(len(i["text"]) for i in inputs), ms=int((time.time() - t0) * 1000))
+        return PageAudio(order=n, path=key, status="completed", source_hash=h), cost
+
+    with ThreadPoolExecutor(max_workers=max(1, config.tts_concurrency)) as ex:
+        results = list(ex.map(work, sorted(story.pages, key=lambda p: p.order)))
+    return {
+        "narration": Narration(cast_types=plan["cast_types"], cast_voices=plan["cast_voices"], pages=[a for a, _ in results]),
+        "cost": [c for _, c in results if c],
     }

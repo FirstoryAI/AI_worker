@@ -1,6 +1,7 @@
 """ElevenLabs Text to Dialogue 호출. 표준 라이브러리 urllib만 쓴다 (새 의존성 없음)."""
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -46,7 +47,7 @@ def _post(body: dict) -> bytes:
         except Exception:
             detail = ""
         raise TtsError((detail or str(e))[:300], status=e.code) from e
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:   # 읽다가 끊긴 것(IncompleteRead)도
         raise TtsError(str(e)[:300], status=None) from e
 
 
