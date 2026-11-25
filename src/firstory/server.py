@@ -417,11 +417,13 @@ def _text_position(p, pi) -> str:
     return "top" if first.y + block_size(first.paragraphs)[1] / H * 100 / 2 < 50 else "bottom"
 
 
-def _page(p, pi) -> dict:
-    """/result의 쪽 하나. pi는 그 쪽의 다 그린 그림 (못 그렸으면 None)"""
+def _page(p, pi, pa) -> dict:
+    """/result의 쪽 하나. pi는 그 쪽의 다 그린 그림 (못 그렸으면 None), pa는 그 쪽의 PageAudio (음성 없는 동화면 None)"""
     return {"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
             "text_position": _text_position(p, pi), "text_blocks": _text_blocks(pi), "sound_word": _sound_word(pi),
-            "image_path": pi.path if pi else None, "image_status": "done" if pi else "failed"}
+            "image_path": pi.path if pi else None, "image_status": "done" if pi else "failed",
+            "audio_path": pa.path if pa and pa.status == "completed" else None,   # 음성 없으면 둘 다 null, 실패면 (null, "failed")
+            "audio_status": None if pa is None else ("done" if pa.status == "completed" else "failed")}
 
 
 @app.get("/v1/threads/{thread_id}/result")
@@ -434,6 +436,8 @@ def result(thread_id: str) -> dict:
     story, ill = v["story"], v.get("illustrations") or Illustrations()
     roles = {c.name: c.role for c in story.characters}
     images = {pi.order: pi for pi in ill.pages if pi.status == "completed" and pi.path}
+    narration = v.get("narration")
+    audios = {pa.order: pa for pa in narration.pages} if narration else {}
     costs = v.get("cost", [])[run["cost_start"] if run else 0:]   # 이번 실행 것만
     return {
         "run_no": run["run_no"] if run else None,
@@ -445,7 +449,7 @@ def result(thread_id: str) -> dict:
         "back_cover_path": ill.back_cover,     # 뒤표지 (정사각형 1024×1024, 글자 없음, #125). 못 그렸으면 null
         "character_sheets": [{"role": roles.get(name, "supporting"), "name": name, "path": key}
                              for name, key in ill.character_sheets.items()],
-        "pages": [_page(p, images.get(p.order)) for p in story.pages],
+        "pages": [_page(p, images.get(p.order), audios.get(p.order)) for p in story.pages],
         "guide": v["guide"].model_dump(mode="json") if v.get("guide") else None,
         "cost": {"input_tokens": sum(c.input_tokens for c in costs), "output_tokens": sum(c.output_tokens for c in costs),
                  "image_count": sum(c.images for c in costs)},

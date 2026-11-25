@@ -10,7 +10,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from firstory import server
+from firstory import mock, server, tts
+
+tts.set_tts_override(mock.silent_mp3)   # 진짜 ElevenLabs는 절대 부르지 않는다 (유료 키가 환경에 있어도)
 
 server.config = dataclasses.replace(server.config, checkpoint_db=Path(tempfile.mkdtemp()) / "ck.db", internal_token="t")
 H = {"X-Internal-Token": "t"}

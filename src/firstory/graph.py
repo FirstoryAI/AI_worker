@@ -13,15 +13,18 @@ FIRSTORY 그래프. ARCHITECTURE.md §2.
                                                                                       │
                                                                                 polish_story   ← 문장만 다듬기
                                                                                       │
-                                                                     ┌────────────────┴────────────────┐
-                                                                     ▼                                 ▼
-                                                              safety_output                      reading_guide
-                                                             (본문 위기 신호)                            │  질문을 쪽 글 맨 밑에 (#100)
-                                                                     │                                 ▼
-                                                                     │                            illustrate
-                                   (regen: images) ─▶ illustrate_only ─┐                               │
-                                                                       ▼                               │
-                                                                    render ◀───────────────────────────┘
+                                          ┌──────────────────────────────┴───────────┐
+                                          ▼                                          ▼
+                                   safety_output                               reading_guide   ← 질문을 쪽 글 맨 밑에 (#100)
+                                  (본문 위기 신호)                     ┌───────────────┴───────────────┐
+                                          │                         ▼                               ▼
+                                          │                    illustrate                     assign_voices   ← 대사별 말한 사람·인물 목소리
+                                          │                         │                               │
+                                          │                         │                               ▼
+                                          │                         │                            narrate   ← 쪽 글 + 가이드 질문 줄을 해설자로 (#95)
+                                          │   (regen: images) ─▶ illustrate_only ─┐                 │
+                                          ▼                         ▼             ▼                 ▼
+                                       render ◀─────────────────────┴─────────────┴────────────────┘
                                                                        │
                                                                        ▼
                                                                ⏸ parent_review   ← 텍스트+이미지 완성 후 (기획안 STEP 5~6)
@@ -47,6 +50,7 @@ from .nodes.illustrate import illustrate, illustrate_only
 from .nodes.interview import (
     confirm_generate, interview_answer, interview_finish, interview_step, route_after_answer, route_after_step,
 )
+from .nodes.narrate import assign_voices, narrate
 from .nodes.render import render
 from .nodes.safety import safety_output
 from .nodes.story import (
@@ -79,6 +83,8 @@ def build_graph():
         ("safety_output", safety_output),
         ("illustrate", illustrate),
         ("illustrate_only", illustrate_only),
+        ("assign_voices", assign_voices),
+        ("narrate", narrate),
         ("render", render),
         ("parent_review", parent_review),
     ]:
@@ -92,12 +98,16 @@ def build_graph():
     g.add_edge("confirm_generate", "design_story")
     g.add_edge("design_story", "write_story")
     g.add_edge("write_story", "polish_story")
-    # 🔒 ④-1: 텍스트 완료 → (가이드 → 이미지) ∥ 본문 위기 신호 → render (fan-in).
+    # 🔒 ④-1: 텍스트 완료 → (가이드 → 이미지) ∥ (목소리 → 음성) ∥ 본문 위기 신호 → render (fan-in).
     # 가이드가 먼저: 질문이 쪽 글 맨 밑 문단이라 그림의 빈 곳 크기를 정하기 전에 알아야 한다 (#100)
     g.add_edge("polish_story", "reading_guide")
     g.add_edge("polish_story", "safety_output")
     g.add_edge("reading_guide", "illustrate")
-    g.add_edge(["safety_output", "illustrate"], "render")
+    # 음성 갈래: 화면에 보이는 가이드 질문 줄까지 읽으려고 가이드 뒤에 선다 (Backend#95). 그림과는 따로 간다.
+    # 그림만 다시(illustrate_only)할 때는 타지 않는다
+    g.add_edge("reading_guide", "assign_voices")
+    g.add_edge("assign_voices", "narrate")
+    g.add_edge(["safety_output", "illustrate", "narrate"], "render")
     g.add_edge("illustrate_only", "render")
     g.add_edge("render", "parent_review")
     g.add_conditional_edges(

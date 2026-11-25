@@ -10,12 +10,12 @@ import re
 import struct
 import zlib
 
-from . import llm
+from . import llm, tts
 from .config import config
 from .nodes import illustrate
 from .schemas import (
     AfterReading, Attempt, BeforeReading, CharacterSheet, GuidePrompt, InterviewSummary, InterviewTurnResult,
-    JudgeScore, ParentUpdate, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
+    JudgeScore, ParentUpdate, SpeakerAssignment, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
     OneMomentScene, SoftenedScene, StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
     BlockSpot, TextChunking, TextPlacement, TextPlacementWithWord, WordSpot, OwnerBox, CharacterBox,
 )
@@ -49,6 +49,8 @@ def fake_structured(*, node, model, schema, system, user, image=None):
                                        reason="direction 비어있음")
         return InterviewTurnResult(context_update=ParentUpdate(message_direction="comfort_first", message="네 잘못 아니야"),
                                    status="sufficient", reason="다 채워짐")
+    if schema is SpeakerAssignment:   # 배선 확인용: 모든 대사가 해설자. 가짜 글에는 따옴표가 없어 보통 안 불린다
+        return SpeakerAssignment(cast=[], quotes=[])
     if schema is SafetyJudgement:   # 판단할 글은 user에 있다 (nodes/safety.py)
         s = fake_safety([user])
         return SafetyJudgement(basis="mock 표시", level=s.level, category=s.category, reason=s.reason, topic=s.topic)
@@ -135,6 +137,12 @@ def fake_safety(texts: list[str]) -> SafetyResult:
     return result
 
 
+def silent_mp3(inputs: list[dict]) -> bytes:
+    """가짜 낭독. 배선 확인용 짧은 고정 바이트 (ID3 머리말)."""
+    return b"ID3\x03\x00\x00\x00\x00\x00\x00"
+
+
 def enable() -> None:
     llm.set_structured_override(fake_structured)
     illustrate.set_image_override(tiny_png)
+    tts.set_tts_override(silent_mp3)

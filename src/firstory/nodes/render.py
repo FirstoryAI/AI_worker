@@ -55,6 +55,7 @@ def _dump(prefix: str, state: PipelineState):
     j("03-story.json", state.get("story"))
     j("04-guide.json", state.get("guide"))
     j("05-illustrations.json", state.get("illustrations"))
+    j("06-narration.json", state.get("narration"))
     j("99-cost.json", [c.model_dump() for c in state.get("cost", [])])
 
 

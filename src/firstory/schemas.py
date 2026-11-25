@@ -420,7 +420,43 @@ class CostEntry(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     images: int = 0
+    tts_chars: int = 0   # ElevenLabs로 보낸 글자 수 (낭독 비용 계산용)
     ms: int = 0
+
+
+VoiceType = Literal["child_girl", "child_boy", "adult_woman", "adult_man", "elder_woman", "elder_man"]
+
+
+class CastVoice(BaseModel):
+    name: str = Field(description="인물 이름. 본문에 나오는 그대로")
+    voice_type: VoiceType = Field(description="그 인물에게 맞는 목소리 종류 (나이·성별)")
+
+
+class QuoteSpeaker(BaseModel):
+    id: str = Field(description="따옴표 대사의 번호. 입력으로 받은 id 그대로")
+    speaker: str = Field(description="말한 사람. 서술이면 narrator, 아니면 인물 이름")
+
+
+class SpeakerAssignment(BaseModel):
+    """누가 말하는지 정하는 프롬프트의 출력 (낭독용 목소리 배정)."""
+    cast: list[CastVoice] = Field(description="대사가 있는 인물과 목소리 종류")
+    quotes: list[QuoteSpeaker] = Field(description="따옴표 대사마다 말한 사람")
+
+
+class PageAudio(BaseModel):
+    order: int
+    path: Optional[str] = None
+    status: Literal["completed", "failed"]
+    error: Optional[str] = None
+    source_hash: Optional[str] = None   # 낭독한 글의 해시. 같으면 다시 만들지 않는다
+    text_hash: Optional[str] = None     # 그 쪽 글(원문)의 해시. 글만 다시 만들 때 같으면 말한 사람을 다시 정하지 않는다
+
+
+class Narration(BaseModel):
+    cast_types: dict[str, VoiceType] = {}   # 인물 이름 → 목소리 종류
+    cast_voices: dict[str, str] = {}        # 인물 이름 → 고른 voice_id
+    speakers: dict[str, str] = {}           # 대사 조각 id("{쪽}-{순번}") → 말한 사람 (없으면 해설자)
+    pages: list[PageAudio] = []
 
 
 SafetyLevel = Literal["OK", "SENSITIVE", "REVISE", "CRISIS"]

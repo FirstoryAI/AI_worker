@@ -22,7 +22,7 @@ from PIL import Image
 from ..llm import client, prompt, structured
 from ..schemas import CharacterSheet, CostEntry, Illustrations, OneMomentScene, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
 from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, REDRAW_BUSY, W, _cost, Busy, Block, SfxAsk, block_size, blockers, build_blocks, calmest_pick, chunk_page, merge,
-                     place_page, place_word, settle, short_look, sound_words, split_block, split_lines, wrap_line)
+                     place_page, place_word, questions_by_page as _questions, settle, short_look, sound_words, split_block, split_lines, wrap_line)
 from ..state import PipelineState
 
 log = logging.getLogger("firstory.illustrate")
@@ -276,14 +276,6 @@ def page_prompt(story: StoryText, page_chars: list[CharacterSheet], image_prompt
 def _squash(text: str) -> str:
     """공백과 강조 표시(**)를 뺀다 — 줄을 나눌 때 강조가 닫혔다 다시 열려 생긴 ****도 같게 본다."""
     return re.sub(r"\s|\*\*", "", text)
-
-
-def _questions(guide: Optional[ReadingGuide]) -> dict[int, list[str]]:
-    """가이드 질문 → 쪽 번호별 질문 줄 (#100). 같은 쪽 질문이 여럿이면 가이드 순서대로 잇는다. 가이드가 없으면 {}."""
-    out: dict[int, list[str]] = {}
-    for q in (guide.prompts if guide else []):
-        out.setdefault(q.after_page, []).extend(split_lines(q.text))
-    return out
 
 
 def _stale(p, pi: PageImage, tail: list[str] = ()) -> bool:
