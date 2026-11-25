@@ -412,6 +412,10 @@ seen_sys: list[str] = []
 llm.set_structured_override(lambda **kw: seen_sys.append(kw["system"] + kw["user"]) or SpeakerAssignment(cast=[], quotes=[]))
 nr.assign_voices({**q_st, "guide": guide_q((2, "라니는 왜 싫었을까요?"), (1, "이건 1쪽 질문일까요?"))})
 assert seen_sys and all("싫었을까요" not in t and "1쪽 질문" not in t for t in seen_sys)
+assert "[1쪽]\n1쪽 글이에요." in seen_sys[0] and "[3쪽]\n3쪽 글이에요." in seen_sys[0]   # 대사 없는 쪽도 문맥으로 같이 보낸다
+# 모델이 id를 "[2-1]"처럼 괄호째 돌려줘도 말한 사람이 맞게 들어간다 (진짜 모델이 그렇게 답한 적이 있다)
+llm.set_structured_override(lambda **kw: SpeakerAssignment(cast=[], quotes=[QuoteSpeaker(id=" [2-1] ", speaker="라니 ")]))
+assert nr.assign_voices(q_st)["voice_plan"]["speakers"] == {"2-1": "라니"}
 llm.set_structured_override(None)
 tts.set_tts_override(None)
 

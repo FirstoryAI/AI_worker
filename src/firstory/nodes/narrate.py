@@ -128,12 +128,14 @@ def assign_voices(state: PipelineState) -> dict:
     if pieces:   # 바뀐 쪽에 대사가 없으면 모델을 부르지 않는다
         cast_text = "\n".join(f"- {c.name} / {'주인공' if c.name == protagonist else '조연'} / {c.visual_description}" for c in chars)
         quotes_text = "\n".join(f"[{seg.id}] 줄: {line} / 대사: {seg.text}" for line, seg in pieces)
+        # 대사가 혼자 한 줄이면 줄만으로는 누가 말했는지 모른다: 동화 전체(쪽 글만, 가이드 질문은 빼고)를 문맥으로 같이 보낸다
+        story_text = "\n\n".join(f"[{p.order}쪽]\n{p.text.replace('**', '')}" for p in sorted(story.pages, key=lambda p: p.order))
         try:
             result, cost = structured(
                 node="assign_voices",
                 model=config.model_light,
                 schema=SpeakerAssignment,
-                system=prompt("assign_voices", cast=cast_text, quotes=quotes_text),
+                system=prompt("assign_voices", cast=cast_text, story=story_text, quotes=quotes_text),
                 user="위 대사마다 말한 사람을 정하고, 인물마다 목소리 종류를 골라 주세요.",
             )
         except Exception as e:   # 낭독 준비가 실패해도 동화는 끝나야 한다: 새로 정할 대사는 해설자, 인물은 기본 목소리 종류
@@ -149,7 +151,7 @@ def assign_voices(state: PipelineState) -> dict:
             cast_types[c.name] = given.get(c.name) or ("child_girl" if c.name == protagonist else "adult_woman")
     speakers = dict(reused)
     if not llm_failed:   # 실패했으면 새로 정할 대사는 비워 둔다 (= 해설자)
-        said = {q.id: q.speaker for q in result.quotes}
+        said = {q.id.strip().strip("[]").strip(): q.speaker.strip() for q in result.quotes}   # 모델이 "[1-1]"처럼 괄호째 돌려줘도 맞춘다
         speakers.update({seg.id: (said.get(seg.id) if said.get(seg.id) in names else NARRATOR_NAME) for _, seg in pieces})
     return {
         "voice_plan": {"cast_types": cast_types, "cast_voices": cast_voices(cast_types, keep_voices), "speakers": speakers},
