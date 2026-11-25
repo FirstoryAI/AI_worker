@@ -44,6 +44,8 @@ READY_QUESTION = "동화를 만들 준비가 다 됐어요. 더 나누고 싶은
 READY_MORE = "네, 더 이야기할래요"
 READY_GO = "아니요, 동화 만들러 갈게요"
 MORE_QUESTION = "어떤 이야기를 더 나누고 싶으세요? 편하게 들려주세요."   # AI가 구체화할 질문을 못 고를 때
+# AI가 질문 없이 끝내려는데 칸이 비었을 때 한 번만 묻는다 (#133)
+FILL_QUESTION = "아이에게 이번 일로 어떤 이야기를 해주고 싶으세요? 아직 잘 모르겠다고 하셔도 괜찮아요."
 _GO = {"아니요동화만들러갈게요", "아니요", "아니", "아뇨", "없어요", "아니요없어요", "넘어갈게요", "넘어가요",
        "만들어주세요", "만들러갈게요", "동화만들러갈게요", "괜찮아요"}
 _MORE = {"네더이야기할래요", "더이야기할래요", "네", "예", "응", "있어요", "네있어요"}
@@ -163,6 +165,12 @@ def interview_step(state: PipelineState) -> dict:
         if not ctx.parent.concern and turns:
             ctx.parent.concern = turns[-1].answer
 
+    # 안전장치: AI는 다 물었다는데 칸이 비었을 때 (#133). 방향은 정했거나 FILL_QUESTION을 이미 했으면
+    # 더 물어도 칸이 안 채워진다(그 질문은 concern을 묻지 않는다) → 부모의 마지막 답으로 채우고 마무리로
+    if (not r.next_question and turns and not ctx.is_sufficient()
+            and (ctx.parent.message_direction or any(t.question == FILL_QUESTION for t in turns))):
+        _settle_undecided(ctx, turns[-1].answer)
+
     # 🔒 이중 확인
     ai_done = r.status == "sufficient" or not r.next_question
     code_done = ctx.is_sufficient()
@@ -190,7 +198,7 @@ def interview_step(state: PipelineState) -> dict:
         out["pending_question"] = r.next_question
         out["pending_choices"] = _choices(r.choices)
     else:  # AI가 질문 없이 ask만 준 경우. 카드는 그 질문 것이 아니라 버린다
-        out["pending_question"] = "아이에게 이번 일로 어떤 이야기를 해주고 싶으세요? 아직 잘 모르겠다고 하셔도 괜찮아요."
+        out["pending_question"] = FILL_QUESTION
     return out
 
 
