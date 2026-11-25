@@ -3,7 +3,7 @@
 - segments: 한 쪽의 글을 따옴표 안(대사)·밖(해설) 조각으로
 - cast_voices: 인물 → 목소리 id (풀에서 안 겹치게)
 - assign_voices: 따옴표 조각마다 누가 말했는지 모델이 정하고, 인물마다 목소리 종류를 받아 목소리를 배정한다
-- page_inputs·source_hash: 한 쪽의 (글, 목소리) 목록과 그 해시 (같으면 다시 만들지 않는다)
+- page_inputs·source_hash: 한 쪽의 (글 + 가이드 질문 줄, 목소리) 목록과 그 해시 (같으면 다시 만들지 않는다). 질문 줄은 해설자
 - narrate: 쪽마다 ElevenLabs 대화 음성을 만들어 저장한다. 실패한 쪽은 failed로 두고 나머지는 이어 간다.
   전체 시간(TTS_DEADLINE)을 넘기거나 401·402를 받으면 아직 시작 안 한 쪽은 부르지 않는다
 """
@@ -25,7 +25,7 @@ from ..config import config
 from ..llm import prompt, structured
 from ..schemas import CostEntry, Narration, PageAudio, SpeakerAssignment, VoiceType
 from ..state import PipelineState
-from .layout import split_lines
+from .layout import questions_by_page, split_lines
 
 log = logging.getLogger("firstory.narrate")
 
@@ -157,18 +157,23 @@ def assign_voices(state: PipelineState) -> dict:
     }
 
 
-def page_inputs(page_no: int, text: str, plan: dict) -> list[dict]:
+def page_inputs(page_no: int, text: str, plan: dict, questions: Optional[list[str]] = None) -> list[dict]:
     """한 쪽의 [{"text", "voice_id"}]. 해설은 해설자 목소리, 대사는 말한 인물의 목소리
-    (목소리 표에 없는 이름이면 해설자). 같은 목소리가 이어지면 한 조각으로 합친다."""
+    (목소리 표에 없는 이름이면 해설자). 같은 목소리가 이어지면 한 조각으로 합친다.
+    questions: 화면에서 쪽 글 밑에 붙는 가이드 질문 줄. 글 뒤에 해설자 목소리로 읽는다 (Backend#95)."""
     cast = plan.get("cast_voices", {})
     speakers = plan.get("speakers", {})
     out: list[dict] = []
-    for seg in segments(page_no, text):
-        voice = cast.get(speakers.get(seg.id), voices.NARRATOR) if seg.quoted else voices.NARRATOR
+    items = [(seg.text, cast.get(speakers.get(seg.id), voices.NARRATOR) if seg.quoted else voices.NARRATOR)
+             for seg in segments(page_no, text)]
+    for q in questions or []:
+        if q.replace("**", "").strip():
+            items.append((q.replace("**", "").strip(), voices.NARRATOR))
+    for t, voice in items:
         if out and out[-1]["voice_id"] == voice:
-            out[-1]["text"] += " " + seg.text
+            out[-1]["text"] += " " + t
         else:
-            out.append({"text": seg.text, "voice_id": voice})
+            out.append({"text": t, "voice_id": voice})
     return out
 
 
@@ -210,6 +215,7 @@ def narrate(state: PipelineState) -> dict:
     prefix = state["output_prefix"]
     prev = state.get("narration")
     prev_pages = {p.order: p for p in prev.pages} if prev else {}
+    qs = questions_by_page(state.get("guide"))   # 쪽 번호 → 화면에 보이는 가이드 질문 줄. 모델에는 보내지 않는다 (assign_voices는 글만)
     deadline = _now() + config.tts_deadline
     lock = threading.Lock()
     broken: list[Optional[int]] = []   # 401·402를 받으면 그 상태 코드 (차단기)
@@ -228,7 +234,7 @@ def narrate(state: PipelineState) -> dict:
         th = text_hash(page.text)
         h = None
         try:
-            inputs = page_inputs(n, page.text, plan)
+            inputs = page_inputs(n, page.text, plan, qs.get(n))
             h = source_hash(inputs)
             old = prev_pages.get(n)
             if old and old.status == "completed" and old.source_hash == h:

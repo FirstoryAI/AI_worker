@@ -12,13 +12,14 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..config import config
 from ..llm import prompt, structured, structured_image
-from ..schemas import CostEntry, SoundPiece, SoundWord, TextBlock, TextChunking, TextPlacement, TextPlacementWithWord
+from ..schemas import CostEntry, ReadingGuide, SoundPiece, SoundWord, TextBlock, TextChunking, TextPlacement, TextPlacementWithWord
 
 log = logging.getLogger("firstory.layout")
 
@@ -85,6 +86,14 @@ def split_lines(text: str) -> list[str]:
         if raw[pos:]:
             out.append(raw[pos:].strip())
     return [line for line in out if line]
+
+
+def questions_by_page(guide: Optional[ReadingGuide]) -> dict[int, list[str]]:
+    """가이드 질문 → 쪽 번호별 질문 줄 (#100). 같은 쪽 질문이 여럿이면 가이드 순서대로 잇는다. 가이드가 없으면 {}."""
+    out: dict[int, list[str]] = {}
+    for q in (guide.prompts if guide else []):
+        out.setdefault(q.after_page, []).extend(split_lines(q.text))
+    return out
 
 
 @lru_cache(maxsize=1)

@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from firstory import lab, llm, mock, server, storage, tts  # noqa: E402
+from firstory import lab, llm, mock, server, storage, tts, voices  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.graph import compile_graph, new_thread_id  # noqa: E402
 from firstory.nodes import illustrate as il  # noqa: E402
@@ -36,7 +36,15 @@ from firstory.schemas import (  # noqa: E402
     PolishedStory, ReadingGuide, StoryInputContext, StoryPage, StoryRevision, StoryText, Strategy, TextChunking,
     TextPlacement, TextPlacementWithWord, Turn)
 
-tts.set_tts_override(mock.silent_mp3)   # 진짜 ElevenLabs는 절대 부르지 않는다 (유료 키가 환경에 있어도)
+tts_seen: list[list[dict]] = []   # 가짜 낭독이 받은 inputs (어떤 글을 읽으려 했는지 확인용)
+
+
+def _tts_record(inputs):
+    tts_seen.append(inputs)
+    return mock.silent_mp3(inputs)
+
+
+tts.set_tts_override(_tts_record)   # 진짜 ElevenLabs는 절대 부르지 않는다 (유료 키가 환경에 있어도)
 
 # ── 공용 도우미 ──
 _prompts: list[tuple[str, str]] = []   # (node, system) — 전략 블록이 실제로 들어갔는지 확인용
@@ -168,6 +176,7 @@ def boom(*a, **k):
 
 
 mock.enable()
+tts.set_tts_override(_tts_record)   # enable()이 덮어쓴 가짜 낭독을 받은 글을 적어 두는 것으로 바꾼다 (여전히 가짜)
 llm.set_structured_override(recording_structured)
 ALL_PAGES = list(range(1, config.page_count + 1))
 
@@ -262,6 +271,13 @@ st1 = graph.get_state(cfg).values
 nar1 = st1["narration"]
 assert [p.path for p in nar1.pages] == [f"{base}/1/audio/page-{i:02d}.mp3" for i in ALL_PAGES], nar1.pages
 assert "narrate:page1" in node_names(st1["cost"])
+# 화면에 보이는 가이드 질문 줄도 해설자 목소리로 읽는다 (Backend#95): 3쪽 음성의 마지막 조각 = 3쪽 질문
+_g1 = st1["guide"]
+_q3 = [ln for ln in layout.split_lines(" ".join(q.text for q in _g1.prompts if q.after_page == 3))]
+assert _q3, _g1.prompts
+_p3 = [i for i in tts_seen if i[-1]["text"].endswith(_q3[-1].replace("**", ""))]
+assert _p3 and _p3[0][-1]["voice_id"] == voices.NARRATOR, tts_seen
+assert all(ln.replace("**", "") in _p3[0][-1]["text"] for ln in _q3)
 assert storage.exists(f"{base}/1/06-narration.json")
 assert server._page(st1["story"].pages[0], None, None)["audio_path"] is None   # 음성 없는 동화
 assert server._page(st1["story"].pages[0], None, None)["audio_status"] is None
