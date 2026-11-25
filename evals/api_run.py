@@ -22,13 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from firstory import llm, mock, server, storage  # noqa: E402
+from firstory import llm, mock, server, storage, tts  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.nodes import illustrate as il, interview as iv, safety  # noqa: E402
 from firstory.schemas import (  # noqa: E402
     InterviewTurnResult, ParentUpdate, PolishedPage, PolishedStory, SafetyJudgement, SafetyResult, StoryPage, StoryRevision,
 )
 
+tts.set_tts_override(mock.silent_mp3)   # 진짜 ElevenLabs는 절대 부르지 않는다 (유료 키가 환경에 있어도)
 H = {"X-Internal-Token": "test-token"}
 server.config = dataclasses.replace(server.config, checkpoint_db=Path(tempfile.mkdtemp()) / "checkpoints.db")
 
@@ -400,6 +401,8 @@ with TestClient(server.app, raise_server_exceptions=False) as c:
     assert set(res) == RESULT_KEYS, res.keys()
     assert res["run_no"] == 1 and res["checkpoint_id"] and res["title"] == "포포와 비어 있는 자리"
     assert [p["page_no"] for p in res["pages"]] == list(range(1, config.page_count + 1))
+    assert all(p["audio_status"] == "done" and p["audio_path"].endswith(f"audio/page-{p['page_no']:02d}.mp3")
+               for p in res["pages"]), res["pages"][0]
     assert all(p["image_status"] == "done" and p["image_path"] == f"{prefix}images/page-{p['page_no']:02d}.png"
                and storage.exists(p["image_path"]) for p in res["pages"]), res["pages"][0]
     # 글 덩어리: {paragraphs, x, y, color}. 줄을 이으면 원문 + 그 쪽 가이드 질문(맨 밑 문단, #100). mock 자리(y 7)는 위쪽이라 text_position도 모두 top (작가 값 아님)

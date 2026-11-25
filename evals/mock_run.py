@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from firstory import lab, llm, mock, storage  # noqa: E402
+from firstory import lab, llm, mock, server, storage, tts  # noqa: E402
 from firstory.config import config  # noqa: E402
 from firstory.graph import compile_graph, new_thread_id  # noqa: E402
 from firstory.nodes import illustrate as il  # noqa: E402
@@ -35,6 +35,8 @@ from firstory.schemas import (  # noqa: E402
     AfterReading, BeforeReading, CharacterSheet, GuidePrompt, InterviewTurnResult, ParentUpdate, PolishedPage,
     PolishedStory, ReadingGuide, StoryInputContext, StoryPage, StoryRevision, StoryText, Strategy, TextChunking,
     TextPlacement, TextPlacementWithWord, Turn)
+
+tts.set_tts_override(mock.silent_mp3)   # 진짜 ElevenLabs는 절대 부르지 않는다 (유료 키가 환경에 있어도)
 
 # ── 공용 도우미 ──
 _prompts: list[tuple[str, str]] = []   # (node, system) — 전략 블록이 실제로 들어갔는지 확인용
@@ -255,10 +257,21 @@ ill1 = graph.get_state(cfg).values["illustrations"]
 assert all(pg.path == f"{base}/1/images/page-{pg.order:02d}.png" for pg in ill1.pages), ill1.pages
 assert all(k.startswith(f"{base}/1/images/sheet-") for k in ill1.character_sheets.values())
 assert storage.exists(f"{base}/1/03-story.json") and storage.exists(f"{base}/1/book.html")
+# 쪽마다 음성 (6장): 첫 실행은 전부 새로 만들고, 덤프에도 남는다
+st1 = graph.get_state(cfg).values
+nar1 = st1["narration"]
+assert [p.path for p in nar1.pages] == [f"{base}/1/audio/page-{i:02d}.mp3" for i in ALL_PAGES], nar1.pages
+assert "narrate:page1" in node_names(st1["cost"])
+assert storage.exists(f"{base}/1/06-narration.json")
+assert server._page(st1["story"].pages[0], None, None)["audio_path"] is None   # 음성 없는 동화
+assert server._page(st1["story"].pages[0], None, None)["audio_status"] is None
 assert r["run_dir"] == str(storage.local_path(f"{base}/1/"))
 
 # 그림만 다시(3쪽) → 3쪽만 runs/2에 새로. 나머지 쪽과 시트는 runs/1의 key 그대로, 파일 복사 없음
+n_before = len(graph.get_state(cfg).values["cost"])
 r = resume(cfg, {"action": "regenerate", "scope": "images", "feedback": "3", "output_prefix": f"{base}/2/"})
+st2 = graph.get_state(cfg).values
+assert st2["narration"] == nar1 and not any(n.startswith("narrate:") for n in node_names(st2["cost"][n_before:]))   # 그림만 다시: 음성은 건드리지 않는다
 ill2 = graph.get_state(cfg).values["illustrations"]
 assert page_paths(ill2)[3] == f"{base}/2/images/page-03.png"
 assert all(pg.path == f"{base}/1/images/page-{pg.order:02d}.png" for pg in ill2.pages if pg.order != 3)
@@ -271,7 +284,12 @@ assert 'src="../1/images/page-01.png"' in book and 'src="images/page-03.png"' in
 assert 'data-label="앞표지"><div class="scene book-cover"><img src="../1/images/cover.png"' in book and 'data-label="뒤표지"' in book   # 앞표지 = 정사각형 (#88, #122, #125)
 
 # 글 다시 → mock 작가가 1쪽만 고쳐 그 쪽 장면이 바뀐다. 1쪽 그림만 runs/3에 새로, 나머지 쪽과 시트는 v2의 key 그대로
+n_before = len(graph.get_state(cfg).values["cost"])
 resume(cfg, {"action": "regenerate", "scope": "text", "feedback": "더 짧게", "output_prefix": f"{base}/3/"})
+st3 = graph.get_state(cfg).values
+nar3 = st3["narration"]
+assert [p.path for p in nar3.pages] == [p.path for p in nar1.pages]   # 같은 글이면 이전 key 재사용
+assert not any(n.startswith("narrate:") for n in node_names(st3["cost"][n_before:])), node_names(st3["cost"][n_before:])
 ill3 = graph.get_state(cfg).values["illustrations"]
 paths2, paths3 = page_paths(ill2), page_paths(ill3)
 assert paths3[1] == f"{base}/3/images/page-01.png"
