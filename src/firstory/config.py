@@ -32,6 +32,11 @@ class Config:
     image_format: str = _env("IMAGE_FORMAT", "webp").lower()   # 시트·쪽·표지 저장 형식 png | webp | jpeg. 첨부할 시트는 _ref가 다시 만든다 (#80)
     image_compression: int = int(_env("IMAGE_COMPRESSION", "85"))   # webp·jpeg 품질 0~100 (85면 PNG 약 3.7MB → 약 300KB)
 
+    # 낭독 (ElevenLabs Text to Dialogue, tts.py)
+    elevenlabs_api_key: str = os.getenv("ELEVENLABS_API_KEY", "")
+    tts_model: str = _env("TTS_MODEL", "eleven_v3")
+    tts_concurrency: int = int(_env("TTS_CONCURRENCY", "3"))
+
     page_count: int = 10
     max_interview_turns: int = 15       # 🔒 ②-5. 백엔드 InterviewTurn.MAX_TURNS·DB CHECK(1~15)와 같게. 더 올리려면 백엔드 먼저
     max_clarify_turns: int = 2          # 🔒 ②-4 "모르겠다" 정리 질문

@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 from .schemas import (
     CostEntry,
     Illustrations,
+    Narration,
     ReadingGuide,
     RegenerateScope,
     SafetyResult,
@@ -52,6 +53,8 @@ class PipelineState(TypedDict, total=False):
     # 산출물
     guide: Optional[ReadingGuide]
     illustrations: Optional[Illustrations]
+    voice_plan: Optional[dict]               # 낭독 목소리 배정 (쪽별 대사 조각·인물 목소리). 배정 단계가 채움
+    narration: Optional[Narration]           # 쪽별 낭독 음성 결과
     output_safety: Optional[SafetyResult]    # 완성 본문 위기 신호 판단 (safety_output). /result의 safety
     # 메타
     output_prefix: str                       # 이번 실행의 결과물 key 앞부분 (storage.py). Spring이 실행마다 새로 준다
