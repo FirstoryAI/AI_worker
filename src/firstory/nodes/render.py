@@ -90,6 +90,37 @@ def _copy(p) -> str:
     return f'<div class="copy" data-position="{_e(p.text_position)}">{lines}</div>'
 
 
+def _panel(state: PipelineState, story, guide, pages: dict) -> str:
+    """부모용 가이드 패널. 가이드가 없으면 빈 문자열"""
+    if not guide:
+        return ""
+    design = state.get("story_design")
+    mirrored = getattr(design, "mirrored_situation", None) or (design.get("mirrored_situation") if isinstance(design, dict) else None)
+    starters = "".join(
+        f'<div class="starter"><div class="when">p.{q.after_page} 뒤 · {_e(q.purpose)}</div><div class="say">“{_e(q.text)}”</div>'
+        f'<div class="quiet">{_e(q.parent_hint or "")}</div></div>' for q in guide.prompts)
+    sounds = "".join(
+        f'<li>{o}쪽 <b style="color:{_e(pi.sound_word.color)}">{_e(pi.sound_word.text)}</b> · 조각 {len(pi.sound_word.pieces)}</li>'
+        for o, pi in sorted(pages.items()) if pi.sound_word)
+    starred = [p.order for p in story.pages if _SFX.search(p.text)]
+    return f"""
+  <aside id="library">
+    <h2>부모용 · 읽기 전에</h2>
+    <div class="card"><h3>{_e(story.title)}</h3><p>{_e(guide.before_reading.intent)}</p></div>
+    <h4>함께 읽을 때</h4><ul>{''.join(f'<li>{_e(t)}</li>' for t in guide.before_reading.tips)}</ul>
+    <h4>이야기 속 질문</h4>{starters}
+    <h4>다 읽은 뒤</h4><p class="say">“{_e(guide.after_reading.bridge_question)}”</p>
+    {f'<p class="quiet">{_e(guide.after_reading.if_undecided)}</p>' if guide.after_reading.if_undecided else ''}
+    <h4>그림 위 의성어·의태어</h4>
+    {f'<ul>{sounds}</ul>' if sounds else '<p class="quiet">띄운 말 없음</p>'}
+    <p class="quiet">본문 별표 말 있는 쪽: {', '.join(map(str, starred)) or '없음'}</p>
+    <details><summary>생성 근거</summary>
+      <p><b>인터뷰 정리</b> {_e(state.get('interview_summary') or '')}</p>
+      {f"<p><b>간접화</b> {_e(mirrored)}</p>" if mirrored else ''}
+    </details>
+  </aside>"""
+
+
 def build_html(state: PipelineState) -> str:
     story, guide, ill = state["story"], state.get("guide"), state.get("illustrations")
     here = storage.local_path(state["output_prefix"])
@@ -145,33 +176,7 @@ def build_html(state: PipelineState) -> str:
         slides.append(f"""
     <section class="slide" data-label="뒤표지"><div class="scene book-cover"><img src="{_e(back)}" alt=""></div></section>""")
 
-    panel = ""
-    if guide:
-        design = state.get("story_design")
-        mirrored = getattr(design, "mirrored_situation", None) or (design.get("mirrored_situation") if isinstance(design, dict) else None)
-        starters = "".join(
-            f'<div class="starter"><div class="when">p.{q.after_page} 뒤 · {_e(q.purpose)}</div><div class="say">“{_e(q.text)}”</div>'
-            f'<div class="quiet">{_e(q.parent_hint or "")}</div></div>' for q in guide.prompts)
-        sounds = "".join(
-            f'<li>{o}쪽 <b style="color:{_e(pi.sound_word.color)}">{_e(pi.sound_word.text)}</b> · 조각 {len(pi.sound_word.pieces)}</li>'
-            for o, pi in sorted(pages.items()) if pi.sound_word)
-        starred = [p.order for p in story.pages if _SFX.search(p.text)]
-        panel = f"""
-  <aside id="library">
-    <h2>부모용 · 읽기 전에</h2>
-    <div class="card"><h3>{_e(story.title)}</h3><p>{_e(guide.before_reading.intent)}</p></div>
-    <h4>함께 읽을 때</h4><ul>{''.join(f'<li>{_e(t)}</li>' for t in guide.before_reading.tips)}</ul>
-    <h4>이야기 속 질문</h4>{starters}
-    <h4>다 읽은 뒤</h4><p class="say">“{_e(guide.after_reading.bridge_question)}”</p>
-    {f'<p class="quiet">{_e(guide.after_reading.if_undecided)}</p>' if guide.after_reading.if_undecided else ''}
-    <h4>그림 위 의성어·의태어</h4>
-    {f'<ul>{sounds}</ul>' if sounds else '<p class="quiet">띄운 말 없음</p>'}
-    <p class="quiet">본문 별표 말 있는 쪽: {', '.join(map(str, starred)) or '없음'}</p>
-    <details><summary>생성 근거</summary>
-      <p><b>인터뷰 정리</b> {_e(state.get('interview_summary') or '')}</p>
-      {f"<p><b>간접화</b> {_e(mirrored)}</p>" if mirrored else ''}
-    </details>
-  </aside>"""
+    panel = _panel(state, story, guide, pages)
 
     fonts_dir = os.path.relpath(config.output_root / "_fonts", here)
     faces = "".join(
