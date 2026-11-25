@@ -45,7 +45,9 @@ def boom(**kw):
 # --- Task 1: 스키마·설정·클라이언트 ---
 assert CostEntry(node="x", model="y").tts_chars == 0
 assert voices.NARRATOR not in {v for vs in voices.POOL.values() for v in vs}
-assert len({v for vs in voices.POOL.values() for v in vs}) == sum(len(vs) for vs in voices.POOL.values())  # 겹침 없음
+_others = [v for t, vs in voices.POOL.items() if t != "child_boy" for v in vs]
+assert len(set(_others)) == len(_others)   # 남자아이 말고는 겹침 없음
+assert voices.POOL["child_boy"] == voices.POOL["child_girl"] and set(voices.STYLE_TAG) == {"child_boy"}   # 남자아이 = 여자아이 목소리 + 태그 (#135)
 seen = []
 tts.set_tts_override(lambda inputs: seen.append(inputs) or b"ID3fake")
 assert tts.enabled() and tts.dialogue([{"text": "안녕", "voice_id": voices.NARRATOR}], page=1) == b"ID3fake"
@@ -76,6 +78,15 @@ v = nr.cast_voices({"라니": "child_girl", "보리": "child_girl", "하늬": "a
 assert len(set(v.values())) == 3 and voices.NARRATOR not in v.values()
 assert v["라니"] == voices.POOL["child_girl"][0] and v["보리"] == voices.POOL["child_girl"][1]
 assert nr.cast_voices({"라니": "adult_man"}, keep={"라니": "keep-id"}) == {"라니": "keep-id"}
+bg = nr.cast_voices({"하랑": "child_boy", "라니": "child_girl"})   # 남자아이·여자아이가 같이 나와도 목소리는 다르다
+assert bg == {"하랑": voices.POOL["child_boy"][0], "라니": voices.POOL["child_girl"][1]}
+TAG = voices.STYLE_TAG["child_boy"]
+bplan = {"cast_types": {"하랑": "child_boy", "라니": "child_girl"}, "cast_voices": {"하랑": "v-a", "라니": "v-a"},
+         "speakers": {"3-1": "하랑", "3-2": "하랑", "3-3": "라니"}}
+assert nr.page_inputs(3, '하랑이 말했어요.\n"싫어!"\n"안 할래."\n"나도!"', bplan) == [   # 같은 목소리라도 태그가 다르면 따로, 태그는 한 번만
+    {"text": "하랑이 말했어요.", "voice_id": voices.NARRATOR}, {"text": f"{TAG} 싫어! 안 할래.", "voice_id": "v-a"},
+    {"text": "나도!", "voice_id": "v-a"}]
+assert nr.page_inputs(3, '"앗!"', {**bplan, "speakers": {"3-1": "유령"}}) == [{"text": "앗!", "voice_id": voices.NARRATOR}]   # 해설자 대사엔 태그 없음
 three = nr.cast_voices({"a": "elder_man", "b": "elder_man", "c": "elder_man"})
 assert len(set(three.values())) == 3   # 풀이 모자라면 다른 풀에서
 

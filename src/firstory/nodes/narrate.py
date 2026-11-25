@@ -164,20 +164,25 @@ def page_inputs(page_no: int, text: str, plan: dict, questions: Optional[list[st
     (목소리 표에 없는 이름이면 해설자). 같은 목소리가 이어지면 한 조각으로 합친다.
     questions: 화면에서 쪽 글 밑에 붙는 가이드 질문 줄. 글 뒤에 해설자 목소리로 읽는다 (Backend#95)."""
     cast = plan.get("cast_voices", {})
+    types = plan.get("cast_types", {})
     speakers = plan.get("speakers", {})
-    out: list[dict] = []
-    items = [(seg.text, cast.get(speakers.get(seg.id), voices.NARRATOR) if seg.quoted else voices.NARRATOR)
-             for seg in segments(page_no, text)]
+    items: list[tuple[str, str, str]] = []   # (글, 목소리, 연기 태그)
+    for seg in segments(page_no, text):
+        who = speakers.get(seg.id) if seg.quoted else None
+        voice = cast.get(who, voices.NARRATOR) if who else voices.NARRATOR
+        tag = voices.STYLE_TAG.get(types.get(who), "") if voice != voices.NARRATOR else ""
+        items.append((seg.text, voice, tag))
     for q in questions or []:
         t = q.replace("**", "").strip()
         if t:
-            items.append((t, voices.NARRATOR))
-    for t, voice in items:
-        if out and out[-1]["voice_id"] == voice:
-            out[-1]["text"] += " " + t
+            items.append((t, voices.NARRATOR, ""))
+    merged: list[tuple[str, str, str]] = []
+    for t, voice, tag in items:   # 목소리와 태그가 같을 때만 합친다 (같은 목소리라도 남자아이 태그가 있으면 따로)
+        if merged and merged[-1][1:] == (voice, tag):
+            merged[-1] = (merged[-1][0] + " " + t, voice, tag)
         else:
-            out.append({"text": t, "voice_id": voice})
-    return out
+            merged.append((t, voice, tag))
+    return [{"text": f"{tag} {t}" if tag else t, "voice_id": voice} for t, voice, tag in merged]
 
 
 def source_hash(inputs: list[dict]) -> str:
