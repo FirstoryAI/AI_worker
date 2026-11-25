@@ -98,13 +98,17 @@ def assign_voices(state: PipelineState) -> dict:
     protagonist = story.protagonist().name
     cast_text = "\n".join(f"- {c.name} / {'주인공' if c.name == protagonist else '조연'} / {c.visual_description}" for c in chars)
     quotes_text = "\n".join(f"[{seg.id}] 줄: {line} / 대사: {seg.text}" for line, seg in pieces)
-    result, cost = structured(
-        node="assign_voices",
-        model=config.model_light,
-        schema=SpeakerAssignment,
-        system=prompt("assign_voices", cast=cast_text, quotes=quotes_text),
-        user="위 대사마다 말한 사람을 정하고, 인물마다 목소리 종류를 골라 주세요.",
-    )
+    try:
+        result, cost = structured(
+            node="assign_voices",
+            model=config.model_light,
+            schema=SpeakerAssignment,
+            system=prompt("assign_voices", cast=cast_text, quotes=quotes_text),
+            user="위 대사마다 말한 사람을 정하고, 인물마다 목소리 종류를 골라 주세요.",
+        )
+    except Exception as e:   # 낭독 준비가 실패해도 동화는 끝나야 한다: 모두 해설자, 인물은 기본 목소리 종류
+        log.warning("[assign_voices] 말한 사람 정하기 실패, 모두 해설자로: %s", e)
+        result, cost = SpeakerAssignment(cast=[], quotes=[]), None
 
     given = {c.name: c.voice_type for c in result.cast if c.name in names}   # 인물 목록에 없는 이름은 버린다
     cast_types: dict[str, VoiceType] = {}
@@ -114,10 +118,10 @@ def assign_voices(state: PipelineState) -> dict:
         else:
             cast_types[c.name] = given.get(c.name) or ("child_girl" if c.name == protagonist else "adult_woman")
     said = {q.id: q.speaker for q in result.quotes}
-    speakers = {seg.id: (said.get(seg.id) if said.get(seg.id) in names else NARRATOR_NAME) for _, seg in pieces}
+    speakers = {seg.id: (said.get(seg.id) if said.get(seg.id) in names else NARRATOR_NAME) for _, seg in pieces} if cost else {}
     return {
         "voice_plan": {"cast_types": cast_types, "cast_voices": cast_voices(cast_types, keep_voices), "speakers": speakers},
-        "cost": [cost],
+        "cost": [cost] if cost else [],
     }
 
 
@@ -140,6 +144,10 @@ def source_hash(inputs: list[dict]) -> str:
     return hashlib.sha256(json.dumps(inputs, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+class _Failed(Exception):
+    """목소리 서비스가 두 번 다 실패. 메시지는 '상태: 내용'."""
+
+
 def narrate(state: PipelineState) -> dict:
     if not tts.enabled():
         log.info("[narrate] ElevenLabs 키가 없어 낭독을 만들지 않습니다")
@@ -153,23 +161,28 @@ def narrate(state: PipelineState) -> dict:
 
     def work(page) -> tuple[PageAudio, Optional[CostEntry]]:
         n = page.order
-        inputs = page_inputs(n, page.text, plan)
-        h = source_hash(inputs)
-        old = prev_pages.get(n)
-        if old and old.status == "completed" and old.source_hash == h:
-            return old, None   # 글·목소리가 그대로인 쪽은 이전 음성을 그대로 쓴다
-        t0 = time.time()
-        err = ""
-        for _ in range(2):   # 한 번 더 시도
-            try:
-                data = tts.dialogue(inputs, page=n)
-                break
-            except tts.TtsError as e:
-                err = f"{e.status}: {e}"
-        else:
+        h = None
+        try:
+            inputs = page_inputs(n, page.text, plan)
+            h = source_hash(inputs)
+            old = prev_pages.get(n)
+            if old and old.status == "completed" and old.source_hash == h:
+                return old, None   # 글·목소리가 그대로인 쪽은 이전 음성을 그대로 쓴다
+            t0 = time.time()
+            err = None
+            for _ in range(2):   # 목소리 서비스 오류는 한 번 더 시도
+                try:
+                    data = tts.dialogue(inputs, page=n)
+                    break
+                except tts.TtsError as e:
+                    err = f"{e.status}: {e}"
+            else:
+                raise _Failed(err)
+            key = storage.write_bytes(storage.join(prefix, "audio", f"page-{n:02d}.mp3"), data)
+        except Exception as e:   # 어떤 실패도 그 쪽만 failed로 두고 동화는 이어 간다. 실패한 쪽은 과금되지 않는다
+            err = str(e) if isinstance(e, _Failed) else f"None: {e}"
             log.warning("[narrate] %d쪽 음성 실패: %s", n, err)
-            return PageAudio(order=n, status="failed", error=err, source_hash=h), None   # 실패한 쪽은 과금되지 않는다
-        key = storage.write_bytes(storage.join(prefix, "audio", f"page-{n:02d}.mp3"), data)
+            return PageAudio(order=n, status="failed", error=err, source_hash=h), None
         cost = CostEntry(node=f"narrate:page{n}", model=config.tts_model,
                          tts_chars=sum(len(i["text"]) for i in inputs), ms=int((time.time() - t0) * 1000))
         return PageAudio(order=n, path=key, status="completed", source_hash=h), cost

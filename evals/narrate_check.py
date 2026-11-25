@@ -201,6 +201,33 @@ res, _ = run_dialogue([urllib.error.URLError("down")])
 assert isinstance(res, tts.TtsError) and res.status is None
 res, _ = run_dialogue([_Resp(exc=http.client.IncompleteRead(b"x"))])
 assert isinstance(res, tts.TtsError) and res.status is None
+# 어떤 실패도 그 쪽만 failed (R3): 일반 예외, 저장 실패, 모델 실패
+tts.set_tts_override(lambda i: (_ for _ in ()).throw(RuntimeError("뜻밖")) if i[0]["text"].startswith("2쪽") else b"ID3y")
+with captured_logs() as logs:
+    n3 = nr.narrate({**st, "output_prefix": f"{base}/3/"})["narration"]
+assert [(p.order, p.status) for p in n3.pages] == [(1, "completed"), (2, "failed"), (3, "completed")]
+assert "뜻밖" in n3.pages[1].error and any("2쪽 음성 실패" in m for m in logs)
+tts.set_tts_override(lambda i: b"ID3z")
+real_write = storage.write_bytes
+def flaky_write(key, data):
+    if key.endswith("page-02.mp3"):
+        raise OSError("디스크 가득")
+    return real_write(key, data)
+with patch.object(storage, "write_bytes", flaky_write):
+    out4 = nr.narrate({**st, "output_prefix": f"{base}/4/"})
+assert [(p.order, p.status) for p in out4["narration"].pages] == [(1, "completed"), (2, "failed"), (3, "completed")]
+assert [c.node for c in sorted(out4["cost"], key=lambda c: c.node)] == ["narrate:page1", "narrate:page3"]
+tts.set_tts_override(None)
+
+def raising(**kw):
+    raise RuntimeError("모델 실패")
+llm.set_structured_override(raising)
+with captured_logs() as logs:
+    fb = nr.assign_voices({"story": story_with(pages={1: '"안녕!"'}, cast=["라니", "하늬"])})
+assert fb["voice_plan"]["speakers"] == {} and fb["cost"] == []
+assert fb["voice_plan"]["cast_types"] == {"라니": "child_girl", "하늬": "adult_woman"} and set(fb["voice_plan"]["cast_voices"]) == {"라니", "하늬"}
+assert any("말한 사람 정하기 실패" in m for m in logs)
+llm.set_structured_override(None)
 storage_patch.stop()
 
 print("ALL OK")
