@@ -51,8 +51,8 @@ def handle_interrupt(payload: dict, args) -> object:
         say("m", f"\nFIRSTORY AI › {payload['question']}")
         choices = payload.get("choices") or []
         for i, c in enumerate(choices, 1):
-            print(f"{C['d']}  {i}) {c}{C['0']}")
-        print(f"{C['d']}  (번호로 카드 고르기, skip 입력 시 인터뷰 종료){C['0']}")
+            say("d", f"  {i}) {c}")
+        say("d", "  (번호로 카드 고르기, skip 입력 시 인터뷰 종료)")
         if args.auto:  # scripted_answers가 바닥나면 더 묻지 않고 끝낸다
             print(f"{C['b']}부모{C['0']} › skip  {C['d']}(--auto){C['0']}")
             return "skip"
@@ -70,12 +70,12 @@ def handle_interrupt(payload: dict, args) -> object:
         print_story(payload["story"], payload.get("guide"))
         say("g", f"\n  → {payload['run_dir']}/book.html 을 열어서 그림까지 확인")
         print("\n  [1] 완료   [2] 다시 쓰기(피드백)   [3] 캐릭터/이야기 바꾸기   [4] 그림만 다시")
-        a = input("  › ").strip() or "1"
-        if a not in _REGENERATE:
+        choice = input("  › ").strip() or "1"
+        if choice not in _REGENERATE:
             return {"action": "approve"}
-        scope, question = _REGENERATE[a]
-        fb = input(f"  {question} › ").strip()
-        return {"action": "regenerate", "scope": scope, "feedback": fb}
+        scope, question = _REGENERATE[choice]
+        feedback = input(f"  {question} › ").strip()
+        return {"action": "regenerate", "scope": scope, "feedback": feedback}
     return None
 
 
@@ -147,9 +147,12 @@ def main(argv=None):
     if result.get("interview_summary"):
         print(f"  {result['interview_summary']}")
     cost = result.get("cost", [])
-    tin = sum(c.input_tokens for c in cost); tout = sum(c.output_tokens for c in cost)
-    imgs = sum(c.images for c in cost); ms = sum(c.ms for c in cost)
-    say("d", f"\n텍스트 {len([c for c in cost if not c.node.startswith('illustrate')])}회 · in {tin} / out {tout} tokens · 이미지 {imgs}장 · {ms/1000:.1f}s")
+    text_calls = sum(1 for c in cost if not c.node.startswith("illustrate"))
+    tin = sum(c.input_tokens for c in cost)
+    tout = sum(c.output_tokens for c in cost)
+    imgs = sum(c.images for c in cost)
+    ms = sum(c.ms for c in cost)
+    say("d", f"\n텍스트 {text_calls}회 · in {tin} / out {tout} tokens · 이미지 {imgs}장 · {ms/1000:.1f}s")
     say("g", f"\n→ {result['run_dir']}/book.html")
     return 0
 

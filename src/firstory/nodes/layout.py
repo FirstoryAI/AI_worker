@@ -274,6 +274,10 @@ class Busy:
 
 
 # ── 자리 ──
+Box = tuple[float, float, float, float]    # px x, y, w, h (놓은 덩어리·바탕 상자)
+Rect = tuple[float, float, float, float]   # px x0, y0, x1, y1
+
+
 def _page(x: float, bw: float) -> int:
     """덩어리 가운데 x 가 있는 면: 왼쪽 0, 오른쪽 1"""
     return 0 if x + bw / 2 < W / 2 else 1
@@ -318,19 +322,16 @@ def _in_band(y: float, bh: float) -> bool:
     return any(lo - 1e-6 <= y <= hi + 1e-6 for lo, hi in _y_bands(bh))
 
 
-def _gap_ok(x: float, y: float, bw: float, bh: float, placed: list[tuple[float, float, float, float]]) -> bool:
+def _gap_ok(x: float, y: float, bw: float, bh: float, placed: list[Box]) -> bool:
     """이미 놓은 덩어리와 2% 이상 띄었는지"""
     g = W * GAP
     return all(x + bw + g <= px or px + pw + g <= x or y + bh + g <= py or py + ph + g <= y
                for px, py, pw, ph in placed)
 
 
-def _order_ok(x: float, y: float, bw: float, placed: list[tuple[float, float, float, float]]) -> bool:
+def _order_ok(x: float, y: float, bw: float, placed: list[Box]) -> bool:
     """읽는 순서: 앞 덩어리보다 (면, y)가 뒤"""
     return all((_page(x, bw), y) > (_page(px, pw), py) for px, py, pw, _ in placed)
-
-
-Rect = tuple[float, float, float, float]   # px x0, y0, x1, y1
 
 
 def _pct_to_px(box: Rect) -> Rect:
@@ -381,7 +382,7 @@ def _overlap_rows(x: float, y: float, rows, avoid) -> float:
     return sum(_overlap(x, y + dy, w, h, avoid) for dy, w, h in rows)
 
 
-def _around(x: float, y: float, w: float, h: float) -> tuple[float, float, float, float]:
+def _around(x: float, y: float, w: float, h: float) -> Box:
     """바탕을 재는 상자 (x, y, w, h): 사방으로 그림 폭의 BUSY_PAD씩 키운다"""
     pad = W * BUSY_PAD
     return x - pad, y - pad, w + 2 * pad, h + 2 * pad
@@ -392,7 +393,7 @@ def _score(busy: Busy, x: float, y: float, bw: float, bh: float) -> float:
 
 
 def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: float, bh: float,
-             placed: list[tuple[float, float, float, float]], limit: float,
+             placed: list[Box], limit: float,
              move_cost: float = MOVE_COST, avoid=(), strict: bool = True, rows=None) -> tuple[float, float] | None:
     """주어진 면들의 띠 안에서 읽는 순서·간격을 지키고 복잡도가 limit 이하인 자리 중 (복잡도 + 거리 점수)가 가장 낮은 곳.
     strict면 캐릭터 칸(avoid)과 겹치는 자리는 버리고, 아니면 겹친 넓이만큼 점수를 더한다 (#104).
@@ -427,7 +428,7 @@ def _best_on(busy: Busy, pages: tuple[int, ...], near: tuple[float, float], bw: 
 
 
 def _search(busy: Busy, near: tuple[float, float], bw: float, bh: float,
-            placed: list[tuple[float, float, float, float]], page: int | None = None, avoid=(), rows=None) -> tuple[float, float] | None:
+            placed: list[Box], page: int | None = None, avoid=(), rows=None) -> tuple[float, float] | None:
     """원래 자리와 같은 면을 먼저, 없으면 반대쪽 면의 띠 안에서 조용하고 가까운 곳. page를 주면 그 면에서만"""
     if page is None:
         home = _page(near[0], bw)
@@ -472,7 +473,7 @@ def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
     두 면을 통틀어 (캐릭터 칸과 겹친 넓이, 복잡도)가 가장 작은 곳(2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만, #95, #104).
     그림을 안 보는 기본 자리보다 늘 낫거나 같다. 글자색은 그 자리 밝기로 (text_color). 하나라도 놓을 곳이 없으면 None."""
     near = (DEFAULT_SPOT[0] / 100 * W, DEFAULT_SPOT[1] / 100 * H)   # 복잡도가 (거의) 같을 때만 왼쪽 위 쪽으로
-    placed: list[tuple[float, float, float, float]] = []
+    placed: list[Box] = []
     out: list[dict] = []
     for i, block in enumerate(blocks):
         bw, bh = block_size(block)
@@ -490,8 +491,7 @@ def calmest(busy: Busy, blocks: list[Block], avoid=()) -> list[dict] | None:
 def _cost(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> tuple[float, float]:
     """(캐릭터 몸과 겹친 넓이 합, 가장 복잡한 자리의 복잡도 + 여백에만 걸친 넓이 × MARGIN_COST). 겹침은 줄마다"""
     real = _unpad(avoid)
-    body = pad = 0.0
-    worst = 0.0
+    body = pad = worst = 0.0
     for b, s in zip(blocks, spots):
         x, y = s["x"] / 100 * W, s["y"] / 100 * H
         rows = rows_of(b)
@@ -527,7 +527,7 @@ def settle(busy: Busy, blocks: list[Block], spots: list[dict], avoid=()) -> list
     """AI 자리를 여백 안으로 밀고, 띠·복잡도·읽는 순서·간격·캐릭터 칸(avoid, #104)을 확인해 안 되면 옮긴다.
     2덩어리면 1번은 왼쪽 면, 2번은 오른쪽 면 안에서만 밀고 찾는다 (#95).
     덩어리마다 {"x": %, "y": %, "color"}. 글자색은 AI 답이 아니라 마지막 자리의 밝기로 (text_color). 하나라도 자리가 없으면 None."""
-    placed: list[tuple[float, float, float, float]] = []
+    placed: list[Box] = []
     out: list[dict] = []
     for i, block in enumerate(blocks):
         bw, bh = block_size(block)
@@ -778,7 +778,7 @@ def delta_e(a: tuple[float, float, float], b: tuple[float, float, float]) -> flo
     return math.dist(_lab(a), _lab(b))
 
 
-def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]], word: str) -> str:
+def pick_color(busy: Busy, boxes: list[Box], word: str) -> str:
     """조각 상자들(px x, y, w, h) 둘레 배경에서 읽히는 색 하나 (#102, #117).
     말(md5)로 HUES 시작 색을 정해 차례로 보고, 모든 조각 배경과 대비 3:1 이상인 첫 색. 같은 말은 같은 색.
     다 안 되면 흰색 → 진한 회색, 그래도 없으면 대비 최솟값이 가장 큰 색."""
@@ -795,7 +795,7 @@ def pick_color(busy: Busy, boxes: list[tuple[float, float, float, float]], word:
     return max(order, key=lambda c: worst(c[1]))[0]
 
 
-def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float, float, float, float]]) -> bool:
+def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[Box]) -> bool:
     x0, y0 = cx - ww / 2, cy - wh / 2
     x1, y1 = x0 + ww, y0 + wh
     if x0 < W * SFX_EDGE_X / 100 or x1 > W * (100 - SFX_EDGE_X) / 100:
@@ -808,26 +808,24 @@ def _word_ok(cx: float, cy: float, ww: float, wh: float, boxes: list[tuple[float
     return _gap_ok(x0, y0, ww, wh, boxes)
 
 
-def _rect_dist(pt: tuple[float, float], box: tuple[float, float, float, float]) -> float:
+def _rect_dist(pt: tuple[float, float], box: Rect) -> float:
     """점과 칸(x0, y0, x1, y1) 사이 거리. 칸 안이면 0"""
     dx = max(box[0] - pt[0], 0.0, pt[0] - box[2])
     dy = max(box[1] - pt[1], 0.0, pt[1] - box[3])
     return math.hypot(dx, dy)
 
 
-def _closer_to_source(pt: tuple[float, float], source: tuple[float, float, float, float],
-                      others: list[tuple[float, float, float, float]]) -> bool:
+def _closer_to_source(pt: tuple[float, float], source: Rect, others: list[Rect]) -> bool:
     """조각 가운데가 근원 칸에 다른 캐릭터 칸 어느 것보다 가까운가 (px, #102)"""
     d = _rect_dist(pt, source)
     return all(d < _rect_dist(pt, o) for o in others)
 
 
-def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+def _overlaps(a: Rect, b: Rect) -> bool:
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def _others(kind: str, source: tuple[float, float, float, float],
-            chars: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+def _others(kind: str, source: Rect, chars: list[Rect]) -> list[Rect]:
     """근원보다 가까우면 안 되는 캐릭터 칸 (px) (#102).
     face: 얼굴 가운데를 덮는 칸은 모두 뺀다 — 얼굴 주인과, 안긴 장면에서 그 얼굴을 품은 캐릭터(실험 11/16, 안긴 쪽 2/4).
     object: 물건과 가장 많이 겹치는 캐릭터 하나(든 캐릭터)만 뺀다. 같으면 더 작은 칸. 물건에 살짝 걸친 다른 캐릭터는 남는다.
@@ -854,10 +852,10 @@ def _others(kind: str, source: tuple[float, float, float, float],
 class _WordScene:
     """조각을 놓을 때 보는 것 (모두 px)"""
     kind: str                                          # face | object | touch
-    source: tuple[float, float, float, float]          # 근원 칸 x0, y0, x1, y1
-    chars: list[tuple[float, float, float, float]]     # 모든 캐릭터 칸, CHAR_PAD만큼 키운 것 (겹치면 안 됨, #108)
-    others: list[tuple[float, float, float, float]]    # 근원보다 가까우면 안 되는 캐릭터 칸
-    blocks: list[tuple[float, float, float, float]]    # 글 덩어리 x, y, w, h (_gap_ok 모양)
+    source: Rect                 # 근원 칸 x0, y0, x1, y1
+    chars: list[Rect]            # 모든 캐릭터 칸, CHAR_PAD만큼 키운 것 (겹치면 안 됨, #108)
+    others: list[Rect]           # 근원보다 가까우면 안 되는 캐릭터 칸
+    blocks: list[Box]            # 글 덩어리 x, y, w, h (_gap_ok 모양)
 
 
 def _piece_ok(sc: _WordScene, cx: float, cy: float, pw: float, ph: float) -> bool:
@@ -874,13 +872,8 @@ def _offsets() -> list[tuple[float, float]]:
     """반지름 안 격자 이동 (가까운 순, 사방)"""
     r = W * SFX_RADIUS
     n = int(r // GRID)
-    rng = range(-n, n + 1)
-    out = []
-    for i in rng:
-        for j in rng:
-            dx, dy = i * GRID, j * GRID
-            if dx * dx + dy * dy <= r * r:
-                out.append((dx, dy))
+    steps = [k * GRID for k in range(-n, n + 1)]
+    out = [(dx, dy) for dx in steps for dy in steps if dx * dx + dy * dy <= r * r]
     out.sort(key=lambda d: d[0] * d[0] + d[1] * d[1])
     return out
 
@@ -976,14 +969,14 @@ def place_word(busy: Busy, word: str, spot: dict | None, blocks: list[TextBlock]
     whole = word.replace(" ", "")
     if spot["kind"] == "touch":
         one = _place_touch(sc, piece_size(whole))
-        return _word(busy, word, spot, [(whole, *one, "center")]) if one else None
-    parts = split_word(word)
-    if len(parts) == 2:
-        pw = max(piece_size(t)[0] for t in parts)
-        pair = _place_pair(sc, (pw, piece_size(parts[0])[1]))
-        if pair:
-            return _word(busy, word, spot, [(parts[0], *pair[0], "left"), (parts[1], *pair[1], "right")])
-    one = _place_one(sc, piece_size(whole))
+    else:
+        parts = split_word(word)
+        if len(parts) == 2:
+            pw = max(piece_size(t)[0] for t in parts)
+            pair = _place_pair(sc, (pw, piece_size(parts[0])[1]))
+            if pair:
+                return _word(busy, word, spot, [(parts[0], *pair[0], "left"), (parts[1], *pair[1], "right")])
+        one = _place_one(sc, piece_size(whole))
     return _word(busy, word, spot, [(whole, *one, "center")]) if one else None
 
 

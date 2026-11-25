@@ -174,6 +174,12 @@ def _cfg(thread_id: str, run_id: Optional[UUID] = None, run_name: Optional[str] 
     return cfg
 
 
+def _at(thread_id: str, snap) -> dict:
+    """update_state에 넘길 그 체크포인트의 config (checkpoint_ns가 꼭 있어야 한다)."""
+    return {"configurable": {"thread_id": thread_id, "checkpoint_ns": "",
+                             "checkpoint_id": snap.config["configurable"]["checkpoint_id"]}}
+
+
 # LLM 호출이 중간에 실패하면 그래프는 그 노드 앞에 멈춰 있다. Spring이 같은 요청을 다시 보내면 거기서 잇는다
 _INTERVIEW_HALFWAY = {("interview_step",), ("interview_finish",)}
 
@@ -195,8 +201,10 @@ def _interview_reply(before: StoryInputContext, result: dict) -> dict:
     pause = result["__interrupt__"][0].value
     if pause["type"] == "interview":
         after = result["context"]
-        update = {name: diff for name, diff in (("parent", _changed(before.parent, after.parent)),
-                                                ("moment", _changed(before.moment, after.moment))) if diff}
+        update = {}
+        for name in ("parent", "moment"):
+            if diff := _changed(getattr(before, name), getattr(after, name)):
+                update[name] = diff
         return _question_reply(pause["turn"], pause["question"], pause.get("choices"), update or None)
     if pause["type"] == "confirm":
         return {"type": "confirm", "summary": pause["summary"], "situation_summary": pause.get("situation_summary"),
@@ -342,6 +350,25 @@ def _start_run(thread_id: str, lock: threading.Lock, run_id: UUID, run_no: int, 
     threading.Thread(target=work, name=f"run-{thread_id}", daemon=True).start()
 
 
+@contextmanager
+def _run_lock(thread_id: str):
+    """thread 잠금을 잡고 백그라운드 실행을 시작하는 함수를 준다. 그 함수로 실행을 넘기면 잠금은 실행이 끝날 때
+    풀리고, 넘기지 않고 나가면(오류·approve) 여기서 푼다."""
+    lock = _acquire(thread_id)
+    handed_off = False
+
+    def start_run(*args) -> None:
+        nonlocal handed_off
+        _start_run(thread_id, lock, *args)
+        handed_off = True
+
+    try:
+        yield start_run
+    finally:
+        if not handed_off:
+            lock.release()
+
+
 class RunRequest(BaseModel):
     run_id: UUID
     run_no: int = Field(ge=1)
@@ -353,9 +380,7 @@ class RunRequest(BaseModel):
 
 @app.post("/v1/threads/{thread_id}/generate", status_code=202)
 def generate(thread_id: str, body: RunRequest) -> dict:
-    lock = _acquire(thread_id)
-    handed_off = False   # 백그라운드 실행에 잠금을 넘겼으면 여기서 풀지 않는다
-    try:
+    with _run_lock(thread_id) as start_run:
         snap = _existing_state(thread_id)
         if tuple(snap.next) != ("confirm_generate",):
             raise ApiError(409, "INVALID_STATE", "생성 전 확인에서 멈춰 있지 않습니다")
@@ -367,13 +392,8 @@ def generate(thread_id: str, body: RunRequest) -> dict:
             resume["context"] = body.context.model_dump(mode="json")
         if body.summary:
             resume["summary"] = body.summary
-        _start_run(thread_id, lock, body.run_id, body.run_no, Command(resume=resume), "design_story",
-                   len(snap.values.get("cost", [])))
-        handed_off = True
+        start_run(body.run_id, body.run_no, Command(resume=resume), "design_story", len(snap.values.get("cost", [])))
         return {"accepted": True}
-    finally:
-        if not handed_off:
-            lock.release()
 
 
 @app.get("/v1/threads/{thread_id}/status")
@@ -417,13 +437,19 @@ def _text_position(p, pi) -> str:
     return "top" if first.y + block_size(first.paragraphs)[1] / H * 100 / 2 < 50 else "bottom"
 
 
+def _audio_status(pa) -> Optional[str]:
+    if pa is None:
+        return None
+    return "done" if pa.status == "completed" else "failed"
+
+
 def _page(p, pi, pa) -> dict:
     """/result의 쪽 하나. pi는 그 쪽의 다 그린 그림 (못 그렸으면 None), pa는 그 쪽의 PageAudio (음성 없는 동화면 None)"""
     return {"page_no": p.order, "text": p.text, "image_prompt": p.image_prompt,
             "text_position": _text_position(p, pi), "text_blocks": _text_blocks(pi), "sound_word": _sound_word(pi),
             "image_path": pi.path if pi else None, "image_status": "done" if pi else "failed",
             "audio_path": pa.path if pa and pa.status == "completed" else None,   # 음성 없으면 둘 다 null, 실패면 (null, "failed")
-            "audio_status": None if pa is None else ("done" if pa.status == "completed" else "failed")}
+            "audio_status": _audio_status(pa)}
 
 
 @app.get("/v1/threads/{thread_id}/result")
@@ -462,12 +488,6 @@ def result(thread_id: str) -> dict:
 _REGEN_FIRST_NODE = {"story": "design_story", "text": "write_story", "images": "illustrate_only"}
 
 
-def _at(thread_id: str, snap) -> dict:
-    """update_state에 넘길 그 체크포인트의 config (checkpoint_ns가 꼭 있어야 한다)."""
-    return {"configurable": {"thread_id": thread_id, "checkpoint_ns": "",
-                             "checkpoint_id": snap.config["configurable"]["checkpoint_id"]}}
-
-
 class ReviewRequest(BaseModel):
     action: Literal["approve", "regenerate"]
     scope: Optional[Literal["story", "text", "images"]] = None
@@ -489,9 +509,7 @@ class ReviewRequest(BaseModel):
 
 @app.post("/v1/threads/{thread_id}/review")
 def review(thread_id: str, body: ReviewRequest, response: Response) -> dict:
-    lock = _acquire(thread_id)
-    handed_off = False
-    try:
+    with _run_lock(thread_id) as start_run:
         _existing_state(thread_id)
         cfg = _cfg(thread_id)
         if body.base_checkpoint_id:
@@ -512,30 +530,20 @@ def review(thread_id: str, body: ReviewRequest, response: Response) -> dict:
             "action": "regenerate", "scope": body.scope, "feedback": body.feedback, "pages": body.pages,
             "output_prefix": body.output_prefix,
         }), as_node="parent_review")
-        _start_run(thread_id, lock, body.run_id, body.run_no, None, _REGEN_FIRST_NODE[body.scope],
-                   len(snap.values.get("cost", [])), branch["configurable"]["checkpoint_id"])
-        handed_off = True
+        start_run(body.run_id, body.run_no, None, _REGEN_FIRST_NODE[body.scope],
+                  len(snap.values.get("cost", [])), branch["configurable"]["checkpoint_id"])
         response.status_code = 202
         return {"accepted": True}
-    finally:
-        if not handed_off:
-            lock.release()
 
 
 @app.post("/v1/threads/{thread_id}/retry", status_code=202)
 def retry(thread_id: str, body: RunRequest) -> dict:
     """FAILED에서 마지막 체크포인트부터 다시. 이번 실행의 결과물은 새 output_prefix 아래에."""
-    lock = _acquire(thread_id)
-    handed_off = False
-    try:
+    with _run_lock(thread_id) as start_run:
         snap = _existing_state(thread_id)
         if status(thread_id)["state"] != "FAILED":
             raise ApiError(409, "INVALID_STATE", "실패한 실행이 없습니다")
         _check_prefix(body.output_prefix)
         _graph.update_state(_cfg(thread_id), storage.run_fields(body.output_prefix))   # 멈춘 자리(next)는 그대로
-        _start_run(thread_id, lock, body.run_id, body.run_no, None, snap.next[0], len(snap.values.get("cost", [])))
-        handed_off = True
+        start_run(body.run_id, body.run_no, None, snap.next[0], len(snap.values.get("cost", [])))
         return {"accepted": True}
-    finally:
-        if not handed_off:
-            lock.release()

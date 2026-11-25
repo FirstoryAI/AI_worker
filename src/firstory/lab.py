@@ -170,7 +170,9 @@ def base_runs(sample_stem: Optional[str] = None) -> list[Path]:
 
 
 def experiments(root: Path = LAB) -> list[Path]:
-    return sorted((p for p in root.glob("20*") if (p / "meta.json").exists()), reverse=True) if root.exists() else []
+    if not root.exists():
+        return []
+    return sorted((p for p in root.glob("20*") if (p / "meta.json").exists()), reverse=True)
 
 
 def load(exp: Path) -> dict:
@@ -178,7 +180,8 @@ def load(exp: Path) -> dict:
     variants = {}
     for k in meta["keys"]:
         d = exp / k
-        err = (d / "error.txt").read_text(encoding="utf-8") if (d / "error.txt").exists() else None
+        err_file = d / "error.txt"
+        err = err_file.read_text(encoding="utf-8") if err_file.exists() else None
         variants[k] = {
             "dir": d, "error": err, "design": _j(d / "02-design.json"),
             "draft": _j(d / "03-draft.json"), "story": _j(d / "03-story.json"), "judge": _j(d / "06-judge.json"),
