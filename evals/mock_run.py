@@ -742,6 +742,26 @@ assert o["interview_turns"][-1].answer == "[skip]"
 llm.set_structured_override(recording_structured)
 print("repeated answer ok")
 
+# ── AI는 다 물었다는데 칸이 비었을 때: 고정 질문은 한 번만, 그 뒤엔 부모 말로 채우고 마무리 (#133) ──
+llm.set_structured_override(says_sufficient)
+assert not ctx0.parent.concern and not ctx0.parent.message_direction
+told_dir = ctx0.model_copy(deep=True)
+told_dir.parent.message_direction = "explain_situation"   # 동화 135번: 방향만 채우고 concern은 비어 있었다
+upset = [Turn(question="그 점이 제일 답답하신 걸까요?", answer="왜 싫은지 말을 안 해 줘서 답답해요")]
+o = iv.interview_step({"context": told_dir, "interview_turns": upset})
+assert o["pending_question"] == iv.READY_QUESTION and "interview_done_by" not in o, o   # 고정 질문 없이 마무리 질문
+assert o["context"].parent.concern == upset[-1].answer and o["context"].parent.message_direction == "explain_situation"
+o = iv.interview_step({"context": ctx0, "interview_turns": upset})                     # 두 칸 다 비었으면 한 번은 묻는다
+assert o["pending_question"] == iv.FILL_QUESTION and o["pending_choices"] == [], o
+filled = upset + [Turn(question=iv.FILL_QUESTION, answer="뭐여 왜이래")]
+o = iv.interview_step({"context": ctx0, "interview_turns": filled})                    # 이미 물었으면 또 묻지 않는다
+assert o["pending_question"] == iv.READY_QUESTION and "interview_done_by" not in o, o
+assert o["context"].parent.message_direction == "undecided" and o["context"].parent.concern == "뭐여 왜이래"
+o = iv.interview_step({"context": ctx0, "interview_turns": filled, "auto_confirm": True})
+assert o["interview_done_by"] == "sufficient", o
+llm.set_structured_override(recording_structured)
+print("fill question once ok")
+
 # ── 8) 글 덩어리 배치 (text_blocks): 쪽 그림마다 덩어리·자리를 정해 PageImage에 싣는다 ──
 # 8-1) 처음 만들기: 그림이 있는 모든 쪽에 덩어리 1~2개, 줄을 이으면 원문. 가이드 질문 쪽은 원문 + 맨 밑 문단에 질문 (#100)
 q_by_page = {}
