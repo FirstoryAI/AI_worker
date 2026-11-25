@@ -36,6 +36,8 @@ class Config:
     elevenlabs_api_key: str = os.getenv("ELEVENLABS_API_KEY", "")
     tts_model: str = _env("TTS_MODEL", "eleven_v3")
     tts_concurrency: int = int(_env("TTS_CONCURRENCY", "3"))
+    tts_timeout: int = int(_env("TTS_TIMEOUT", "60"))   # 한 요청을 기다리는 초. 넘으면 그 시도는 실패
+    tts_deadline: int = int(_env("TTS_DEADLINE", "180"))   # 낭독 한 번 전체의 초. 넘으면 아직 시작 안 한 쪽은 부르지 않고 실패
 
     page_count: int = 10
     max_interview_turns: int = 15       # 🔒 ②-5. 백엔드 InterviewTurn.MAX_TURNS·DB CHECK(1~15)와 같게. 더 올리려면 백엔드 먼저

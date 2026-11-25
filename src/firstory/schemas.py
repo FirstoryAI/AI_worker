@@ -449,11 +449,13 @@ class PageAudio(BaseModel):
     status: Literal["completed", "failed"]
     error: Optional[str] = None
     source_hash: Optional[str] = None   # 낭독한 글의 해시. 같으면 다시 만들지 않는다
+    text_hash: Optional[str] = None     # 그 쪽 글(원문)의 해시. 글만 다시 만들 때 같으면 말한 사람을 다시 정하지 않는다
 
 
 class Narration(BaseModel):
     cast_types: dict[str, VoiceType] = {}   # 인물 이름 → 목소리 종류
     cast_voices: dict[str, str] = {}        # 인물 이름 → 고른 voice_id
+    speakers: dict[str, str] = {}           # 대사 조각 id("{쪽}-{순번}") → 말한 사람 (없으면 해설자)
     pages: list[PageAudio] = []
 
 

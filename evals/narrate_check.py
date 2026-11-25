@@ -8,11 +8,14 @@ import http.client
 import io
 import json
 import logging
+import re
 import sys
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -53,6 +56,12 @@ assert Narration().pages == [] and PageAudio(order=1, status="failed").path is N
 
 # --- Task 2: 조각 나누기와 목소리 배정 ---
 from firstory.nodes import narrate as nr  # noqa: E402
+
+def no_tts(inputs):
+    raise AssertionError("음성을 부르면 안 된다")
+
+
+tts.set_tts_override(no_tts)   # 낭독이 켜져 있어야 assign_voices가 모델을 부른다 (키 없이 돌려도)
 
 s = nr.segments(2, '곰 하늬가 왔어요.\n"라니야, 옷 입자." 하고 말했어요.\n"싫어!"')
 assert [(x.text, x.quoted, x.id) for x in s] == [
@@ -116,6 +125,8 @@ tmp = tempfile.mkdtemp()
 base = "stories/narr"
 storage_patch = patch.object(storage, "config", SimpleNamespace(storage="local", output_root=Path(tmp)))
 storage_patch.start()   # 파일은 임시 폴더에만 쓴다
+retry_patch = patch.object(nr, "_retry_wait", lambda: None)
+retry_patch.start()   # 다시 시도 전 기다림은 0초로
 
 plan = {"cast_types": {"라니": "child_girl"}, "cast_voices": {"라니": "v-rani"}, "speakers": {"2-1": "라니", "2-2": "라니"}}
 assert nr.page_inputs(2, '라니는 왔어요.\n"싫어!"\n"안 입어."\n라니는 숨었어요.', plan) == [
@@ -143,7 +154,7 @@ n1 = out["narration"]
 assert [(p.order, p.status) for p in n1.pages] == [(1, "completed"), (2, "completed"), (3, "failed")]
 assert n1.pages[0].path == f"{base}/1/audio/page-01.mp3" and storage.read_bytes(n1.pages[0].path).startswith(b"ID3")
 assert "402" in n1.pages[2].error and any("3쪽 음성 실패" in m and "402" in m for m in logs)
-assert len(calls) == 4   # 3쪽은 한 번 더 시도
+assert len(calls) == 3   # 402는 다시 해도 같아서 한 번만
 assert sorted((c.node, c.tts_chars) for c in out["cost"]) == [("narrate:page1", len("1쪽 글이에요.")),
                                                               ("narrate:page2", len("2쪽 글이에요."))]
 
@@ -174,8 +185,8 @@ class _Resp:
             raise self.exc
         return self.body
 
-def http_error(code):
-    return urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(b"detail"))
+def http_error(code, body=b"detail"):
+    return urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(body))
 
 def run_dialogue(steps):
     """steps: 호출 순서대로 돌려줄 응답 또는 던질 예외. → (결과 또는 TtsError, 본문 목록)"""
@@ -186,7 +197,7 @@ def run_dialogue(steps):
         if isinstance(step, Exception):
             raise step
         return step
-    with patch.object(tts, "config", SimpleNamespace(elevenlabs_api_key="k", tts_model="m")), \
+    with patch.object(tts, "config", SimpleNamespace(elevenlabs_api_key="k", tts_model="m", tts_timeout=60)), \
          patch.object(urllib.request, "urlopen", fake_urlopen):
         try:
             return tts.dialogue([{"text": "가", "voice_id": "a"}], page=1), bodies
@@ -222,12 +233,147 @@ tts.set_tts_override(None)
 def raising(**kw):
     raise RuntimeError("모델 실패")
 llm.set_structured_override(raising)
+tts.set_tts_override(no_tts)
 with captured_logs() as logs:
     fb = nr.assign_voices({"story": story_with(pages={1: '"안녕!"'}, cast=["라니", "하늬"])})
 assert fb["voice_plan"]["speakers"] == {} and fb["cost"] == []
 assert fb["voice_plan"]["cast_types"] == {"라니": "child_girl", "하늬": "adult_woman"} and set(fb["voice_plan"]["cast_voices"]) == {"라니", "하늬"}
 assert any("말한 사람 정하기 실패" in m for m in logs)
 llm.set_structured_override(None)
+
+# --- 마지막 고치기 (R4): 글만 다시 만들 때 글이 바뀐 쪽 대사만 다시 정한다 ---
+calls = []
+tts.set_tts_override(lambda i: calls.append(i) or b"ID3r")
+pages_v1 = {1: "라니가 일어났어요.", 2: '"안녕!" 라니가 말했어요.\n"반가워." 하늬가 말했어요.', 3: '"놀자!" 하늬가 말했어요.'}
+story_v1 = story_with(pages=pages_v1, cast=["라니", "하늬"])
+llm.set_structured_override(lambda **kw: SpeakerAssignment(
+    cast=[CastVoice(name="라니", voice_type="child_girl"), CastVoice(name="하늬", voice_type="child_boy")],
+    quotes=[QuoteSpeaker(id="2-1", speaker="라니"), QuoteSpeaker(id="2-2", speaker="하늬"), QuoteSpeaker(id="3-1", speaker="하늬")]))
+plan_v1 = nr.assign_voices({"story": story_v1})["voice_plan"]
+nar_v1 = nr.narrate({"story": story_v1, "voice_plan": plan_v1, "output_prefix": f"{base}/r1/"})["narration"]
+assert nar_v1.speakers == {"2-1": "라니", "2-2": "하늬", "3-1": "하늬"} and len(calls) == 3
+assert [p.text_hash for p in nar_v1.pages] == [nr.text_hash(pages_v1[o]) for o in (1, 2, 3)]
+assert nar_v1.model_dump(mode="json")["speakers"] == nar_v1.speakers   # 06-narration.json에도 남는다
+
+story_v2 = story_with(pages={**pages_v1, 3: '"같이 놀자!" 라니가 말했어요.'}, cast=["라니", "하늬"])
+st_v2 = {"story": story_v2, "narration": nar_v1, "regenerate_scope": "text"}
+sent: list[str] = []
+def labeler(**kw):
+    sent.extend(re.findall(r"\[(\d+-\d+)\] 줄:", kw["system"]))
+    return SpeakerAssignment(cast=[], quotes=[QuoteSpeaker(id="3-1", speaker="라니"), QuoteSpeaker(id="2-1", speaker="하늬")])
+llm.set_structured_override(labeler)
+plan_v2 = nr.assign_voices(st_v2)["voice_plan"]
+assert sent == ["3-1"]   # 글이 그대로인 2쪽 대사는 모델에게 보내지 않는다
+assert plan_v2["speakers"] == {"2-1": "라니", "2-2": "하늬", "3-1": "라니"}   # 2쪽은 이전 그대로 (모델이 2-1을 줘도 무시)
+assert plan_v2["cast_voices"] == plan_v1["cast_voices"]
+calls.clear()
+nar_v2 = nr.narrate({**st_v2, "voice_plan": plan_v2, "output_prefix": f"{base}/r2/"})["narration"]
+assert len(calls) == 1 and calls[0][0] == {"text": "같이 놀자!", "voice_id": plan_v1["cast_voices"]["라니"]}
+assert [p.path for p in nar_v2.pages] == [nar_v1.pages[0].path, nar_v1.pages[1].path, f"{base}/r2/audio/page-03.mp3"]
+assert nar_v2.pages[2].text_hash == nr.text_hash(story_v2.pages[2].text) and nar_v2.speakers == plan_v2["speakers"]
+# 글이 전부 그대로면 모델을 부르지 않는다
+llm.set_structured_override(boom)
+assert nr.assign_voices({**st_v2, "story": story_v1})["voice_plan"]["speakers"] == nar_v1.speakers
+# 이야기 다시 만들기는 전부 다시 정한다
+sent.clear(); llm.set_structured_override(labeler)
+nr.assign_voices({**st_v2, "regenerate_scope": "story"})
+assert sent == ["2-1", "2-2", "3-1"]
+# 글만 다시 만들 때 모델이 실패: 2쪽은 이전 말한 사람 그대로(다시 녹음 안 함), 바뀐 3쪽만 해설자
+llm.set_structured_override(raising)
+with captured_logs() as logs:
+    plan_v3 = nr.assign_voices(st_v2)["voice_plan"]
+assert plan_v3["speakers"] == {"2-1": "라니", "2-2": "하늬"} and any("말한 사람 정하기 실패" in m for m in logs)
+calls.clear()
+nar_v3 = nr.narrate({**st_v2, "voice_plan": plan_v3, "output_prefix": f"{base}/r3/"})["narration"]
+assert len(calls) == 1 and calls[0] == [{"text": "같이 놀자! 라니가 말했어요.", "voice_id": voices.NARRATOR}]
+assert nar_v3.pages[1].path == nar_v1.pages[1].path
+llm.set_structured_override(None)
+
+# --- 마지막 고치기 (R5): 전체 시간, 차단기, 다시 시도 ---
+three = story_with(pages={i: f"{i}쪽 글이에요." for i in range(1, 4)}, cast=["라니"])
+st_t = {"story": three, "voice_plan": {"cast_types": {}, "cast_voices": {}, "speakers": {}}, "output_prefix": f"{base}/t/"}
+one_at_a_time = replace(nr.config, tts_concurrency=1)
+calls.clear()
+with patch.object(nr, "config", replace(nr.config, tts_deadline=0)):
+    out = nr.narrate(st_t)["narration"]
+assert calls == [] and [(p.status, p.error) for p in out.pages] == [("failed", "None: deadline")] * 3
+clock = [0.0]
+def slow(i):   # 첫 쪽이 200초 걸린 셈: 나머지 쪽은 시작 전에 전체 시간(180초)을 넘긴다
+    calls.append(i)
+    clock[0] += 200
+    return b"ID3s"
+tts.set_tts_override(slow)
+with patch.object(nr, "_now", lambda: clock[0]), patch.object(nr, "config", replace(one_at_a_time, tts_deadline=180)):
+    out = nr.narrate(st_t)["narration"]
+assert len(calls) == 1 and [(p.status, p.error) for p in out.pages] == [
+    ("completed", None), ("failed", "None: deadline"), ("failed", "None: deadline")]
+
+calls.clear()
+def quota(i):
+    calls.append(i)
+    raise tts.TtsError("quota_exceeded", status=402)
+tts.set_tts_override(quota)
+with patch.object(nr, "config", one_at_a_time), captured_logs() as logs:
+    out = nr.narrate(st_t)["narration"]
+assert len(calls) == 1 and [p.error for p in out.pages] == ["402: quota_exceeded", "402: skipped", "402: skipped"]
+assert sum("음성 실패" in m for m in logs) == 3
+
+waits: list[int] = []
+def flaky(status):
+    def fn(i):
+        calls.append(i)
+        if len(calls) == 1:
+            raise tts.TtsError("x", status=status)
+        return b"ID3f"
+    return fn
+one = {**st_t, "story": story_with(pages={1: "1쪽 글이에요."}, cast=["라니"])}
+for status, n_calls, ok in [(429, 2, True), (503, 2, True), (None, 2, True), (400, 1, False), (403, 1, False), (422, 1, False)]:
+    calls.clear(); waits.clear()
+    tts.set_tts_override(flaky(status))
+    with patch.object(nr, "_retry_wait", lambda: waits.append(1)):
+        out = nr.narrate(one)["narration"]
+    assert len(calls) == n_calls and len(waits) == n_calls - 1, (status, calls, waits)
+    assert out.pages[0].status == ("completed" if ok else "failed"), status
+calls.clear()
+tts.set_tts_override(lambda i: calls.append(i) or (_ for _ in ()).throw(tts.TtsError("busy", status=500)))
+out = nr.narrate(one)["narration"]
+assert len(calls) == 2 and out.pages[0].error == "500: busy"   # 두 번 다 실패하면 끝
+
+# --- 마지막 고치기: 글만 만드는 실행·낭독 꺼짐은 아무것도 부르지 않는다 ---
+llm.set_structured_override(boom)
+tts.set_tts_override(no_tts)
+empty = {"voice_plan": {"cast_types": {}, "cast_voices": {}, "speakers": {}}, "cost": []}
+assert nr.assign_voices({"story": story_v1, "skip_images": True}) == empty
+assert nr.narrate({**st_t, "skip_images": True}) == {"narration": None, "cost": []}
+tts.set_tts_override(None)
+with patch.object(tts, "config", SimpleNamespace(elevenlabs_api_key="")):
+    assert nr.assign_voices({"story": story_v1}) == empty
+llm.set_structured_override(None)
+
+# --- 마지막 고치기: HTTP 응답 다루기 (빈 본문, 짧은 오류, 프로세스 전체 동시 요청 상한) ---
+res, _ = run_dialogue([_Resp(b"")])
+assert isinstance(res, tts.TtsError) and res.status is None and str(res) == "empty audio"
+secret = {"detail": {"status": "quota_exceeded", "message": "라니가 \"비밀 글\" 하고 말했어요"}}
+res, _ = run_dialogue([http_error(402, json.dumps(secret, ensure_ascii=False).encode())])
+assert nr._err(res) == "402: quota_exceeded" and "라니" not in str(res)
+res, _ = run_dialogue([http_error(422, json.dumps({"detail": [{"msg": "라니"}]}, ensure_ascii=False).encode())])
+assert nr._err(res) == "422: http_error"
+res, _ = run_dialogue([http_error(401, b'{"detail": {"code": "invalid_api_key"}}')])
+assert nr._err(res) == "401: invalid_api_key"
+assert isinstance(tts._SEM, threading.BoundedSemaphore().__class__)
+sem_seen: list[int] = []
+free = tts._SEM._value
+def held_urlopen(req, timeout=None):
+    sem_seen.append(tts._SEM._value)
+    raise http_error(402, json.dumps(secret, ensure_ascii=False).encode())
+with patch.object(tts, "config", SimpleNamespace(elevenlabs_api_key="k", tts_model="m", tts_timeout=60)), \
+     patch.object(urllib.request, "urlopen", held_urlopen), patch.object(nr, "config", one_at_a_time), captured_logs() as logs:
+    out = nr.narrate({**st_t, "output_prefix": f"{base}/h/"})["narration"]
+assert sem_seen and all(v < free for v in sem_seen) and tts._SEM._value == free   # 요청하는 동안만 자리를 잡는다
+assert out.pages[0].error == "402: quota_exceeded" and not any("비밀" in m for m in logs)
+assert "[narrate] 1쪽 음성 실패: 402: quota_exceeded" in logs and len(sem_seen) == 1   # 2·3쪽은 차단기로 부르지 않는다
+
+retry_patch.stop()
 storage_patch.stop()
 
 print("ALL OK")

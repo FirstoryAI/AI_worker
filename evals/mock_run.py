@@ -32,7 +32,7 @@ from firstory.nodes import interview as iv  # noqa: E402
 from firstory.nodes import layout  # noqa: E402
 from firstory.nodes.story import review_update, scene_note  # noqa: E402
 from firstory.schemas import (  # noqa: E402
-    AfterReading, BeforeReading, CharacterSheet, GuidePrompt, InterviewTurnResult, ParentUpdate, PolishedPage,
+    AfterReading, BeforeReading, CharacterSheet, GuidePrompt, InterviewTurnResult, PageAudio, ParentUpdate, PolishedPage,
     PolishedStory, ReadingGuide, StoryInputContext, StoryPage, StoryRevision, StoryText, Strategy, TextChunking,
     TextPlacement, TextPlacementWithWord, Turn)
 
@@ -265,6 +265,9 @@ assert "narrate:page1" in node_names(st1["cost"])
 assert storage.exists(f"{base}/1/06-narration.json")
 assert server._page(st1["story"].pages[0], None, None)["audio_path"] is None   # 음성 없는 동화
 assert server._page(st1["story"].pages[0], None, None)["audio_status"] is None
+_failed = server._page(st1["story"].pages[0], None, PageAudio(order=1, status="failed"))   # 음성 실패한 쪽
+assert (_failed["audio_path"], _failed["audio_status"]) == (None, "failed")
+assert nar1.speakers is not None and all(pa.text_hash for pa in nar1.pages)   # 글만 다시 만들 때 쓰는 값
 assert r["run_dir"] == str(storage.local_path(f"{base}/1/"))
 
 # 그림만 다시(3쪽) → 3쪽만 runs/2에 새로. 나머지 쪽과 시트는 runs/1의 key 그대로, 파일 복사 없음
