@@ -152,7 +152,9 @@ def assign_voices(state: PipelineState) -> dict:
     speakers = dict(reused)
     if not llm_failed:   # 실패했으면 새로 정할 대사는 비워 둔다 (= 해설자)
         said = {q.id.strip().strip("[]").strip(): q.speaker.strip() for q in result.quotes}   # 모델이 "[1-1]"처럼 괄호째 돌려줘도 맞춘다
-        speakers.update({seg.id: (said.get(seg.id) if said.get(seg.id) in names else NARRATOR_NAME) for _, seg in pieces})
+        for _, seg in pieces:
+            sp = said.get(seg.id)
+            speakers[seg.id] = sp if sp in names else NARRATOR_NAME
     return {
         "voice_plan": {"cast_types": cast_types, "cast_voices": cast_voices(cast_types, keep_voices), "speakers": speakers},
         "cost": [cost] if cost else [],

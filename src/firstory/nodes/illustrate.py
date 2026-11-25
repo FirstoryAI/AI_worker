@@ -20,7 +20,7 @@ from openai import BadRequestError
 from PIL import Image
 
 from ..llm import client, prompt, structured
-from ..schemas import CharacterSheet, CostEntry, Illustrations, OneMomentScene, PageImage, ReadingGuide, SoftenedScene, SoundWord, StoryText, TextBlock
+from ..schemas import CharacterSheet, CostEntry, Illustrations, OneMomentScene, PageImage, SoftenedScene, SoundWord, StoryText, TextBlock
 from .layout import (DEFAULT_SPOT, H, MAX_REDRAWS, REDRAW_BUSY, W, _cost, Busy, Block, SfxAsk, block_size, blockers, build_blocks, calmest_pick, chunk_page, merge,
                      place_page, place_word, questions_by_page as _questions, settle, short_look, sound_words, split_block, split_lines, wrap_line)
 from ..state import PipelineState
@@ -231,16 +231,17 @@ def cover_prompt(story: StoryText, setting: Optional[str] = None) -> str:
 def back_cover_prompt(story: StoryText) -> str:
     """뒤표지 (정사각형 표지와 같은 크기, 글자 없음, #125). 실제 그림책 뒤표지처럼 빈 바탕에 주인공 혼자 작게 그린 마무리 한 컷.
     마지막 쪽 장면을 다시 그리지 않는다 (10쪽과 겹친다). 참고 그림은 주인공 시트 한 장 (#88)."""
-    lines = ["Back cover of a children's picture book. 1 reference image is attached:",
-             *_reference_lines([story.protagonist()]),
-             "Draw the character EXACTLY as in the reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add any other character.",
-             "A small spot illustration: only this character, alone, in a happy relaxed pose saying goodbye (a small wave or a gentle smile), "
-             "drawn small in the center and taking up about one third of the image height.",
-             "Plain soft paper background in a light color that matches the style, with lots of empty space around the character. "
-             "No scene, no room, no furniture, no landscape; at most a tiny shadow or a few small decorative marks near the feet.",
-             f"Style: {story.style_guide}",
-             "No text, no title, no letters, no borders."]
-    return "\n".join(lines)
+    return "\n".join([
+        "Back cover of a children's picture book. 1 reference image is attached:",
+        *_reference_lines([story.protagonist()]),
+        "Draw the character EXACTLY as in the reference (same species, colors, markings, proportions, outfit). Do not redesign, do not add any other character.",
+        "A small spot illustration: only this character, alone, in a happy relaxed pose saying goodbye (a small wave or a gentle smile), "
+        "drawn small in the center and taking up about one third of the image height.",
+        "Plain soft paper background in a light color that matches the style, with lots of empty space around the character. "
+        "No scene, no room, no furniture, no landscape; at most a tiny shadow or a few small decorative marks near the feet.",
+        f"Style: {story.style_guide}",
+        "No text, no title, no letters, no borders.",
+    ])
 
 
 def single_moment(page_chars: list[CharacterSheet]) -> str:
@@ -484,6 +485,13 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
         """장면에 나오는 캐릭터. 아무도 없으면 주인공."""
         return [by_name[n] for n in p.characters_in_scene if n in by_name] or [story.protagonist()]
 
+    def one_moment(scene: str) -> str:
+        """이어지는 동작이 있으면 한 순간으로 다시 쓴 지시 (#110). 다시 쓴 비용은 costs에."""
+        scene, cost = _one_moment(scene)
+        if cost:
+            costs.append(cost)
+        return scene
+
     # 1) 캐릭터 시트 — 일부 쪽만 다시 그릴 때는 이전 실행의 시트를 그대로 쓴다. 여러 명이면 병렬
     def make_sheet(c: CharacterSheet):
         if only_pages is not None and c.name in ill.character_sheets:
@@ -525,9 +533,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
                 return None
             sc = scene
             if sc is None:   # 글 자리만 다시 하던 쪽: 그릴 때만 지시문을 한 순간으로 (#110)
-                sc, cost = _one_moment(p.image_prompt)
-                if cost:
-                    costs.append(cost)
+                sc = one_moment(p.image_prompt)
             try:
                 again, tin2, tout2 = _draw(
                     lambda x: _edit(page_prompt(story, chars, x, [block_size(b) for b in bl], request, where), refs),
@@ -553,9 +559,7 @@ def _run(story: StoryText, img_prefix: str, only_pages: Optional[set[int]] = Non
                 blocks = [[list(para) for para in tb.paragraphs] for tb in old_pi.text_blocks]
             else:
                 blocks = _chunk(p.order, p.text, costs, tail)   # 덩어리를 먼저 나눠야 그림에 필요한 빈 곳 크기를 안다
-            scene, cost = _one_moment(p.image_prompt)   # 이어지는 동작이 있으면 한 순간으로 (#110)
-            if cost:
-                costs.append(cost)
+            scene = one_moment(p.image_prompt)
             img, tin, tout = _draw(lambda sc: _edit(page_prompt(story, chars, sc, [block_size(b) for b in blocks], request), refs),
                                    scene, f"{img_prefix} page {p.order}", costs)
             state = {"key": save(f"page-{p.order:02d}", img), "tin": tin, "tout": tout, "images": 1}
