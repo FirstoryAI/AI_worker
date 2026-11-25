@@ -167,8 +167,9 @@ def page_inputs(page_no: int, text: str, plan: dict, questions: Optional[list[st
     items = [(seg.text, cast.get(speakers.get(seg.id), voices.NARRATOR) if seg.quoted else voices.NARRATOR)
              for seg in segments(page_no, text)]
     for q in questions or []:
-        if q.replace("**", "").strip():
-            items.append((q.replace("**", "").strip(), voices.NARRATOR))
+        t = q.replace("**", "").strip()
+        if t:
+            items.append((t, voices.NARRATOR))
     for t, voice in items:
         if out and out[-1]["voice_id"] == voice:
             out[-1]["text"] += " " + t

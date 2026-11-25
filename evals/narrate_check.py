@@ -373,6 +373,48 @@ assert sem_seen and all(v < free for v in sem_seen) and tts._SEM._value == free 
 assert out.pages[0].error == "402: quota_exceeded" and not any("비밀" in m for m in logs)
 assert "[narrate] 1쪽 음성 실패: 402: quota_exceeded" in logs and len(sem_seen) == 1   # 2·3쪽은 차단기로 부르지 않는다
 
+# --- Backend#95: 화면에 보이는 가이드 질문 줄도 해설자로 읽는다 ---
+from firstory.schemas import AfterReading, BeforeReading, GuidePrompt, ReadingGuide  # noqa: E402
+
+def guide_q(*pairs):
+    return ReadingGuide(synopsis="s", prompts=[GuidePrompt(id=f"q{i}", after_page=a, text=t, purpose="empathy") for i, (a, t) in enumerate(pairs)],
+                        before_reading=BeforeReading(intent="i", tips=["t"]), after_reading=AfterReading(bridge_question="b"))
+
+pl = {"cast_types": {"라니": "child_girl"}, "cast_voices": {"라니": "v-rani"}, "speakers": {"2-1": "라니"}}
+assert nr.page_inputs(2, '"싫어!"', pl, ["**라니**는 왜 싫었을까요?"]) == [
+    {"text": "싫어!", "voice_id": "v-rani"}, {"text": "라니는 왜 싫었을까요?", "voice_id": voices.NARRATOR}]
+assert nr.page_inputs(2, "라니는 왔어요.", pl, ["왜 왔을까요?"]) == [   # 해설 + 질문은 기존 규칙대로 한 조각
+    {"text": "라니는 왔어요. 왜 왔을까요?", "voice_id": voices.NARRATOR}]
+
+q_calls: list[list[dict]] = []
+tts.set_tts_override(lambda i: q_calls.append(i) or b"ID3q")
+q_story = story_with(pages={1: "1쪽 글이에요.", 2: '"싫어!" 라니가 말했어요.', 3: "3쪽 글이에요."}, cast=["라니"])
+q_plan = {"cast_types": {"라니": "child_girl"}, "cast_voices": {"라니": "v-rani"}, "speakers": {"2-1": "라니"}}
+q_st = {"story": q_story, "voice_plan": q_plan, "guide": guide_q((2, "**라니**는 왜 싫었을까요?")), "output_prefix": f"{base}/q1/"}
+qn1 = nr.narrate(q_st)["narration"]
+assert len(q_calls) == 3
+p2 = next(c for c in q_calls if c[0]["voice_id"] == "v-rani")
+assert p2[-1] == {"text": "라니가 말했어요. 라니는 왜 싫었을까요?", "voice_id": voices.NARRATOR}   # 해설 뒤에 질문이 붙는다(**는 빠짐)
+assert all("싫었을까요" not in i["text"] for c in q_calls if c is not p2 for i in c)   # 1·3쪽엔 질문 없음
+# 질문만 바뀌면 그 쪽만 다시 녹음, 1·3쪽은 이전 음성 재사용
+q_calls.clear()
+q_st2 = {**q_st, "guide": guide_q((2, "라니는 어떤 기분이었을까요?")), "narration": qn1, "output_prefix": f"{base}/q2/"}
+qn2 = nr.narrate(q_st2)["narration"]
+assert len(q_calls) == 1 and q_calls[0][-1]["text"].endswith("라니는 어떤 기분이었을까요?")
+assert qn2.pages[0].path == qn1.pages[0].path and qn2.pages[2].path == qn1.pages[2].path and qn2.pages[1].path == f"{base}/q2/audio/page-02.mp3"
+assert qn2.pages[1].text_hash == qn1.pages[1].text_hash   # 말한 사람 재사용 키는 쪽 글만
+# 질문이 같으면 아무것도 다시 안 한다
+q_calls.clear()
+nr.narrate({**q_st2, "narration": qn2, "output_prefix": f"{base}/q3/"})
+assert q_calls == []
+# assign_voices는 질문 글을 모델에게 보내지 않는다 (system·user 모두)
+seen_sys: list[str] = []
+llm.set_structured_override(lambda **kw: seen_sys.append(kw["system"] + kw["user"]) or SpeakerAssignment(cast=[], quotes=[]))
+nr.assign_voices({**q_st, "guide": guide_q((2, "라니는 왜 싫었을까요?"), (1, "이건 1쪽 질문일까요?"))})
+assert seen_sys and all("싫었을까요" not in t and "1쪽 질문" not in t for t in seen_sys)
+llm.set_structured_override(None)
+tts.set_tts_override(None)
+
 retry_patch.stop()
 storage_patch.stop()
 
