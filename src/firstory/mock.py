@@ -15,7 +15,7 @@ from .config import config
 from .nodes import illustrate
 from .schemas import (
     AfterReading, Attempt, BeforeReading, CharacterSheet, GuidePrompt, InterviewSummary, InterviewTurnResult,
-    JudgeScore, ParentUpdate, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
+    JudgeScore, ParentUpdate, SpeakerAssignment, PolishedPage, PolishedStory, Protagonist, ReadingGuide, Refrain, SafetyJudgement, SafetyResult,
     OneMomentScene, SoftenedScene, StoryJudgement, StoryPage, StoryRevision, StoryText, SupportingCharacter,
     BlockSpot, TextChunking, TextPlacement, TextPlacementWithWord, WordSpot, OwnerBox, CharacterBox,
 )
@@ -49,6 +49,8 @@ def fake_structured(*, node, model, schema, system, user, image=None):
                                        reason="direction 비어있음")
         return InterviewTurnResult(context_update=ParentUpdate(message_direction="comfort_first", message="네 잘못 아니야"),
                                    status="sufficient", reason="다 채워짐")
+    if schema is SpeakerAssignment:   # 배선 확인용: 모든 대사가 해설자. 가짜 글에는 따옴표가 없어 보통 안 불린다
+        return SpeakerAssignment(cast=[], quotes=[])
     if schema is SafetyJudgement:   # 판단할 글은 user에 있다 (nodes/safety.py)
         s = fake_safety([user])
         return SafetyJudgement(basis="mock 표시", level=s.level, category=s.category, reason=s.reason, topic=s.topic)
