@@ -166,6 +166,7 @@ class StoryDesign(BaseModel):
     problem_cause: str = Field(description="주인공이 그러는 원인 **하나**. 사연의 단서(언제 그러는지·몸 증상)를 가장 잘 설명하고, 부모가 읽고 '우리 애도 그럴 수 있겠다' 할 만한 이유. 지어낸 소품 금지. 기·승에서 먼저 보여 준 뒤 전에서 말로 나온다")
     values_to_honor: list[str] = Field(description="이야기 안에 자연스럽게 있되 결론으로 주입하지 않을 가치")
     must_show: list[str] = Field(default_factory=list, description="부모가 직접 한 말(parent.message·concern)에서 나온, 동화에 꼭 장면으로 보여 줄 것. '누가 무엇을 하는 장면' 꼴. 부모가 따로 바란 게 없으면 빈 칸")
+    core_message: str = Field("", description="이 동화가 전할 메시지 한 문장. 부모가 전하고 싶은 말에서 뽑는다. 이야기 전체가 이쪽으로 가고, 끝에서 화자가 이 말을 한다. 아이가 그 상황에서 할 행동('같이 놀고 싶을 땐 나도 같이 해도 돼? 하고 물어보면 돼요')이나 안심이 되는 사실('엄마와 떨어져도 언제나 다시 만날 수 있어요')을 해요체로. 흐린 말·'~해야 해요' 같은 훈계 ✗")
     solution: str = Field("", description="주인공이 스스로 낸 방법 하나와, 그게 problem_cause를 어떻게 직접 푸는지. 상황이 저절로 나아지는 것은 안 된다")
     setups: list[str] = Field(default_factory=list, description="뒤에서 쓰는 사물·말·장소를 앞에서 먼저 보여 주는 짝. '오리: 1쪽에서 보여 줌 → 7쪽에서 씀' 꼴. 전·결에서 쓰는 것은 모두 여기 있어야 한다")
     story_arc: list[str] = Field(description="페이지별 흐름, 페이지 수만큼. 기(배경·발단)→승(반복하며 커지는 감정)→전(주인공의 시도)→결(결과·마무리)")
