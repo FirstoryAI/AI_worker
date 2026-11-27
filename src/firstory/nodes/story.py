@@ -252,6 +252,7 @@ def reading_guide(state: PipelineState) -> dict:
             persona=_persona,
             context=ctx,
             summary=state.get("interview_summary") or "",
+            core_message=getattr(state.get("story_design"), "core_message", "") or "(없음)",
             characters=[{"name": c.name, "role": c.role, "looks": c.visual_description} for c in story.characters],
             pages=[{"order": p.order, "text": p.text} for p in story.pages],
             min_prompts=config.guide_prompts_min,

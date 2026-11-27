@@ -67,7 +67,7 @@ def fake_structured(*, node, model, schema, system, user, image=None):
         return schema(protagonist=Protagonist(name="포포", species="분홍 토끼", traits=["조심스러움"]),
                       supporting=SupportingCharacter(name="엄마곰", species="갈색 곰", role="보호자", traits=["느긋함"]),
                       world="숲속 그림 교실", mirrored_situation="같이 그리던 다람쥐가 오늘은 혼자 그리겠다고 함", problem_cause="다람쥐가 혼자 그리겠다고 함",
-                      values_to_honor=["아이 마음 먼저"], story_arc=["시작", "상황", "감정", "교류", "결말"],
+                      values_to_honor=["아이 마음 먼저"], core_message="속상한 마음은 말로 하면 친구가 알아줘요.", story_arc=["시작", "상황", "감정", "교류", "결말"],
                       **{k: v for k, v in extra.items() if k in schema.model_fields})
     if schema is TextChunking:    # 줄 번호 목록은 프롬프트의 "번호: 줄" (prompts/text_chunks.md)
         return TextChunking(blocks=[[list(range(len(re.findall(r"^\d+: ", system, re.M))))]])
